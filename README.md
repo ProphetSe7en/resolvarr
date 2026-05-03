@@ -81,12 +81,12 @@ docker run -d \
   --restart unless-stopped \
   -p 6075:6075 \
   -v /path/to/config:/config \
-  -v /path/to/media:/media:ro \
+  -v /path/to/media:/data/media:ro \
   -e PUID=99 -e PGID=100 -e TZ=Europe/Oslo \
   ghcr.io/prophetse7en/resolvarr:dev
 ```
 
-The `/media` mount is only needed if you plan to use Dolby Vision detail tagging — the other tag types don't need file access. Add `-e ENABLE_DV_TOOLS=true` to enable DV tagging (see Environment Variables below).
+The `/data/media` mount is only needed if you plan to use Dolby Vision detail tagging — the other tag types don't need file access. The container path defaults to `/data/media` to match the standard TRaSH-Guides / Servarr layout — if your Radarr/Sonarr already mount the share at `/data/media`, no Path Mapping is needed inside resolvarr. Add `-e ENABLE_DV_TOOLS=true` to enable DV tagging (see Environment Variables below).
 
 Open the Web UI at `http://your-host:6075`.
 
@@ -117,7 +117,7 @@ Open the Web UI at `http://your-host:6075`.
 | Container Path | Purpose |
 |---------------|---------|
 | `/config` | Configuration, scan history logs, schedule data |
-| `/media` (or your choice) | **Only required for Dolby Vision detail.** Mount your media library so resolvarr can read files for dovi_tool. Read-only (`:ro`) is sufficient. Two ways to make paths line up: (1) easiest — use the **same in-container path Radarr/Sonarr uses** (e.g. mount as `/movies` here if Radarr mounts the share as `/movies` too — no Path Mapping needed); (2) **different in-container paths** — pick whatever, then add a Path Mapping under Settings → Instances inside the web UI to translate Radarr's path prefix into yours. Skip this volume entirely if you're not using DV detail tagging. |
+| `/data/media` (default — matches TRaSH/Servarr layout) | **Only required for Dolby Vision detail.** Mount your media library so resolvarr can read files for dovi_tool. Read-only (`:ro`) is sufficient. The default container path `/data/media` matches the standard TRaSH-Guides / Servarr layout, so if your Radarr/Sonarr also mount the share at `/data/media` (the typical case), no Path Mapping is needed inside resolvarr. If your Radarr/Sonarr uses a different in-container path, either change the container path here to match, or keep `/data/media` and add a Path Mapping under Settings → Instances inside the web UI to translate Radarr's path prefix into `/data/media`. Skip this volume entirely if you're not using DV detail tagging. |
 
 ### Ports
 
@@ -145,9 +145,11 @@ services:
     volumes:
       - ./resolvarr-config:/config
       # Only needed for Dolby Vision detail tagging — read-only is fine.
-      # The mount path here must match what you configure under
-      # Settings → Instances → Path Mappings inside the web UI.
-      # - /path/to/media:/media:ro
+      # Default container path is /data/media (matches TRaSH/Servarr
+      # layout). If your Radarr/Sonarr uses a different in-container
+      # path, either change /data/media here to match, or add a Path
+      # Mapping under Settings → Instances inside the web UI.
+      # - /path/to/media:/data/media:ro
 ```
 
 **Updating** — `docker compose pull && docker compose up -d` pulls the newest `:dev` image and recreates the container. Your config folder persists across updates.
@@ -178,7 +180,7 @@ While we're in early access, resolvarr is **not** yet listed in Community Apps. 
    ```
 
 2. In the Unraid web UI, go to the **Docker** tab → **Add Container** → open the **Template** dropdown at the top of the form and pick **resolvarr** from the list.
-3. The form fills in with the defaults from the template — port `6075`, config path `/mnt/user/appdata/resolvarr`, optional `/media` mount for Dolby Vision detail. Most users can leave everything as-is. Click **Apply** to create and start the container.
+3. The form fills in with the defaults from the template — port `6075`, config path `/mnt/user/appdata/resolvarr`, optional `/data/media` mount (defaults to `/mnt/user/data/media`) for Dolby Vision detail. Most users can leave everything as-is. Click **Apply** to create and start the container.
 4. Open the WebUI link Unraid shows for the container (or `http://your-unraid-ip:6075`) to land on the first-run setup wizard.
 
 To update the template later (when we ship a new version with new env vars or paths), just re-run the same `curl` command — it overwrites the file with the latest version. Existing container settings are preserved; only the template definition changes. To pick up a new image, click the resolvarr container icon in the Docker tab and select **Force Update**.
