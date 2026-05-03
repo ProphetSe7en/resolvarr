@@ -63,6 +63,19 @@ type JobOptions struct {
 	// it's still a single-instance flow.
 	AutoTagsRunOnSecondary bool `json:"autoTagsRunOnSecondary,omitempty"`
 
+	// DV-detail-mode
+	//
+	// BypassDvCache makes a saved rule's DV detail phase skip the
+	// /config/dv-cache.json memo on every fire — full ffmpeg +
+	// dovi_tool re-extraction for every file. Only meaningful when
+	// the rule includes DV detail (combined-mode with "dvdetail" in
+	// CombinedModes, or single-mode with Mode = "dvdetail").
+	// Off by default (cache active). Setting this to true on a 5000-
+	// movie Radarr is fine for an occasional refresh-extraction rule
+	// but wasteful as a daily cron — same trade-off as the per-scan
+	// checkbox in Library scan's Run controls.
+	BypassDvCache bool `json:"bypassDvCache,omitempty"`
+
 	// Discover-mode
 	DiscoverWriteBack     bool `json:"discoverWriteBack,omitempty"`     // true = write commented entries, false = clean-report only
 	DiscoverScanSecondary bool `json:"discoverScanSecondary,omitempty"` // also walk secondary instance's library

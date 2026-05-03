@@ -12,9 +12,13 @@ import (
 	"resolvarr/internal/core/engine"
 )
 
-// Cache persists DvDetail results across runs so the slow ffmpeg +
-// dovi_tool RPU extraction (1-3 seconds per file) doesn't repeat
-// for files we've already analysed.
+// Cache persists DvDetail results across runs so the ffmpeg +
+// dovi_tool RPU extraction doesn't repeat for files we've already
+// analysed. Per-file extraction is fast on remux-style sources
+// (typically tens of milliseconds per file once dovi_tool finds
+// the RPU SEI in the first GOP), but cumulative over a 5000-movie
+// library it's still measurable — the cache turns "minutes" into
+// "milliseconds" on rescan.
 //
 // Keyed by (movieFileId, size). The file size invalidates the
 // cache when a re-encode replaces the file — same movieFileId can
@@ -182,6 +186,59 @@ func (c *Cache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.data)
+}
+
+// Stats describes what's in the cache right now. Used by the
+// "Clear DV cache" UI on the DV detail tab.
+type Stats struct {
+	EntryCount    int       `json:"entryCount"`
+	FileSizeBytes int64     `json:"fileSizeBytes"`            // 0 when no file on disk yet
+	OldestCachedAt time.Time `json:"oldestCachedAt,omitempty"` // zero when EntryCount == 0
+	NewestCachedAt time.Time `json:"newestCachedAt,omitempty"`
+}
+
+// Stats reads in-memory entry count + disk file size + oldest/newest
+// CachedAt timestamps. File size is os.Stat (cheap). On-disk file
+// missing is not an error — fresh caches return FileSizeBytes=0.
+func (c *Cache) Stats() Stats {
+	if c == nil {
+		return Stats{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	s := Stats{EntryCount: len(c.data)}
+	for _, e := range c.data {
+		if s.OldestCachedAt.IsZero() || e.CachedAt.Before(s.OldestCachedAt) {
+			s.OldestCachedAt = e.CachedAt
+		}
+		if e.CachedAt.After(s.NewestCachedAt) {
+			s.NewestCachedAt = e.CachedAt
+		}
+	}
+	if info, err := os.Stat(c.path); err == nil {
+		s.FileSizeBytes = info.Size()
+	}
+	return s
+}
+
+// ClearAndSave wipes every entry and persists the result. Save() is
+// atomic on disk (tempfile + rename); Clear takes the data write-lock
+// then releases it before Save acquires its locks, so a Put landing
+// in the millisecond window between the two will be persisted. The
+// user-visible behaviour is "clear cache, with a tiny race for any
+// concurrent extraction in flight" — practically harmless because
+// the user clicks Clear when they want fresh data, and an in-flight
+// Put will land that fresh data anyway.
+//
+// Used by the "Clear DV cache" UI button. Returns the Save error so
+// the handler can surface "wiped in memory but couldn't write" to
+// the user (very rare — disk full / permissions).
+func (c *Cache) ClearAndSave() error {
+	if c == nil {
+		return errors.New("nil cache")
+	}
+	c.Clear()
+	return c.Save()
 }
 
 // Save writes the cache atomically: tempfile in the same directory

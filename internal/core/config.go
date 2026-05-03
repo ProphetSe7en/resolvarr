@@ -175,9 +175,11 @@ type VideoTagsConfig struct {
 //   - Audio/Video tags read Radarr's pre-computed mediaInfo
 //     (microseconds per file).
 //   - DV detail shells out to ffmpeg + dovi_tool to extract the RPU
-//     summary (1-3 seconds per file). Requires opt-in tools install,
-//     persists results to dv-cache.json, runs as its own scan action
-//     ("dvdetail") and lives in its own UI sub-section.
+//     summary. Per-file cost is fast on remux sources (tens of ms),
+//     but cumulative across hundreds of files plus fork+exec + I/O
+//     overhead is enough to want a cache. Requires opt-in tools
+//     install, persists results to dv-cache.json, runs as its own
+//     scan action ("dvdetail") and lives in its own UI sub-section.
 //
 // The vocabulary is a closed set of 5 values: "mel", "fel",
 // "dvprofile8", "cm2", "cm4" (canonical list lives in

@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.3.4-dev — Dolby Vision cache management (2026-05-03)
+
+> **Heads-up about the version jump:** v0.3.2 and v0.3.3 weren't published to a clean state — v0.3.1's content (then v0.3.1 again with the Activity→History rename) accidentally landed twice. v0.3.4 is the next clean monotone version. No content lost.
+
+### What you get
+
+- **DV detail cache panel** on Library scan → DV detail. See how many files are cached, how big the cache file is, and when the most recent extraction happened — at a glance.
+
+- **Clear DV cache** button. Wipes the cache so the next DV scan re-extracts every file from scratch. Useful when you upgrade `dovi_tool` and want fresh extraction with the new version. The confirm modal shows the exact entry count and size before you commit.
+
+- **Skip cache checkbox** in the DV detail Run controls. One-shot bypass — the next scan ignores the cache entirely (no read, no write). Default off (cache active). Resets to off after Apply so a destructive write doesn't silently inherit a Preview's bypass.
+
+- **Saved rules can pin "Skip DV cache"** via a checkbox in the wizard's DV step. A rule with this set always re-extracts on every fire, no matter what's in the cache. Useful for occasional refresh-extraction rules; less useful as a daily-cron default.
+
+- **Your DV tags in Radarr stay untouched** when you Clear cache or use Skip — only the cached extraction results are wiped or bypassed. Tags get re-applied on the next scan if files still match your bucket config.
+
+### Honest framing
+
+Per-file extraction is faster than this codebase used to claim. On modern remux sources, `ffmpeg` + `dovi_tool` finds the RPU SEI in the first GOP and exits in tens of milliseconds. The cache mostly saves cumulative fork/exec + I/O overhead across hundreds of files — turns "minutes" into "milliseconds" on rescan, not "hours" into "seconds". Still worth having at library scale, but the per-file speed difference is small.
+
+### Why you'd still want it
+
+- After a `dovi_tool` upgrade — a new version may detect different layer/CM-version semantics on the same file, but the cache will keep returning the old result. Use Clear (one-time) or tick Skip cache for a single fresh scan.
+- After re-encoding a file that kept the same Radarr movie file ID (rare — the size key normally catches this).
+- When debugging "why isn't this file showing the right DV detail" — clear the cache and re-run a scan to see fresh extraction output.
+
+### Internal
+
+- Two pre-existing dvdetect test failures (`TestStatus_NoBinaries` + `TestStatus_HappyPathViaVersionFn`) updated to match current behaviour — `Tools.Status` returns empty paths when binaries don't resolve, not legacy-path strings.
+
+---
+
 ## v0.3.1-dev — early-access feedback batch (2026-05-03)
 
 First round of polish based on feedback from the early testers.

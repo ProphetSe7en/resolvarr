@@ -24,9 +24,11 @@ import (
 // Distinct from scan_extra_tags.go because:
 //
 //   - extra-tags reads pre-computed mediaInfo (microseconds per movie).
-//     dv-detail shells out and decodes 100 video frames (1-3 seconds
-//     per movie). The cache + opt-in tools-install pattern only matters
-//     here.
+//     dv-detail shells out to ffmpeg + dovi_tool. Per-file cost is
+//     fast on remux sources (tens of ms once the RPU SEI is found in
+//     the first GOP), but the fork+exec + I/O overhead adds up across
+//     hundreds of files. The cache + opt-in tools-install pattern
+//     only matters here.
 //   - The base "dv" / "no-dv" / "hdr10" / etc. labels belong to the
 //     HDR bucket of extra-tags. dv-detail layers ONLY the additional
 //     profile/layer/cm tags on top — never re-emits the base.
@@ -236,13 +238,21 @@ func (s *Server) runDvDetail(parentCtx context.Context, cfg core.Config, inst *c
 
 		// Update progress before processing this candidate so the UI
 		// can show "currently extracting Movie Title (132/487)" while
-		// the slow ffmpeg+dovi_tool pipeline runs. Locked write —
+		// the ffmpeg+dovi_tool pipeline runs. Locked write —
 		// the progress endpoint reads the same struct under-lock.
 		s.dvScanMu.Lock()
 		st.CurrentTitle = item.Title
 		s.dvScanMu.Unlock()
 
 		// Cache lookup: (movieFileId, size). nil cache → always miss.
+		// req.BypassDvCache (per-scan checkbox in Run controls, or
+		// per-rule JobOptions.BypassDvCache for saved rules) skips
+		// both Get and Put — every file is re-extracted, nothing is
+		// memoised. For users who don't trust (movieFileId, size) as
+		// a sufficient cache key (e.g. re-encodes that produce
+		// coincidentally-identical sizes, or after a dovi_tool upgrade
+		// where they want a fresh extraction without using the Clear
+		// cache button).
 		var detail engine.DvDetail
 		var foundRPU bool
 		var status string
@@ -250,7 +260,12 @@ func (s *Server) runDvDetail(parentCtx context.Context, cfg core.Config, inst *c
 
 		movieFileID := item.MovieFile.ID
 		size := item.MovieFile.Size
-		if entry, hit := s.DvCache.Get(movieFileID, size); hit {
+		var hit bool
+		var entry dvdetect.Entry
+		if !req.BypassDvCache {
+			entry, hit = s.DvCache.Get(movieFileID, size)
+		}
+		if hit {
 			detail = entry.Detail
 			foundRPU = entry.Found
 			status = "cached"
@@ -260,7 +275,7 @@ func (s *Server) runDvDetail(parentCtx context.Context, cfg core.Config, inst *c
 			st.Processed++
 			s.dvScanMu.Unlock()
 		} else {
-			// Cache miss → translate path + run the slow pipeline.
+			// Cache miss → translate path + run the extraction pipeline.
 			containerPath := inst.TranslatePath(item.MovieFile.Path)
 			if containerPath == "" {
 				status = "failed"
@@ -290,13 +305,17 @@ func (s *Server) runDvDetail(parentCtx context.Context, cfg core.Config, inst *c
 					resp.Totals.DvExtractedNoRpu++
 					// Cache the negative result so we don't re-run
 					// the extraction every scan for the same file.
-					s.DvCache.Put(movieFileID, size, d, false)
+					if !req.BypassDvCache {
+						s.DvCache.Put(movieFileID, size, d, false)
+					}
 				default:
 					detail = d
 					foundRPU = true
 					status = "extracted"
 					resp.Totals.DvExtracted++
-					s.DvCache.Put(movieFileID, size, d, true)
+					if !req.BypassDvCache {
+						s.DvCache.Put(movieFileID, size, d, true)
+					}
 				}
 			}
 			// Slow-path candidate finished — bump processed regardless

@@ -263,6 +263,14 @@ function app() {
     // GET, no separate frontend release needed).
     dvDetailVocab: [],
     dvDetailRunMode: 'preview',
+    // Per-scan cache bypass — checkbox in DV detail Run controls.
+    // When true, this scan's request goes out with bypassDvCache=true
+    // and the scan handler skips both Cache.Get and Cache.Put. Resets
+    // to false in confirmDvDetailApply() so an Apply doesn't silently
+    // inherit a Preview's "skip cache" — but stays sticky between
+    // consecutive Previews so the user doesn't have to re-tick if they
+    // run multiple. Saved rules carry their own bypass via wizard.
+    dvBypassCache: false,
     // Tools state — populated by /api/tools/dv/status (resolves
     // ffmpeg + dovi_tool against $PATH; legacy /config/tools/ checked
     // first as fallback). Empty until first poll. The DV detail tab
@@ -294,6 +302,14 @@ function app() {
     ],
     // Apply-now confirmation modal flag for DV detail.
     showDvDetailApplyConfirm: false,
+    // DV cache panel state (Library scan → DV detail tab). dvCacheStats
+    // mirrors the GET /api/dv-cache/stats response shape: {entryCount,
+    // fileSizeBytes, oldestCachedAt, newestCachedAt}. Refreshed on tab
+    // landing + after a successful clear. clearingDvCache gates the
+    // button to prevent double-clicks during the DELETE round-trip.
+    dvCacheStats: null,
+    clearingDvCache: false,
+    showClearDvCacheConfirm: false,
     // Per-tag drill-down expansion state — shared across audio/video/dv
     // result panels. Keyed by tag label so multiple rows can be open
     // in parallel. Renamed from extraTagRowExpanded; same semantics.
@@ -866,6 +882,13 @@ function app() {
       }
       if (section === 'history') {
         this.loadScanHistory();
+      }
+      if (section === 'dvdetail') {
+        // Refresh cache stats on tab landing — covers schedule fires +
+        // QFA chains that populated entries while the user was on
+        // another tab. loadConfig fires this once on app boot, but
+        // background scans can happen any time after.
+        this.loadDvCacheStats();
       }
     },
 
@@ -1918,6 +1941,17 @@ function app() {
       }
     },
 
+    // formatBytes renders a byte count in B / KB / MB / GB with one
+    // decimal place. Used for the DV cache file-size display. KiB-style
+    // 1024-base for "what the OS reports" matches du/ls expectations.
+    formatBytes(n) {
+      if (n == null || isNaN(n)) return '0 B';
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+      return (n / 1024 / 1024 / 1024).toFixed(1) + ' GB';
+    },
+
     // dateFormatOptions builds the Intl.DateTimeFormat options object
     // shared by formatDate + scheduleNextFires + scheduleNextRun so
     // every timestamp in the UI honours the same Settings → Display
@@ -2277,6 +2311,7 @@ function app() {
         // Best-effort tools status — ignore errors so a 503 (DV not wired
         // in dev mode) doesn't trip the toast banner.
         try { await this.loadDvToolsStatus(); } catch (_) {}
+        try { await this.loadDvCacheStats(); } catch (_) {}
       } catch (e) {
         this.showToast('Load failed: ' + e.message, 'error');
       }
@@ -2408,8 +2443,54 @@ function app() {
     // aren't resolvable on $PATH; loadDvToolsStatus stays for that
     // banner check.
 
-    async runDvDetailScan(mode) {
+    // --- DV cache panel (Library scan → DV detail tab) ---
+    // GET /api/dv-cache/stats. Server returns zero-valued struct when
+    // DvCache is nil (defensive — shouldn't happen in normal deploys
+    // but covered). UI renders "No files cached yet" copy in that case.
+    async loadDvCacheStats() {
+      try {
+        const r = await this.apiFetch('/api/dv-cache/stats');
+        if (!r.ok) return;
+        this.dvCacheStats = await r.json();
+      } catch (_) {
+        // Silent — panel just shows the empty-state copy.
+      }
+    },
+    // Open the confirm modal. Stats are already loaded; if not, we
+    // still open the modal so the user can see "0 cached files" and
+    // the Clear button is naturally disabled.
+    openClearDvCacheConfirm() {
+      this.showClearDvCacheConfirm = true;
+    },
+    // Fire the DELETE. Server wipes in-memory + persists empty file
+    // and returns the post-clear stats so we don't need a follow-up
+    // GET. Toast on success/failure.
+    async confirmClearDvCache() {
+      if (this.clearingDvCache) return;
+      this.clearingDvCache = true;
+      try {
+        const r = await this.apiFetch('/api/dv-cache', { method: 'DELETE' });
+        if (!r.ok) {
+          let msg = 'HTTP ' + r.status;
+          try { msg = (await r.json()).error || msg; } catch (_) {}
+          throw new Error(msg);
+        }
+        this.dvCacheStats = await r.json();
+        this.showToast('DV cache cleared — next scan will re-extract from scratch', 'success');
+        this.showClearDvCacheConfirm = false;
+      } catch (e) {
+        this.showToast('Clear DV cache failed: ' + e.message, 'error');
+      } finally {
+        this.clearingDvCache = false;
+      }
+    },
+
+    async runDvDetailScan(mode, bypassOverride) {
       if (!this.scanInstanceId) return;
+      // bypassOverride lets confirmDvDetailApply pass the snapshot it
+      // captured before resetting dvBypassCache. Falsy → fall back to
+      // the live state (Preview path).
+      const bypassDvCache = bypassOverride !== undefined ? !!bypassOverride : !!this.dvBypassCache;
       this.scanLoading = true;
       this.scanResults.dvDetail = null;
       // Fresh scan supersedes any historical replay that was on screen.
@@ -2427,7 +2508,12 @@ function app() {
         const r = await this.apiFetch('/api/scan/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ instanceId: this.scanInstanceId, action: 'dvdetail', mode }),
+          body: JSON.stringify({
+            instanceId: this.scanInstanceId,
+            action: 'dvdetail',
+            mode,
+            bypassDvCache,
+          }),
         });
         if (!r.ok) {
           const err = await r.json().catch(() => ({}));
@@ -2452,6 +2538,10 @@ function app() {
         // No-op when they're elsewhere; the loadScanHistory tick on
         // History-tab landing will pick it up.
         if (this.scanSection === 'history') this.loadScanHistory();
+        // Refresh the cache panel — a cache-active scan populates new
+        // entries; a bypass scan changes nothing on disk but loadDvCacheStats
+        // is cheap enough to run regardless.
+        try { await this.loadDvCacheStats(); } catch (_) {}
       }
     },
 
@@ -2471,8 +2561,13 @@ function app() {
           // Silent — next tick will retry.
         }
       };
-      tick(); // immediate first poll so the UI doesn't sit blank for 1.2s
-      this._dvScanPollHandle = setInterval(tick, 1200);
+      tick(); // immediate first poll so the UI doesn't sit blank
+      // 400ms poll — fast enough that the progress bar visibly
+      // increments per file on remux sources (per-file extraction is
+      // tens of ms, so a 1200ms poll showed 20-file hops which looked
+      // broken). Cost: ~25 GET/sec during a scan that already takes
+      // ~10 seconds for a 200-file library — negligible.
+      this._dvScanPollHandle = setInterval(tick, 400);
     },
 
     stopDvScanPoll() {
@@ -2514,8 +2609,13 @@ function app() {
 
     async confirmDvDetailApply() {
       this.showDvDetailApplyConfirm = false;
+      // Reset Skip cache before Apply so a destructive write doesn't
+      // silently inherit a Preview's bypass setting. Snapshot first
+      // so the actual run uses whatever the user had ticked.
+      const bypass = !!this.dvBypassCache;
+      this.dvBypassCache = false;
       // runDvDetailScan handles its own scanLoading flag.
-      await this.runDvDetailScan('apply');
+      await this.runDvDetailScan('apply', bypass);
     },
 
     // --- Groups ---
@@ -5327,6 +5427,7 @@ function app() {
           recoverSonarrSecondary: false,
           recoverTestItemId: 0,
           debugTrace: false,
+          bypassDvCache: false,
         },
         filters:         this.snapshotGlobalFilters(),
         audioTags:       this.snapshotGlobalAudioTags(),
@@ -5399,6 +5500,7 @@ function app() {
           recoverSonarrSecondary: false,
           recoverTestItemId: 0,
           debugTrace: false,
+          bypassDvCache: false,
         },
         filters:         this.snapshotGlobalFilters(),
         audioTags:       this.snapshotGlobalAudioTags(),
@@ -5442,7 +5544,7 @@ function app() {
         includeDiscovery: false, autoActivateDiscovered: false,
         discoverWriteBack: false, discoverScanSecondary: false,
         recoverIncludeSecondary: false, recoverIncludeSonarr: false, recoverSonarrSecondary: false,
-        recoverTestItemId: 0, debugTrace: false,
+        recoverTestItemId: 0, debugTrace: false, bypassDvCache: false,
       }, copy.options || {});
       this.editingRule = copy;
       this.ruleEditor = { open: true, isCreate: false, isQuickFix: false, step: 0, activeTab: 'basics', busy: false, error: '', cronError: '', nextFires: [] };
@@ -6526,6 +6628,11 @@ function app() {
 
         const isDv = phase === 'dvdetail';
         if (isDv) {
+          // Per-rule cache bypass — wizard "Skip DV cache on every fire"
+          // checkbox lives on the DV step. Schedule runner does the same
+          // translation server-side from JobOptions.BypassDvCache; the
+          // QFA chain is the live-UI mirror of that path.
+          body.bypassDvCache = !!r.options.bypassDvCache;
           this.dvScanProgress = { running: true, total: 0, processed: 0, currentTitle: '' };
           this.startDvScanPoll();
         }

@@ -90,6 +90,15 @@ type scanRunRequest struct {
 	// must have Type matching the request's instance type; mismatched
 	// entries are dropped silently.
 	OverlayInjectGroups []core.ReleaseGroup `json:"overlayInjectGroups,omitempty"`
+
+	// BypassDvCache skips the on-disk DV cache for this scan only —
+	// every file goes through ffmpeg + dovi_tool fresh, no Get-on-hit
+	// short-circuit and no Put-on-success memoise. Library-scan UI
+	// surfaces this as a checkbox in the Run controls. Saved rules
+	// can pin it via JobOptions.BypassDvCache so a "fresh extraction
+	// every time" rule doesn't depend on user action. Default false
+	// (cache active — same behaviour as before this flag existed).
+	BypassDvCache bool `json:"bypassDvCache,omitempty"`
 }
 
 // scanDecision is the per-(movie, group) public shape returned in preview.

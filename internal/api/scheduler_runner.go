@@ -416,9 +416,10 @@ func (r *schedulerRunner) runVideoTagsSchedule(ctx context.Context, cfg core.Con
 // without committing tag writes).
 func (r *schedulerRunner) runDvDetailSchedule(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, job core.ScheduledJob) (core.RunSummary, error) {
 	req := scanRunRequest{
-		InstanceID: job.InstanceID,
-		Mode:       defaultMode(job.Options.RunMode, "apply"),
-		Action:     "dvdetail",
+		InstanceID:    job.InstanceID,
+		Mode:          defaultMode(job.Options.RunMode, "apply"),
+		Action:        "dvdetail",
+		BypassDvCache: job.Options.BypassDvCache,
 	}
 	resp, apiErr := r.server.runDvDetail(ctx, cfg, inst, appType, req)
 	r.server.auditScan("schedule:"+job.ID, "dvdetail", inst, req, resp, errMsgOf(apiErr))
@@ -656,9 +657,10 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 
 	if includeDvDetail && phaseErr == nil {
 		req := scanRunRequest{
-			InstanceID: job.InstanceID,
-			Mode:       defaultMode(job.Options.RunMode, "apply"),
-			Action:     "dvdetail",
+			InstanceID:    job.InstanceID,
+			Mode:          defaultMode(job.Options.RunMode, "apply"),
+			Action:        "dvdetail",
+			BypassDvCache: job.Options.BypassDvCache,
 		}
 		resp, apiErr := r.server.runDvDetail(ctx, cfg, inst, appType, req)
 		r.server.auditScan("schedule:"+job.ID, "dvdetail", inst, req, resp, errMsgOf(apiErr))

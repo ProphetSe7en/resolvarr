@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"resolvarr/internal/core/engine"
 )
@@ -301,6 +302,95 @@ func TestCache_NilSafe(t *testing.T) {
 	}
 	if err := c.Save(); err == nil {
 		t.Error("nil Save returned nil error")
+	}
+	// New methods used by the cache-clear UI must also be nil-safe.
+	if got := c.Stats(); got.EntryCount != 0 || got.FileSizeBytes != 0 {
+		t.Errorf("nil Stats = %+v, want zero value", got)
+	}
+	if err := c.ClearAndSave(); err == nil {
+		t.Error("nil ClearAndSave returned nil error")
+	}
+}
+
+func TestCache_StatsEmpty(t *testing.T) {
+	c, _ := LoadCache(t.TempDir())
+	s := c.Stats()
+	if s.EntryCount != 0 || s.FileSizeBytes != 0 {
+		t.Errorf("Stats on empty cache = %+v, want zero counts", s)
+	}
+	if !s.OldestCachedAt.IsZero() || !s.NewestCachedAt.IsZero() {
+		t.Error("Stats on empty cache returned non-zero timestamps")
+	}
+}
+
+func TestCache_StatsCountsAndTimestamps(t *testing.T) {
+	c, _ := LoadCache(t.TempDir())
+	// Sleep between Puts so CachedAt timestamps differ measurably.
+	// time.Now().UTC() resolution can collapse three back-to-back
+	// Puts into the same instant on Linux; without the sleep the
+	// Oldest != Newest assertion below would pass for the wrong
+	// reason (equality satisfies !After). 1ms is plenty for the
+	// time package's monotonic clock.
+	c.Put(1, 100, engine.DvDetail{Profile: 8}, true)
+	time.Sleep(time.Millisecond)
+	c.Put(2, 200, engine.DvDetail{Profile: 7}, false)
+	time.Sleep(time.Millisecond)
+	c.Put(3, 300, engine.DvDetail{Profile: 5}, true)
+	s := c.Stats()
+	if s.EntryCount != 3 {
+		t.Errorf("EntryCount = %d, want 3", s.EntryCount)
+	}
+	if s.OldestCachedAt.IsZero() || s.NewestCachedAt.IsZero() {
+		t.Error("Stats with entries returned zero timestamps")
+	}
+	if !s.OldestCachedAt.Before(s.NewestCachedAt) {
+		t.Errorf("OldestCachedAt %v not strictly before NewestCachedAt %v", s.OldestCachedAt, s.NewestCachedAt)
+	}
+	// File size is 0 — Save() hasn't been called.
+	if s.FileSizeBytes != 0 {
+		t.Errorf("FileSizeBytes = %d before Save, want 0", s.FileSizeBytes)
+	}
+}
+
+func TestCache_StatsFileSizeAfterSave(t *testing.T) {
+	dir := t.TempDir()
+	c, _ := LoadCache(dir)
+	c.Put(1, 100, engine.DvDetail{Profile: 8, Layer: "mel"}, true)
+	if err := c.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	s := c.Stats()
+	if s.FileSizeBytes <= 0 {
+		t.Errorf("FileSizeBytes = %d after Save, want > 0", s.FileSizeBytes)
+	}
+}
+
+func TestCache_ClearAndSavePersists(t *testing.T) {
+	dir := t.TempDir()
+	c, _ := LoadCache(dir)
+	c.Put(1, 100, engine.DvDetail{Profile: 8}, true)
+	c.Put(2, 200, engine.DvDetail{Profile: 7}, true)
+	if err := c.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// Sanity: file has content before clear.
+	if s := c.Stats(); s.FileSizeBytes == 0 {
+		t.Fatalf("FileSizeBytes = 0 before clear, want > 0")
+	}
+	if err := c.ClearAndSave(); err != nil {
+		t.Fatalf("ClearAndSave: %v", err)
+	}
+	// In-memory wiped.
+	if c.Len() != 0 {
+		t.Errorf("Len = %d after ClearAndSave, want 0", c.Len())
+	}
+	// On-disk file persists with empty entries — re-load proves it.
+	c2, err := LoadCache(dir)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if c2.Len() != 0 {
+		t.Errorf("re-loaded Len = %d, want 0", c2.Len())
 	}
 }
 

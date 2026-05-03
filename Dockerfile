@@ -1,6 +1,6 @@
 FROM golang:1.25-alpine AS builder
 
-ARG VERSION=0.3.1-dev
+ARG VERSION=0.3.4-dev
 
 RUN apk add --no-cache git
 
@@ -14,7 +14,7 @@ RUN go build -ldflags="-s -w -X main.Version=${VERSION}" -o resolvarr .
 
 FROM ghcr.io/prophetse7en/container-base:alpine-3.21
 
-ARG VERSION=0.3.1-dev
+ARG VERSION=0.3.4-dev
 LABEL org.opencontainers.image.version=${VERSION} \
       org.opencontainers.image.title="resolvarr" \
       org.opencontainers.image.description="Helper container for Radarr and Sonarr — release-group tagging, recovery, multi-instance sync, and scheduled scans" \
