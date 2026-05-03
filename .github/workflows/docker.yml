@@ -71,10 +71,15 @@ jobs:
       - name: Determine version
         id: version
         run: |
+          # Use the version baked into the Dockerfile (ARG VERSION=...)
+          # so user-visible "vX.Y.Z-dev" matches CHANGELOG / README. Append
+          # short SHA on main-pushes so testers can pin a bug to the exact
+          # build (visible in the UI header + Settings → About + startup log).
+          DOCKER_VERSION=$(grep '^ARG VERSION=' Dockerfile | head -1 | cut -d= -f2)
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             echo "value=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           else
-            echo "value=dev-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+            echo "value=${DOCKER_VERSION}+sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
           fi
 
       - name: Build and push
