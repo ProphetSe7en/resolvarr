@@ -1,0 +1,13 @@
+/* features.css — feature-specific styling. Atoms in components.css cover
+   most of the UI; this file is for things only one tab/feature uses.
+   When this file passes the structure-baseline §3 warn threshold (400
+   lines), split by feature: features/recover.css, features/extra-tags.css,
+   etc. */
+
+/* App-applicability badges — surface which Arr type a feature works with.
+   Used on placeholder cards so test users see at a glance whether something
+   is Radarr-only, Sonarr-only, or both. Three subtle colored pill variants. */
+.app-badge { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 8px; font-weight: 500; letter-spacing: 0.3px; white-space: nowrap; }
+.app-radarr { background: #1a3a1f; color: var(--accent-sky); }       /* Radarr — blue text on dark blue */
+.app-sonarr { background: #2a1a3d; color: #c9a3ff; }       /* Sonarr — purple text on dark purple */
+.app-both   { background: #1a2d3d; color: #79d6ff; }       /* Both — teal-ish */

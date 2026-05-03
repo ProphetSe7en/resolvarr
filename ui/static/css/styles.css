@@ -1,0 +1,8 @@
+/* tagarr stylesheet entry point. Single <link> in index.html points here;
+   the four imports below are layered per the structure-baseline §8.2:
+   base → layout → components → features. */
+@import url('./tokens.css');
+@import url('./base.css');
+@import url('./layout.css');
+@import url('./components.css');
+@import url('./features.css');

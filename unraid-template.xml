@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>resolvarr</Name>
+  <Repository>ghcr.io/prophetse7en/resolvarr:dev</Repository>
+  <Registry>https://github.com/prophetse7en/resolvarr/pkgs/container/resolvarr</Registry>
+  <Branch>
+    <Tag>dev</Tag>
+    <TagDescription>Development build (early access — may contain bugs or breaking changes between updates)</TagDescription>
+  </Branch>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/prophetse7en/resolvarr/issues</Support>
+  <Project>https://github.com/prophetse7en/resolvarr</Project>
+  <Overview>Helper container for Radarr and Sonarr. Tags releases by group, recovers missing release groups from grab history, discovers new groups in your library, mirrors tag decisions between instances, and runs scheduled scans through a web UI on port 6075.&#xD;
+&#xD;
+Optional Audio / Video / HDR / Dolby Vision detail tagging from the MediaInfo data Radarr/Sonarr already extract. Multi-agent notifications (Discord, Gotify, NTFY, Pushover, Apprise). Quick fix-all wizard chains multiple actions in one run.&#xD;
+&#xD;
+**Status — early access.** This image is published as `:dev` only while a small group of testers shake it down. Occasional breaking changes between dev builds are expected. A first stable `:latest` will land after a soak period. Listing in Community Apps will follow once `:latest` is published.</Overview>
+  <Category>MediaApp:Other</Category>
+  <WebUI>http://[IP]:[PORT:6075]</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/prophetse7en/resolvarr/main/unraid-template.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/prophetse7en/resolvarr/main/ui/static/icons/resolvarr.png</Icon>
+  <Date>2026-05-03</Date>
+  <Changes>
+### 2026-05-03
+- v0.3.0-dev: First public early-access build. Tag library, Discover, Recover, Cleanup, Multi-instance sync, Audio / Video / Dolby Vision detail tags, Quick fix-all wizard, Schedules with per-rule snapshots, Tag inventory drill-down + compare, Scan history viewer, multi-agent notifications (Discord / Gotify / NTFY / Pushover / Apprise), authentication with brute-force protection, mid-scan Cancel button for long Dolby Vision runs.
+  </Changes>
+  <ExtraParams/>
+  <PostArgs/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Radarr v3+ and/or Sonarr v3+ with API access. For Dolby Vision detail tagging only: read access to your media library (mounted into the container) and a Path Mapping configured under Settings → Instances so the container's view of the file path matches what Radarr/Sonarr report.</Requires>
+  <Config Name="WebUI" Target="6075" Default="6075" Mode="tcp" Description="Web UI port" Type="Port" Display="always" Required="true" Mask="false">6075</Config>
+  <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/resolvarr" Mode="rw" Description="Configuration, scan history logs, and schedule data" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/resolvarr</Config>
+  <Config Name="Media (read-only — only needed for Dolby Vision detail)" Target="/media" Default="" Mode="ro" Description="Optional: mount your media library here so resolvarr can read files for dovi_tool. Read-only is sufficient. Leave empty if you're not using Dolby Vision detail tagging. The mount path here must match a Path Mapping you configure under Settings → Instances inside the web UI." Type="Path" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="PUID" Target="PUID" Default="99" Description="User ID for file ownership" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Description="Group ID for file ownership" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="TZ" Target="TZ" Default="Europe/Oslo" Description="Container timezone (e.g. Europe/Oslo, America/New_York, UTC)" Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Oslo</Config>
+  <Config Name="ENABLE_DV_TOOLS" Target="ENABLE_DV_TOOLS" Default="" Description="Set to 'true' to install dovi_tool at container startup, enabling Dolby Vision detail tags (profile / layer / CM version). Adds ~50 MB to the runtime image and requires the Media volume above to be mounted. Leave empty if you don't need DV detail tagging." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="TRUSTED_NETWORKS" Target="TRUSTED_NETWORKS" Default="" Description="Optional: lock Trusted Networks at host level. Comma-separated IPs/CIDRs (e.g. 192.168.86.0/24, 10.66.0.0/24). When set, the field in the Security panel becomes read-only and can only be changed by editing this template and restarting. Leave empty to configure via the web UI. Loopback is always trusted regardless." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="TRUSTED_PROXIES" Target="TRUSTED_PROXIES" Default="" Description="Optional: lock Trusted Proxies at host level. Comma-separated reverse-proxy IPs (e.g. 172.17.0.1). Only needed when resolvarr sits behind SWAG, Authelia, Traefik, etc. When set, the field becomes read-only. Leave empty for direct access." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+</Container>

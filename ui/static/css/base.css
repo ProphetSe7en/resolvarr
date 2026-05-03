@@ -1,0 +1,16 @@
+/* base.css — reset + global type + body. Loaded first so component/feature
+   rules can override on top. Pure visuals, no layout primitives. */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { overflow-y: scroll; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+/* x-cloak suppresses Alpine-templated regions until the framework has
+   evaluated x-data — prevents a flash of curly-brace placeholders or
+   empty-state markup at page load. */
+[x-cloak] { display: none !important; }
