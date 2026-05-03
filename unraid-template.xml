@@ -21,7 +21,7 @@ Optional Audio / Video / HDR / Dolby Vision detail tagging from the MediaInfo da
   <WebUI>http://[IP]:[PORT:6075]</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/prophetse7en/resolvarr/main/unraid-template.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/prophetse7en/resolvarr/main/ui/static/icons/resolvarr.png</Icon>
-  <Date>2026-05-03</Date>
+  <Date>2026-05-04</Date>
   <Changes>
 ### 2026-05-03
 - v0.3.0-dev: First public early-access build. Tag library, Discover, Recover, Cleanup, Multi-instance sync, Audio / Video / Dolby Vision detail tags, Quick fix-all wizard, Schedules with per-rule snapshots, Tag inventory drill-down + compare, Scan history viewer, multi-agent notifications (Discord / Gotify / NTFY / Pushover / Apprise), authentication with brute-force protection, mid-scan Cancel button for long Dolby Vision runs.
@@ -37,7 +37,7 @@ Optional Audio / Video / HDR / Dolby Vision detail tagging from the MediaInfo da
   <Config Name="PUID" Target="PUID" Default="99" Description="User ID for file ownership" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Description="Group ID for file ownership" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
   <Config Name="TZ" Target="TZ" Default="Europe/Oslo" Description="Container timezone (e.g. Europe/Oslo, America/New_York, UTC)" Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Oslo</Config>
-  <Config Name="ENABLE_DV_TOOLS" Target="ENABLE_DV_TOOLS" Default="" Description="Set to 'true' to install dovi_tool at container startup, enabling Dolby Vision detail tags (profile / layer / CM version). Adds ~50 MB to the runtime image and requires the Media volume above to be mounted. Leave empty if you don't need DV detail tagging." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="ENABLE_DV_TOOLS" Target="ENABLE_DV_TOOLS" Default="false" Description="Set to 'true' to install ffmpeg + dovi_tool at container startup, enabling Dolby Vision detail tags (profile / layer / CM version). First start with the toggle on takes ~10-15 s longer while the static binaries download (~50 MB total). Requires the Media volume above to be mounted so the tools can read your files. Leave as 'false' if you're not using DV detail tagging." Type="Variable" Display="always" Required="false" Mask="false">false</Config>
   <Config Name="TRUSTED_NETWORKS" Target="TRUSTED_NETWORKS" Default="" Description="Optional: lock Trusted Networks at host level. Comma-separated IPs/CIDRs (e.g. 192.168.0.0/24, 10.0.0.0/24). When set, the field in the Security panel becomes read-only and can only be changed by editing this template and restarting. Leave empty to configure via the web UI. Loopback is always trusted regardless." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
   <Config Name="TRUSTED_PROXIES" Target="TRUSTED_PROXIES" Default="" Description="Optional: lock Trusted Proxies at host level. Comma-separated reverse-proxy IPs (e.g. 172.17.0.1). Only needed when resolvarr sits behind SWAG, Authelia, Traefik, etc. When set, the field becomes read-only. Leave empty for direct access." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
 </Container>
