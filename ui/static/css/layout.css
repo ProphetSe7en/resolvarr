@@ -7,6 +7,8 @@
 .topnav .logo { font-size: 18px; font-weight: 700; color: var(--accent-blue); margin-right: 32px; letter-spacing: -0.5px; }
 .topnav .version { font-size: 12px; color: var(--text-secondary); margin-left: -24px; margin-right: 32px; }
 .topnav .tabs { display: flex; gap: 0; height: 100%; }
+.topnav-action { background: transparent; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 5px 12px; color: var(--text-secondary); font-size: 13px; cursor: pointer; font-family: inherit; display: inline-flex; align-items: center; transition: all 0.15s; }
+.topnav-action:hover { color: var(--text-primary); border-color: var(--text-secondary); }
 .topnav .tab { padding: 0 20px; height: 100%; display: flex; align-items: center; color: var(--text-soft); cursor: pointer; border-bottom: 2px solid transparent; font-size: 15px; font-weight: 500; transition: all 0.15s; user-select: none; }
 .topnav .tab:hover { color: var(--text-primary); }
 .topnav .tab.active { color: var(--text-primary); border-bottom-color: var(--accent-blue); }

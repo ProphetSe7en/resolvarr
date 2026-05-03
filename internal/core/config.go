@@ -133,7 +133,8 @@ type TagBucket struct {
 	Enabled           bool     `json:"enabled"`
 	Prefix            string   `json:"prefix"`
 	SonarrAggregation string   `json:"sonarrAggregation,omitempty"` // "all-occurring" | "strict" | "highest"
-	AllowedValues     []string `json:"allowedValues,omitempty"`     // nil/empty = all
+	AllowedValues     []string `json:"allowedValues,omitempty"`     // nil/empty = all (when SelectMode != "select")
+	SelectMode        string   `json:"selectMode,omitempty"`        // "" or "all" (default — empty=all-allowed) | "select" (exact list, empty=tag nothing)
 }
 
 // AudioTagsConfig governs informative auto-tagging from the
@@ -198,7 +199,8 @@ type VideoTagsConfig struct {
 type DvDetailConfig struct {
 	Enabled            bool     `json:"enabled"`
 	Prefix             string   `json:"prefix,omitempty"`
-	AllowedValues      []string `json:"allowedValues,omitempty"`      // nil/empty = all 5 values allowed
+	AllowedValues      []string `json:"allowedValues,omitempty"`      // nil/empty = all 5 values allowed (when SelectMode != "select")
+	SelectMode         string   `json:"selectMode,omitempty"`         // "" or "all" (default) | "select" (exact list)
 	RemoveOrphanedTags bool     `json:"removeOrphanedTags,omitempty"` // off by default — opt-in destructive cleanup
 }
 
@@ -372,6 +374,7 @@ func DvDetailToEngine(c DvDetailConfig) engine.DvDetailConfig {
 		Enabled:       c.Enabled,
 		Prefix:        c.Prefix,
 		AllowedValues: append([]string(nil), c.AllowedValues...),
+		SelectMode:    c.SelectMode,
 	}
 }
 
@@ -386,6 +389,7 @@ func bucketToEngine(b TagBucket) engine.BucketConfig {
 		Prefix:            b.Prefix,
 		SonarrAggregation: parseAggregation(b.SonarrAggregation),
 		AllowedValues:     append([]string(nil), b.AllowedValues...),
+		SelectMode:        b.SelectMode,
 	}
 }
 

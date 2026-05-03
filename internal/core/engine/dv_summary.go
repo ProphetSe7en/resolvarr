@@ -180,17 +180,25 @@ func DvDetailVocabulary() []string {
 type DvDetailConfig struct {
 	Enabled       bool
 	Prefix        string
-	AllowedValues []string // nil/empty = all 5 vocab values allowed
+	AllowedValues []string // nil/empty = all 5 vocab values allowed (when SelectMode != "select")
+	SelectMode    string   // "" or "all" (default — empty=all-allowed) | "select" (exact list, empty=tag nothing)
 }
 
-// allowedValuesSet builds a lookup set, treating nil/empty as
-// "everything allowed" (returns nil to signal that downstream).
-// Centralised so AllPossible / Emittable / EmitForFile share
-// identical semantics — drift here would surface as inconsistent
-// cleanup behaviour.
-func dvDetailAllowedValuesSet(allowed []string) map[string]bool {
+// allowedValuesSet builds a lookup set with two-mode semantics:
+//   - SelectMode != "select": back-compat. Nil/empty list returns nil
+//     (downstream interprets nil as "everything allowed").
+//   - SelectMode == "select": exact. Empty list returns an empty set
+//     (downstream filters everything out — explicit "tag nothing").
+//
+// Centralised so AllPossible / Emittable / EmitForFile share identical
+// semantics — drift here would surface as inconsistent cleanup
+// behaviour.
+func dvDetailAllowedValuesSet(allowed []string, selectMode string) map[string]bool {
 	if len(allowed) == 0 {
-		return nil
+		if selectMode == "select" {
+			return map[string]bool{} // explicit empty
+		}
+		return nil // legacy: empty == all
 	}
 	out := make(map[string]bool, len(allowed))
 	for _, v := range allowed {
@@ -238,7 +246,7 @@ func EmittableDvDetailTags(cfg DvDetailConfig) map[string]string {
 	if !cfg.Enabled {
 		return map[string]string{}
 	}
-	allowed := dvDetailAllowedValuesSet(cfg.AllowedValues)
+	allowed := dvDetailAllowedValuesSet(cfg.AllowedValues, cfg.SelectMode)
 	out := make(map[string]string, len(vocabDvDetail))
 	for _, v := range vocabDvDetail {
 		if allowed != nil && !allowed[v] {
@@ -282,7 +290,7 @@ func EmitDvDetailTags(detail DvDetail, cfg DvDetailConfig) []string {
 	if len(bare) == 0 {
 		return nil
 	}
-	allowed := dvDetailAllowedValuesSet(cfg.AllowedValues)
+	allowed := dvDetailAllowedValuesSet(cfg.AllowedValues, cfg.SelectMode)
 	out := make([]string, 0, len(bare))
 	for _, v := range bare {
 		if allowed != nil && !allowed[v] {

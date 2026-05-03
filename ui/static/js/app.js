@@ -213,7 +213,7 @@ function app() {
     // "everything you'd say about the audio stream". Per-section
     // RemoveOrphanedTags applies only to audio labels.
     audioTags: {
-      audio: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [] },
+      audio: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '' },
       removeOrphanedTags: false,
     },
     // Audio vocab — three sub-categories. UI renders separate checkbox
@@ -236,9 +236,9 @@ function app() {
     // category. Base "dv" tag emits from HDR bucket here; DV detail
     // (mel/fel/etc) lives separately in cfg.dvDetail.
     videoTags: {
-      resolution: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [] },
-      codec:      { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [] },
-      hdr:        { enabled: false, prefix: '', sonarrAggregation: 'strict',        allowedValues: [] },
+      resolution: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '' },
+      codec:      { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '' },
+      hdr:        { enabled: false, prefix: '', sonarrAggregation: 'strict',        allowedValues: [], selectMode: '' },
       removeOrphanedTags: false,
     },
     videoVocab: {
@@ -256,7 +256,7 @@ function app() {
     // + run-mode + state. The base "dv" tag still belongs to Extra
     // tags' HDR bucket — this only adds the detail layer
     // (mel/fel/dvprofile8/cm2/cm4).
-    dvDetail: { enabled: false, prefix: '', allowedValues: [], removeOrphanedTags: false },
+    dvDetail: { enabled: false, prefix: '', allowedValues: [], selectMode: '', removeOrphanedTags: false },
     // Vocabulary fetched from /api/dv-detail (engine.DvDetailVocabulary
     // is the source of truth — frontend doesn't hardcode the list so
     // a future engine vocab change ships to the UI on the next config
@@ -2279,6 +2279,7 @@ function app() {
           this.dvDetail.enabled = !!data.config.enabled;
           this.dvDetail.prefix = data.config.prefix || '';
           this.dvDetail.allowedValues = Array.isArray(data.config.allowedValues) ? data.config.allowedValues : [];
+          this.dvDetail.selectMode = data.config.selectMode || '';
           this.dvDetail.removeOrphanedTags = !!data.config.removeOrphanedTags;
         }
         if (Array.isArray(data && data.vocabulary)) {
@@ -2317,31 +2318,48 @@ function app() {
       }
     },
 
-    // toggleDvDetailValue mirrors toggleExtraTagValue — flips the
-    // membership of `value` in dvDetail.allowedValues, then saves.
-    // Empty allowedValues = "all 5 allowed" (engine default). When the
-    // user explicitly unchecks every box we keep the empty array so the
-    // engine emits nothing, matching the user's intent.
+    // toggleDvDetailValue uses the same two-mode semantics as the audio
+    // and video bucket toggles — see audioTagValueChecked for the full
+    // SelectMode rationale. Default mode treats empty=all; first per-
+    // value click switches to "select" mode using the full vocab as
+    // baseline so the unchecked one disappears as expected.
     toggleDvDetailValue(value) {
+      const fullVocab = [...this.dvDetailVocab];
+      if (this.dvDetail.selectMode !== 'select') {
+        if (!this.dvDetail.allowedValues || this.dvDetail.allowedValues.length === 0) {
+          this.dvDetail.allowedValues = [...fullVocab];
+        }
+        this.dvDetail.selectMode = 'select';
+      }
       const av = this.dvDetail.allowedValues || [];
       const idx = av.indexOf(value);
-      if (idx >= 0) {
-        av.splice(idx, 1);
-      } else {
-        av.push(value);
-      }
-      // Keep canonical vocab order so the persisted shape doesn't depend
-      // on click order.
+      if (idx >= 0) av.splice(idx, 1);
+      else          av.push(value);
       const order = (v) => this.dvDetailVocab.indexOf(v);
       av.sort((a, b) => order(a) - order(b));
-      this.dvDetail.allowedValues = av;
+      if (av.length === fullVocab.length && fullVocab.every(v => av.includes(v))) {
+        this.dvDetail.selectMode = '';
+        this.dvDetail.allowedValues = [];
+      } else {
+        this.dvDetail.allowedValues = av;
+      }
+      this.saveDvDetail();
+    },
+    selectAllDvDetailValues() {
+      this.dvDetail.selectMode = '';
+      this.dvDetail.allowedValues = [];
+      this.saveDvDetail();
+    },
+    selectNoneDvDetailValues() {
+      this.dvDetail.selectMode = 'select';
+      this.dvDetail.allowedValues = [];
       this.saveDvDetail();
     },
 
     isDvDetailValueAllowed(value) {
       const av = this.dvDetail.allowedValues || [];
-      // Empty allowedValues = all allowed (engine default).
-      return av.length === 0 || av.includes(value);
+      if (this.dvDetail.selectMode !== 'select' && av.length === 0) return true;
+      return av.includes(value);
     },
 
     async loadDvToolsStatus() {
@@ -2910,26 +2928,52 @@ function app() {
       const p = (this.audioTags.audio && this.audioTags.audio.prefix) || '';
       return !this.autoTagPrefixRule.test(p);
     },
+    // Two-mode semantics (SelectMode):
+    //   "" / "all" (default) → empty allowedValues means "all allowed".
+    //                          Tick state: empty list shows everything checked.
+    //   "select"             → exact list. Empty means "tag nothing".
+    //                          Tick state: explicit per-value checks.
+    // Matches engine.BucketConfig.allowed() — see Go side for the truth-source.
     audioTagValueChecked(value) {
-      const av = this.audioTags.audio.allowedValues;
-      if (!av || av.length === 0) return true;
-      return av.includes(value);
+      const b = this.audioTags.audio;
+      const av = b.allowedValues;
+      if (b.selectMode !== 'select' && (!av || av.length === 0)) return true;
+      return !!av && av.includes(value);
     },
     toggleAudioTagValue(value, fullVocab) {
       const bucket = this.audioTags.audio;
+      // First per-value click in legacy "all-allowed" mode flips the bucket
+      // into explicit-select mode using fullVocab as the starting set, then
+      // toggles the clicked value off. Subsequent clicks are pure add/remove.
+      if (bucket.selectMode !== 'select') {
+        if (!bucket.allowedValues || bucket.allowedValues.length === 0) {
+          bucket.allowedValues = [...fullVocab];
+        }
+        bucket.selectMode = 'select';
+      }
       let av = bucket.allowedValues || [];
-      if (av.length === 0) av = [...fullVocab];
       if (av.includes(value)) av = av.filter(v => v !== value);
       else                    av = [...av, value];
-      if (av.length === 0) {
-        bucket.enabled = false;
+      // If user re-checked back to the full set, normalise to "all" mode so
+      // future vocab additions automatically apply.
+      if (av.length === fullVocab.length && fullVocab.every(v => av.includes(v))) {
+        bucket.selectMode = '';
         bucket.allowedValues = [];
-        this.showToast('Audio bucket disabled — no values were left allowed', 'info');
-        this.saveAudioTags();
-        return;
+      } else {
+        bucket.allowedValues = av;
       }
-      const normalised = av.length === fullVocab.length && fullVocab.every(v => av.includes(v));
-      bucket.allowedValues = normalised ? [] : av;
+      this.saveAudioTags();
+    },
+    selectAllAudioValues() {
+      const bucket = this.audioTags.audio;
+      bucket.selectMode = '';
+      bucket.allowedValues = [];
+      this.saveAudioTags();
+    },
+    selectNoneAudioValues() {
+      const bucket = this.audioTags.audio;
+      bucket.selectMode = 'select';
+      bucket.allowedValues = [];
       this.saveAudioTags();
     },
     // Combined audio vocabulary across the three sub-categories — used
@@ -2951,6 +2995,7 @@ function app() {
           dst.prefix = src.prefix || '';
           dst.sonarrAggregation = src.sonarrAggregation || 'all-occurring';
           dst.allowedValues = Array.isArray(src.allowedValues) ? src.allowedValues : [];
+          dst.selectMode = src.selectMode || '';
           this.audioTags.removeOrphanedTags = !!data.config.removeOrphanedTags;
         }
         if (Array.isArray(data && data.audioCodecs))   this.audioVocab.codecs   = data.audioCodecs;
@@ -3061,26 +3106,44 @@ function app() {
     anyVideoTagPrefixInvalid() {
       return ['resolution', 'codec', 'hdr'].some(b => this.videoTagPrefixInvalid(b));
     },
+    // Same two-mode select semantics as audioTagValueChecked — see
+    // that helper's header comment for the full SelectMode rationale.
     videoTagValueChecked(bucketKey, value) {
-      const av = this.videoTags[bucketKey] && this.videoTags[bucketKey].allowedValues;
-      if (!av || av.length === 0) return true;
-      return av.includes(value);
+      const b = this.videoTags[bucketKey];
+      if (!b) return true;
+      const av = b.allowedValues;
+      if (b.selectMode !== 'select' && (!av || av.length === 0)) return true;
+      return !!av && av.includes(value);
     },
     toggleVideoTagValue(bucketKey, value, fullVocab) {
       const bucket = this.videoTags[bucketKey];
+      if (bucket.selectMode !== 'select') {
+        if (!bucket.allowedValues || bucket.allowedValues.length === 0) {
+          bucket.allowedValues = [...fullVocab];
+        }
+        bucket.selectMode = 'select';
+      }
       let av = bucket.allowedValues || [];
-      if (av.length === 0) av = [...fullVocab];
       if (av.includes(value)) av = av.filter(v => v !== value);
       else                    av = [...av, value];
-      if (av.length === 0) {
-        bucket.enabled = false;
+      if (av.length === fullVocab.length && fullVocab.every(v => av.includes(v))) {
+        bucket.selectMode = '';
         bucket.allowedValues = [];
-        this.showToast(bucketKey + ' bucket disabled — no values were left allowed', 'info');
-        this.saveVideoTags();
-        return;
+      } else {
+        bucket.allowedValues = av;
       }
-      const normalised = av.length === fullVocab.length && fullVocab.every(v => av.includes(v));
-      bucket.allowedValues = normalised ? [] : av;
+      this.saveVideoTags();
+    },
+    selectAllVideoValues(bucketKey) {
+      const bucket = this.videoTags[bucketKey];
+      bucket.selectMode = '';
+      bucket.allowedValues = [];
+      this.saveVideoTags();
+    },
+    selectNoneVideoValues(bucketKey) {
+      const bucket = this.videoTags[bucketKey];
+      bucket.selectMode = 'select';
+      bucket.allowedValues = [];
       this.saveVideoTags();
     },
 
@@ -3096,6 +3159,7 @@ function app() {
             dst.prefix = src.prefix || '';
             dst.sonarrAggregation = src.sonarrAggregation || dst.sonarrAggregation;
             dst.allowedValues = Array.isArray(src.allowedValues) ? src.allowedValues : [];
+            dst.selectMode = src.selectMode || '';
           };
           merge(this.videoTags.resolution, data.config.resolution);
           merge(this.videoTags.codec,      data.config.codec);
@@ -3679,6 +3743,19 @@ function app() {
       } finally {
         this.pwChangeSaving = false;
       }
+    },
+
+    // POST /logout — invalidates this browser's session cookie and
+    // redirects to /login. Other sessions stay active. Best-effort:
+    // even if the POST fails (network blip), we still nuke the cookie
+    // client-side via redirect so the user isn't stuck on a stale page.
+    async logout() {
+      try {
+        await this.apiFetch('/logout', { method: 'POST' });
+      } catch (_) {
+        // Ignore — we redirect regardless.
+      }
+      window.location.href = '/login';
     },
 
     // ============ Notification agents (multi-provider) ============
@@ -5159,15 +5236,15 @@ function app() {
     },
     defaultRuleAudioTags() {
       return {
-        audio: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [] },
+        audio: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '' },
         removeOrphanedTags: false,
       };
     },
     defaultRuleVideoTags() {
       return {
-        resolution: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [] },
-        codec:      { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [] },
-        hdr:        { enabled: false, prefix: '', sonarrAggregation: 'strict',         allowedValues: [] },
+        resolution: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '' },
+        codec:      { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '' },
+        hdr:        { enabled: false, prefix: '', sonarrAggregation: 'strict',         allowedValues: [], selectMode: '' },
         removeOrphanedTags: false,
       };
     },

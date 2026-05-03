@@ -32,27 +32,22 @@ if [ "${ENABLE_DV_TOOLS:-false}" = "true" ]; then
     echo "[entrypoint] ENABLE_DV_TOOLS=true — preparing Dolby Vision tools"
 
     # ----- ffmpeg -----
+    # We tried BtbN's static builds first (smaller footprint, fewer
+    # transitive deps) but they're glibc-linked and Alpine is musl —
+    # the binary downloads fine but won't execute (missing
+    # /lib64/ld-linux-x86-64.so.2). Alpine's apk-built ffmpeg is musl-
+    # native and Just Works, so we use that. The cost is the kitchen-
+    # sink dependency tree (~111 packages: libplacebo, vulkan, libpulse,
+    # AV1/VP9/Theora encoders, etc) — none of which we touch, but
+    # Alpine's package model only ships ffmpeg as a single bundle.
     if command -v ffmpeg >/dev/null 2>&1; then
         echo "[entrypoint] ffmpeg already present at $(command -v ffmpeg) — skipping install"
     else
-        case "$(uname -m)" in
-            x86_64)  FFMPEG_ARCH="linux64" ;;
-            aarch64) FFMPEG_ARCH="linuxarm64" ;;
-            *)       FFMPEG_ARCH="" ;;
-        esac
-        if [ -z "$FFMPEG_ARCH" ]; then
-            echo "[entrypoint] WARNING: ffmpeg unsupported arch $(uname -m) — DV detail will not run"
+        echo "[entrypoint] installing ffmpeg via apk (musl-native; ~129 MB with deps)"
+        if apk add --no-cache ffmpeg >/dev/null 2>&1; then
+            echo "[entrypoint] ffmpeg installed → $(ffmpeg -version 2>/dev/null | head -1)"
         else
-            echo "[entrypoint] downloading static ffmpeg (BtbN ${FFMPEG_ARCH}, ~40 MB)"
-            url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-${FFMPEG_ARCH}-gpl.tar.xz"
-            # Strip the version-prefixed top dir + the bin/ subdir, keep just the
-            # ffmpeg binary. We don't need ffprobe / ffplay / docs.
-            if wget -qO- "$url" | tar -xJ --wildcards --strip-components=2 -C /usr/local/bin/ '*/bin/ffmpeg' 2>/dev/null; then
-                chmod +x /usr/local/bin/ffmpeg 2>/dev/null
-                echo "[entrypoint] ffmpeg installed → $(/usr/local/bin/ffmpeg -version 2>/dev/null | head -1)"
-            else
-                echo "[entrypoint] WARNING: ffmpeg download/extract failed — DV detail will not run"
-            fi
+            echo "[entrypoint] WARNING: apk add ffmpeg failed — DV detail will not run"
         fi
     fi
 

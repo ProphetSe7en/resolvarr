@@ -65,15 +65,27 @@ type BucketConfig struct {
 	Prefix            string
 	SonarrAggregation AggregationStrategy
 	AllowedValues     []string
+	// SelectMode disambiguates an empty AllowedValues list:
+	//   ""       (or "all")    — empty means "all allowed" (legacy default,
+	//                            backward-compatible with configs predating
+	//                            the explicit-none toggle)
+	//   "select"               — the AllowedValues list is exact: empty
+	//                            means "tag nothing from this bucket"
+	// Lets the UI offer a Select-none button without disabling the bucket
+	// outright (the prior workaround) — empty + select-mode is a valid
+	// "tag nothing yet, but bucket stays on" state.
+	SelectMode string
 }
 
 // allowed returns true when value passes the bucket's per-value filter.
-// An empty/nil AllowedValues means "all allowed" (back-compat with
-// pre-filter configs); a non-empty slice means "only these listed
-// values pass". Linear scan is fine — typical bucket vocabulary is 5-12
-// entries.
+// Two modes:
+//   - SelectMode != "select": back-compat. Empty/nil AllowedValues means
+//     "all allowed"; a non-empty slice means "only these listed values pass".
+//   - SelectMode == "select": exact list. Empty list means "tag nothing".
+//
+// Linear scan is fine — typical bucket vocabulary is 5-12 entries.
 func (b BucketConfig) allowed(value string) bool {
-	if len(b.AllowedValues) == 0 {
+	if b.SelectMode != "select" && len(b.AllowedValues) == 0 {
 		return true
 	}
 	for _, v := range b.AllowedValues {

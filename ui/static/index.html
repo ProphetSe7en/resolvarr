@@ -40,6 +40,15 @@
       <div class="tab" :class="currentPage === 'webhooks' && 'active'" @click="setCurrentPage('webhooks')" style="opacity:0.7" title="Coming with the webhook half — Radarr Connect receiver">Webhooks <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:500">soon</span></div>
       <div class="tab" :class="currentPage === 'settings' && 'active'" @click="setCurrentPage('settings')">Settings</div>
     </div>
+    <!-- Right-side area: logout. Pushed to far right via margin-left:auto.
+         Only shown when authenticated; handleLogout POSTs /logout then
+         redirects to /login. -->
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+      <button class="topnav-action" @click="logout()" title="Sign out of resolvarr — your other sessions stay active">
+        <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14" style="vertical-align:-2px;margin-right:4px"><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M6.5 3.5h-3v9h3 M11 8H6 M9 5.5L11.5 8L9 10.5"/></svg>
+        Logout
+      </button>
+    </div>
   </div>
 
   <!-- ============ SETTINGS PAGE ============ -->
@@ -3240,9 +3249,18 @@
 
             <!-- Three sub-categories rendered as separate checkbox groups
                  for visual clarity, but they share the single Audio
-                 bucket toggle + AllowedValues. -->
-            <div style="font-size:13px;color:var(--text-body);margin-bottom:8px">Tags to emit
-              <span style="color:var(--text-secondary)">— uncheck any you don't want:</span>
+                 bucket toggle + AllowedValues. The Select all / Select
+                 none buttons act on AllowedValues + the SelectMode flag
+                 without touching the master Enable toggle — saves a lot
+                 of clicking when the user wants only one or two flags. -->
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+              <div style="font-size:13px;color:var(--text-body)">Tags to emit
+                <span style="color:var(--text-secondary)">— uncheck any you don't want:</span>
+              </div>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn-sm" :disabled="!audioTags.audio.enabled" @click="selectAllAudioValues()" title="Check every value in every group below — bucket stays enabled">Select all</button>
+                <button class="btn btn-sm" :disabled="!audioTags.audio.enabled" @click="selectNoneAudioValues()" title="Uncheck every value — bucket stays enabled but emits nothing until you tick something">Select none</button>
+              </div>
             </div>
 
             <div style="display:flex;flex-direction:column;gap:10px">
@@ -3324,9 +3342,12 @@
                           x-text="scanResults.audioTags.mode === 'apply' ? 'Applied' : 'Preview'"></span>
                     <span style="font-size:14px;font-weight:600;color:var(--text-primary)">Audio tags results</span>
                   </div>
-                  <button class="icon-btn" @click="dismissAudioTagsResults()" title="Dismiss">
-                    <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10 M13 3L3 13"/></svg>
-                  </button>
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <button class="btn btn-sm" @click="viewPhaseDetails({phase: 'audiotags', response: scanResults.audioTags})" title="See per-movie + per-tag details with action filter chips">View per-movie details</button>
+                    <button class="icon-btn" @click="dismissAudioTagsResults()" title="Dismiss">
+                      <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10 M13 3L3 13"/></svg>
+                    </button>
+                  </div>
                 </div>
                 <div style="padding:10px 16px">
                   <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px">
@@ -3452,6 +3473,13 @@
                          style="width:160px;padding:5px 9px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page);color:var(--text-body);font-size:13px">
                 </label>
               </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+                <div style="font-size:12px;color:var(--text-secondary)">Tags to emit — uncheck any you don't want:</div>
+                <div style="display:flex;gap:6px">
+                  <button class="btn btn-sm" :disabled="!videoTags[bucketKey].enabled" @click="selectAllVideoValues(bucketKey)" title="Check every value — bucket stays enabled">Select all</button>
+                  <button class="btn btn-sm" :disabled="!videoTags[bucketKey].enabled" @click="selectNoneVideoValues(bucketKey)" title="Uncheck every value — bucket stays enabled but emits nothing until you tick something">Select none</button>
+                </div>
+              </div>
               <div :class="!videoTags[bucketKey].enabled ? 'is-disabled' : ''" style="display:flex;gap:8px;flex-wrap:wrap">
                 <template x-for="v in videoVocab[bucketKey]" :key="v">
                   <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;padding:4px 9px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page)">
@@ -3492,9 +3520,12 @@
                           x-text="scanResults.videoTags.mode === 'apply' ? 'Applied' : 'Preview'"></span>
                     <span style="font-size:14px;font-weight:600;color:var(--text-primary)">Video tags results</span>
                   </div>
-                  <button class="icon-btn" @click="dismissVideoTagsResults()" title="Dismiss">
-                    <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10 M13 3L3 13"/></svg>
-                  </button>
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <button class="btn btn-sm" @click="viewPhaseDetails({phase: 'videotags', response: scanResults.videoTags})" title="See per-movie + per-tag details with action filter chips">View per-movie details</button>
+                    <button class="icon-btn" @click="dismissVideoTagsResults()" title="Dismiss">
+                      <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10 M13 3L3 13"/></svg>
+                    </button>
+                  </div>
                 </div>
                 <div style="padding:10px 16px">
                   <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px">
@@ -3621,11 +3652,12 @@
               <div style="font-size:13px;color:var(--text-body);line-height:1.5">
                 <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
                   <span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;background:var(--alpha-orange);color:var(--accent-orange)">Tools required</span>
-                  <strong style="color:var(--text-primary)">DV detail isn't enabled in this container</strong>
+                  <strong style="color:var(--text-primary)">Dolby Vision tools aren't installed yet</strong>
                 </div>
-                <p style="margin:0 0 8px 0">DV detail tagging needs <code>ffmpeg</code> + <code>dovi_tool</code>. They're opt-in to keep the base image lean — set the container variable below to install them automatically on next start, then restart the container.</p>
+                <p style="margin:0 0 8px 0">DV detail tagging needs <code>ffmpeg</code> + <code>dovi_tool</code>. They're opt-in to keep the base image lean. Setting the container variable below to <code>true</code> installs them automatically on the next container start.</p>
                 <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:6px;padding:8px 12px;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:12px;color:var(--accent-sky)">ENABLE_DV_TOOLS=true</div>
-                <p style="margin:8px 0 0 0;font-size:12px;color:var(--text-secondary)"><strong>Unraid:</strong> edit the container, click <em>Add another Path, Port, Variable</em>, pick <em>Variable</em>, name and key both <code>ENABLE_DV_TOOLS</code>, value <code>true</code>. Apply restarts the container which runs the install. <strong>Plain Docker:</strong> add <code>-e ENABLE_DV_TOOLS=true</code> to your <code>docker run</code> / Compose file. Roughly 30 seconds extra on first start while it downloads (~30 MB ffmpeg + ~10 MB dovi_tool); subsequent starts skip the install since the binaries are already there.</p>
+                <p style="margin:8px 0 0 0;font-size:12px;color:var(--text-secondary)"><strong>Unraid:</strong> edit the resolvarr container in the Docker tab. The <code>ENABLE_DV_TOOLS</code> variable is in the form (recent template versions ship it as a dropdown — pick <code>true</code>). Click <strong>Apply</strong> — Unraid restarts the container which runs the install. <strong>Plain Docker:</strong> add <code>-e ENABLE_DV_TOOLS=true</code> to your <code>docker run</code> command or compose file. First start takes ~10-15 s extra while a static <code>ffmpeg</code> (~40 MB) + <code>dovi_tool</code> (~10 MB) download; subsequent starts skip the install. Watch <code>docker logs resolvarr</code> after restart — the entrypoint logs every step.</p>
+                <p style="margin:8px 0 0 0;font-size:12px;color:var(--text-secondary)"><strong>Older template?</strong> If your <code>ENABLE_DV_TOOLS</code> variable is missing or hidden under <em>Show advanced settings</em>, refresh the template by re-running the install <code>curl</code> from the README — it overwrites the local file with the latest. Existing settings are preserved.</p>
               </div>
             </template>
             <template x-if="dvTools.installed">
@@ -3653,8 +3685,14 @@
                        style="width:160px;padding:5px 9px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page);color:var(--text-body);font-size:13px">
               </label>
             </div>
-            <div style="font-size:13px;color:var(--text-body);margin-bottom:8px">Tags to emit
-              <span style="color:var(--text-secondary)">— uncheck any you don't want:</span>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+              <div style="font-size:13px;color:var(--text-body)">Tags to emit
+                <span style="color:var(--text-secondary)">— uncheck any you don't want:</span>
+              </div>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn-sm" :disabled="!dvDetail.enabled" @click="selectAllDvDetailValues()" title="Check every DV-detail tag — bucket stays enabled">Select all</button>
+                <button class="btn btn-sm" :disabled="!dvDetail.enabled" @click="selectNoneDvDetailValues()" title="Uncheck every DV-detail tag — bucket stays enabled but emits nothing until you tick something">Select none</button>
+              </div>
             </div>
             <div style="display:flex;gap:14px;flex-wrap:wrap">
               <template x-for="v in dvDetailVocab" :key="v">
@@ -5111,7 +5149,7 @@
       <div class="modal-title" x-text="instForm.id ? 'Edit Instance' : 'Add Instance'"></div>
       <div class="form-group">
         <label>Name</label>
-        <input class="input" x-model="instForm.name" placeholder="e.g. Radarr HD">
+        <input class="input" x-model="instForm.name" :placeholder="instForm.type === 'sonarr' ? 'e.g. Sonarr HD' : 'e.g. Radarr HD'">
       </div>
       <div class="form-group">
         <label>Type</label>
@@ -5133,7 +5171,7 @@
       </div>
       <div class="form-group">
         <label>URL</label>
-        <input class="input" x-model="instForm.url" placeholder="http://192.168.1.50:7878">
+        <input class="input" x-model="instForm.url" :placeholder="instForm.type === 'sonarr' ? 'http://192.168.1.50:8989' : 'http://192.168.1.50:7878'">
       </div>
       <div class="form-group">
         <label>API Key</label>
