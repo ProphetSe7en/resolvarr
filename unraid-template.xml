@@ -30,7 +30,7 @@ Optional Audio / Video / HDR / Dolby Vision detail tagging from the MediaInfo da
   <PostArgs/>
   <DonateText/>
   <DonateLink/>
-  <Requires>Radarr v3+ and/or Sonarr v3+ with API access. For Dolby Vision detail tagging only: read access to your media library (mounted into the container) and a Path Mapping configured under Settings → Instances so the container's view of the file path matches what Radarr/Sonarr report.</Requires>
+  <Requires>Sonarr 4+ and/or Radarr 5+ (Radarr 6 supported) with API access. For Dolby Vision detail tagging only: read access to your media library (mounted into the container) and a Path Mapping configured under Settings → Instances so the container's view of the file path matches what Radarr/Sonarr report.</Requires>
   <Config Name="WebUI" Target="6075" Default="6075" Mode="tcp" Description="Web UI port" Type="Port" Display="always" Required="true" Mask="false">6075</Config>
   <Config Name="Config Path" Target="/config" Default="/mnt/user/appdata/resolvarr" Mode="rw" Description="Configuration, scan history logs, and schedule data" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/resolvarr</Config>
   <Config Name="Media (read-only — only needed for Dolby Vision detail)" Target="/media" Default="" Mode="ro" Description="Optional: mount your media library here so resolvarr can read files for dovi_tool. Read-only is sufficient. Leave empty if you're not using Dolby Vision detail tagging. The mount path here must match a Path Mapping you configure under Settings → Instances inside the web UI." Type="Path" Display="always" Required="false" Mask="false"></Config>

@@ -195,7 +195,7 @@ The [tagarr bash scripts](https://github.com/prophetse7en/tagarr) continue to be
 
 Resolvarr is built on top of:
 
-- **[Radarr](https://radarr.video/) / [Sonarr](https://sonarr.tv/)** — Every read and write goes through their v3 API. The audio/video/HDR tag values come from the MediaInfo data Radarr/Sonarr already extract from your files.
+- **[Radarr](https://radarr.video/) / [Sonarr](https://sonarr.tv/)** — Every read and write goes through their REST API. Tested against Sonarr 4+ and Radarr 5+ (Radarr 6 supported). The audio/video/HDR tag values come from the MediaInfo data Radarr/Sonarr already extract from your files.
 - **[MediaInfo](https://mediaarea.net/en/MediaInfo)** — Source of the codec, audio, channel-layout, and HDR information surfaced through Radarr/Sonarr.
 - **[dovi_tool](https://github.com/quietvoid/dovi_tool)** — When `ENABLE_DV_TOOLS=true` is set, dovi_tool extracts Dolby Vision RPU details (profile / layer / CM version) from the file. The tagging concept for codec / audio / Dolby Vision detail is inspired by similar community tagging tools.
 - **[tagarr (bash)](https://github.com/prophetse7en/tagarr)** — Origin of the matching, recovery, and discovery logic. The Go engine in resolvarr is a direct port of `tagarr.sh` and `tagarr_recover.sh` with byte-for-byte parity on tag decisions.
