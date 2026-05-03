@@ -22,16 +22,21 @@ func TestCache_LoadEmptyDir(t *testing.T) {
 	if c.Len() != 0 {
 		t.Errorf("Len = %d, want 0", c.Len())
 	}
-	if _, ok := c.Get(1, 1024); ok {
+	if _, ok := c.Get(1, 1024, 0, ""); ok {
 		t.Error("Get on empty cache returned ok=true")
 	}
 }
 
+// testTool is the dovi_tool version string used across cache tests
+// so each test doesn't repeat the constant. Real scans capture this
+// from `dovi_tool --version` at scan-start.
+const testTool = "dovi_tool 2.1.2"
+
 func TestCache_PutGetRoundtrip(t *testing.T) {
 	c, _ := LoadCache(t.TempDir())
 	want := engine.DvDetail{Profile: 7, Layer: "fel", CMVersion: 2}
-	c.Put(42, 1024*1024, want, true)
-	got, ok := c.Get(42, 1024*1024)
+	c.Put(42, 1024*1024, 1700000000, testTool, want, true)
+	got, ok := c.Get(42, 1024*1024, 1700000000, testTool)
 	if !ok {
 		t.Fatal("Get returned ok=false after Put")
 	}
@@ -41,8 +46,11 @@ func TestCache_PutGetRoundtrip(t *testing.T) {
 	if !got.Found {
 		t.Error("Found = false, want true")
 	}
-	if got.MovieFileID != 42 || got.Size != 1024*1024 {
-		t.Errorf("key roundtrip wrong: id=%d size=%d", got.MovieFileID, got.Size)
+	if got.MovieFileID != 42 || got.Size != 1024*1024 || got.Mtime != 1700000000 {
+		t.Errorf("key roundtrip wrong: id=%d size=%d mtime=%d", got.MovieFileID, got.Size, got.Mtime)
+	}
+	if got.DoviToolVersion != testTool {
+		t.Errorf("DoviToolVersion = %q, want %q", got.DoviToolVersion, testTool)
 	}
 	if got.CachedAt.IsZero() {
 		t.Error("CachedAt is zero — Put didn't stamp it")
@@ -54,12 +62,43 @@ func TestCache_SizeChangeInvalidatesEntry(t *testing.T) {
 	// docstring on cacheKey claims this is the self-invalidation
 	// mechanism for re-imported upgrades; pin it.
 	c, _ := LoadCache(t.TempDir())
-	c.Put(7, 1000, engine.DvDetail{Profile: 7}, true)
-	if _, ok := c.Get(7, 2000); ok {
+	c.Put(7, 1000, 1700000000, testTool, engine.DvDetail{Profile: 7}, true)
+	if _, ok := c.Get(7, 2000, 1700000000, testTool); ok {
 		t.Error("different size returned a hit — keys must include size")
 	}
-	if _, ok := c.Get(7, 1000); !ok {
+	if _, ok := c.Get(7, 1000, 1700000000, testTool); !ok {
 		t.Error("original key now missing")
+	}
+}
+
+func TestCache_MtimeChangeInvalidatesEntry(t *testing.T) {
+	// Same movieFileId + size, different mtime = in-place file
+	// replacement (cp/rsync over the file outside Radarr). The
+	// v2 cache key includes mtime to catch this — without it, a
+	// byte-size-coincidence replacement would return stale detail.
+	c, _ := LoadCache(t.TempDir())
+	c.Put(7, 1000, 1700000000, testTool, engine.DvDetail{Profile: 7}, true)
+	if _, ok := c.Get(7, 1000, 1700000001, testTool); ok {
+		t.Error("different mtime returned a hit — keys must include mtime")
+	}
+	if _, ok := c.Get(7, 1000, 1700000000, testTool); !ok {
+		t.Error("original key now missing")
+	}
+}
+
+func TestCache_DoviToolVersionMismatchIsMiss(t *testing.T) {
+	// Same file-identity, different dovi_tool version = treat as
+	// miss. A new tool version may detect different layer/CM-version
+	// semantics on the same file; returning the old result would
+	// silently lock the user into outdated tags after a tool bump.
+	c, _ := LoadCache(t.TempDir())
+	c.Put(7, 1000, 1700000000, "dovi_tool 2.1.2", engine.DvDetail{Profile: 7, Layer: "fel"}, true)
+	if _, ok := c.Get(7, 1000, 1700000000, "dovi_tool 2.2.0"); ok {
+		t.Error("different dovi_tool version returned a hit — must miss on version mismatch")
+	}
+	// Same version still hits.
+	if _, ok := c.Get(7, 1000, 1700000000, "dovi_tool 2.1.2"); !ok {
+		t.Error("same version missed — version-equality should hit")
 	}
 }
 
@@ -68,8 +107,8 @@ func TestCache_FoundFalseStillHit(t *testing.T) {
 	// If callers treated Found=false as a miss, every no-DV-stream
 	// movie would re-trigger the slow extraction every scan.
 	c, _ := LoadCache(t.TempDir())
-	c.Put(99, 500, engine.DvDetail{}, false)
-	got, ok := c.Get(99, 500)
+	c.Put(99, 500, 1700000000, testTool, engine.DvDetail{}, false)
+	got, ok := c.Get(99, 500, 1700000000, testTool)
 	if !ok {
 		t.Fatal("Get on no-RPU entry returned ok=false")
 	}
@@ -80,17 +119,17 @@ func TestCache_FoundFalseStillHit(t *testing.T) {
 
 func TestCache_DeleteRemovesEntry(t *testing.T) {
 	c, _ := LoadCache(t.TempDir())
-	c.Put(1, 100, engine.DvDetail{Profile: 8}, true)
-	c.Delete(1, 100)
-	if _, ok := c.Get(1, 100); ok {
+	c.Put(1, 100, 1700000000, testTool, engine.DvDetail{Profile: 8}, true)
+	c.Delete(1, 100, 1700000000)
+	if _, ok := c.Get(1, 100, 1700000000, testTool); ok {
 		t.Error("Get returned ok=true after Delete")
 	}
 }
 
 func TestCache_Clear(t *testing.T) {
 	c, _ := LoadCache(t.TempDir())
-	c.Put(1, 100, engine.DvDetail{}, true)
-	c.Put(2, 200, engine.DvDetail{}, true)
+	c.Put(1, 100, 1700000000, testTool, engine.DvDetail{}, true)
+	c.Put(2, 200, 1700000000, testTool, engine.DvDetail{}, true)
 	c.Clear()
 	if c.Len() != 0 {
 		t.Errorf("Len = %d after Clear, want 0", c.Len())
@@ -101,8 +140,8 @@ func TestCache_SaveLoadRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	c1, _ := LoadCache(dir)
 	want := engine.DvDetail{Profile: 7, Layer: "mel", CMVersion: 4}
-	c1.Put(101, 5000, want, true)
-	c1.Put(202, 6000, engine.DvDetail{}, false)
+	c1.Put(101, 5000, 1700000000, testTool, want, true)
+	c1.Put(202, 6000, 1700000001, testTool, engine.DvDetail{}, false)
 	if err := c1.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -122,14 +161,17 @@ func TestCache_SaveLoadRoundtrip(t *testing.T) {
 	if c2.Len() != 2 {
 		t.Errorf("Len after reload = %d, want 2", c2.Len())
 	}
-	got, ok := c2.Get(101, 5000)
+	got, ok := c2.Get(101, 5000, 1700000000, testTool)
 	if !ok {
 		t.Fatal("Found entry missing after roundtrip")
 	}
 	if got.Detail != want {
 		t.Errorf("Detail after reload = %+v, want %+v", got.Detail, want)
 	}
-	noRPU, ok := c2.Get(202, 6000)
+	if got.Mtime != 1700000000 || got.DoviToolVersion != testTool {
+		t.Errorf("v2 fields lost on roundtrip: mtime=%d tool=%q", got.Mtime, got.DoviToolVersion)
+	}
+	noRPU, ok := c2.Get(202, 6000, 1700000001, testTool)
 	if !ok {
 		t.Fatal("Found=false entry missing after roundtrip")
 	}
@@ -169,12 +211,12 @@ func TestCache_LoadEmptyFileIsOK(t *testing.T) {
 
 func TestCache_PruneStaleByLiveSet(t *testing.T) {
 	c, _ := LoadCache(t.TempDir())
-	c.Put(1, 100, engine.DvDetail{}, true)
-	c.Put(2, 200, engine.DvDetail{}, true)
-	c.Put(3, 300, engine.DvDetail{}, true)
+	c.Put(1, 100, 1700000000, testTool, engine.DvDetail{}, true)
+	c.Put(2, 200, 1700000000, testTool, engine.DvDetail{}, true)
+	c.Put(3, 300, 1700000000, testTool, engine.DvDetail{}, true)
 	live := map[string]bool{
-		LiveKey(1, 100): true,
-		LiveKey(3, 300): true,
+		LiveKey(1, 100, 1700000000): true,
+		LiveKey(3, 300, 1700000000): true,
 		// 2 omitted — should be pruned
 	}
 	removed := c.PruneStaleByLiveSet(live)
@@ -184,7 +226,7 @@ func TestCache_PruneStaleByLiveSet(t *testing.T) {
 	if c.Len() != 2 {
 		t.Errorf("Len after prune = %d, want 2", c.Len())
 	}
-	if _, ok := c.Get(2, 200); ok {
+	if _, ok := c.Get(2, 200, 1700000000, testTool); ok {
 		t.Error("pruned entry still present")
 	}
 }
@@ -195,7 +237,7 @@ func TestCache_SaveLeavesNoTempfileBehind(t *testing.T) {
 	// crash testing would need fault injection — out of scope.)
 	dir := t.TempDir()
 	c, _ := LoadCache(dir)
-	c.Put(1, 100, engine.DvDetail{Profile: 8}, true)
+	c.Put(1, 100, 1700000000, testTool, engine.DvDetail{Profile: 8}, true)
 	if err := c.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +252,7 @@ func TestCache_SaveProducesValidJSON(t *testing.T) {
 	// valid + parseable into the expected envelope shape.
 	dir := t.TempDir()
 	c, _ := LoadCache(dir)
-	c.Put(7, 9999, engine.DvDetail{Profile: 7, Layer: "fel", CMVersion: 2}, true)
+	c.Put(7, 9999, 1700000000, testTool, engine.DvDetail{Profile: 7, Layer: "fel", CMVersion: 2}, true)
 	if err := c.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +267,7 @@ func TestCache_SaveProducesValidJSON(t *testing.T) {
 	if parsed.Version != cacheFileVersion {
 		t.Errorf("envelope version = %d, want %d", parsed.Version, cacheFileVersion)
 	}
-	e, ok := parsed.Entries[LiveKey(7, 9999)]
+	e, ok := parsed.Entries[LiveKey(7, 9999, 1700000000)]
 	if !ok {
 		t.Fatal("expected key missing in JSON")
 	}
@@ -241,8 +283,8 @@ func TestCache_LoadDifferentVersionTreatedAsFresh(t *testing.T) {
 	wrongVersion := fileEnvelope{
 		Version: cacheFileVersion + 999,
 		Entries: map[string]Entry{
-			LiveKey(1, 100): {
-				MovieFileID: 1, Size: 100,
+			LiveKey(1, 100, 1700000000): {
+				MovieFileID: 1, Size: 100, Mtime: 1700000000, DoviToolVersion: testTool,
 				Detail: engine.DvDetail{Profile: 7, Layer: "fel", CMVersion: 2},
 				Found:  true,
 			},
@@ -268,7 +310,7 @@ func TestCache_LoadLegacyBareMapTreatedAsFresh(t *testing.T) {
 	// the new envelope format.
 	dir := t.TempDir()
 	legacy := map[string]Entry{
-		LiveKey(1, 100): {MovieFileID: 1, Size: 100, Found: true},
+		LiveKey(1, 100, 1700000000): {MovieFileID: 1, Size: 100, Mtime: 1700000000, DoviToolVersion: testTool, Found: true},
 	}
 	raw, _ := json.Marshal(legacy)
 	if err := os.WriteFile(filepath.Join(dir, "dv-cache.json"), raw, 0o600); err != nil {
@@ -288,10 +330,10 @@ func TestCache_NilSafe(t *testing.T) {
 	// called LoadCache yet (e.g. cache disabled in config) don't
 	// panic. Save returns an error so misuse is observable.
 	var c *Cache
-	c.Put(1, 1, engine.DvDetail{}, true)
-	c.Delete(1, 1)
+	c.Put(1, 1, 0, "", engine.DvDetail{}, true)
+	c.Delete(1, 1, 0)
 	c.Clear()
-	if got, ok := c.Get(1, 1); ok || got.Found {
+	if got, ok := c.Get(1, 1, 0, ""); ok || got.Found {
 		t.Error("nil Get returned a hit")
 	}
 	if c.Len() != 0 {
@@ -331,11 +373,11 @@ func TestCache_StatsCountsAndTimestamps(t *testing.T) {
 	// Oldest != Newest assertion below would pass for the wrong
 	// reason (equality satisfies !After). 1ms is plenty for the
 	// time package's monotonic clock.
-	c.Put(1, 100, engine.DvDetail{Profile: 8}, true)
+	c.Put(1, 100, 1700000000, testTool, engine.DvDetail{Profile: 8}, true)
 	time.Sleep(time.Millisecond)
-	c.Put(2, 200, engine.DvDetail{Profile: 7}, false)
+	c.Put(2, 200, 1700000000, testTool, engine.DvDetail{Profile: 7}, false)
 	time.Sleep(time.Millisecond)
-	c.Put(3, 300, engine.DvDetail{Profile: 5}, true)
+	c.Put(3, 300, 1700000000, testTool, engine.DvDetail{Profile: 5}, true)
 	s := c.Stats()
 	if s.EntryCount != 3 {
 		t.Errorf("EntryCount = %d, want 3", s.EntryCount)
@@ -355,7 +397,7 @@ func TestCache_StatsCountsAndTimestamps(t *testing.T) {
 func TestCache_StatsFileSizeAfterSave(t *testing.T) {
 	dir := t.TempDir()
 	c, _ := LoadCache(dir)
-	c.Put(1, 100, engine.DvDetail{Profile: 8, Layer: "mel"}, true)
+	c.Put(1, 100, 1700000000, testTool, engine.DvDetail{Profile: 8, Layer: "mel"}, true)
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -368,8 +410,8 @@ func TestCache_StatsFileSizeAfterSave(t *testing.T) {
 func TestCache_ClearAndSavePersists(t *testing.T) {
 	dir := t.TempDir()
 	c, _ := LoadCache(dir)
-	c.Put(1, 100, engine.DvDetail{Profile: 8}, true)
-	c.Put(2, 200, engine.DvDetail{Profile: 7}, true)
+	c.Put(1, 100, 1700000000, testTool, engine.DvDetail{Profile: 8}, true)
+	c.Put(2, 200, 1700000000, testTool, engine.DvDetail{Profile: 7}, true)
 	if err := c.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -405,8 +447,8 @@ func TestCache_ConcurrentReadWriteIsSafe(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			c.Put(id, int64(id*1000), engine.DvDetail{Profile: 7}, true)
-			_, _ = c.Get(id, int64(id*1000))
+			c.Put(id, int64(id*1000), 1700000000, testTool, engine.DvDetail{Profile: 7}, true)
+			_, _ = c.Get(id, int64(id*1000), 1700000000, testTool)
 		}(i)
 	}
 	for i := 0; i < 25; i++ {

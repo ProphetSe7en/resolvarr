@@ -126,8 +126,8 @@ func TestRunDvDetail_ToolsNotInstalledReturns400(t *testing.T) {
 	if apiErr.Status != 400 {
 		t.Errorf("status = %d, want 400", apiErr.Status)
 	}
-	if !strings.Contains(apiErr.Message,"not installed") {
-		t.Errorf("message = %q, want substring 'not installed'", apiErr.Message)
+	if !strings.Contains(apiErr.Message, "not reachable") {
+		t.Errorf("message = %q, want substring 'not reachable'", apiErr.Message)
 	}
 }
 

@@ -348,3 +348,103 @@ func TestHdrTypeIndicatesDv(t *testing.T) {
 		})
 	}
 }
+
+func TestEmitNoDvTag_DisabledReturnsNil(t *testing.T) {
+	if got := EmitNoDvTag(DvDetailConfig{Enabled: false}); got != nil {
+		t.Errorf("disabled cfg = %v, want nil", got)
+	}
+}
+
+func TestEmitNoDvTag_EnabledNoFilter(t *testing.T) {
+	got := EmitNoDvTag(DvDetailConfig{Enabled: true})
+	if len(got) != 1 || got[0] != "no-dv" {
+		t.Errorf("got %v, want [no-dv]", got)
+	}
+}
+
+func TestEmitNoDvTag_PrefixApplied(t *testing.T) {
+	got := EmitNoDvTag(DvDetailConfig{Enabled: true, Prefix: "media-"})
+	if len(got) != 1 || got[0] != "media-no-dv" {
+		t.Errorf("got %v, want [media-no-dv]", got)
+	}
+}
+
+func TestEmitNoDvTag_AllowedValuesFiltersOut(t *testing.T) {
+	// User only wants positive DV-detail tags (mel/fel/dvprofile8/cm2/cm4),
+	// not no-dv. AllowedValues without "no-dv" should suppress emission.
+	cfg := DvDetailConfig{
+		Enabled:       true,
+		AllowedValues: []string{"mel", "fel", "dvprofile8", "cm2", "cm4"},
+	}
+	if got := EmitNoDvTag(cfg); got != nil {
+		t.Errorf("filtered-out cfg = %v, want nil", got)
+	}
+}
+
+func TestEmitNoDvTag_AllowedValuesIncludesNoDv(t *testing.T) {
+	// AllowedValues explicitly listing no-dv allows it through even
+	// when other values are restricted.
+	cfg := DvDetailConfig{
+		Enabled:       true,
+		AllowedValues: []string{"no-dv"},
+	}
+	got := EmitNoDvTag(cfg)
+	if len(got) != 1 || got[0] != "no-dv" {
+		t.Errorf("got %v, want [no-dv] when explicitly listed", got)
+	}
+}
+
+func TestEmitNoDvTag_LegacyEmptyAllowsEverything(t *testing.T) {
+	// SelectMode != "select" with empty AllowedValues = legacy
+	// "all-allowed" mode. no-dv should emit.
+	cfg := DvDetailConfig{Enabled: true, AllowedValues: nil, SelectMode: ""}
+	got := EmitNoDvTag(cfg)
+	if len(got) != 1 || got[0] != "no-dv" {
+		t.Errorf("got %v, want [no-dv] in legacy empty-allow mode", got)
+	}
+}
+
+func TestEmitNoDvTag_SelectModeEmptyTagsNothing(t *testing.T) {
+	// SelectMode == "select" + empty AllowedValues = explicit
+	// "tag nothing". no-dv should NOT emit even though it's in vocab.
+	cfg := DvDetailConfig{Enabled: true, AllowedValues: nil, SelectMode: "select"}
+	if got := EmitNoDvTag(cfg); got != nil {
+		t.Errorf("select-mode empty cfg = %v, want nil", got)
+	}
+}
+
+func TestVocabIncludesNoDv(t *testing.T) {
+	// Drift sentinel — adding/removing no-dv from vocab without
+	// updating the no-dv emit path or tests would fail this. Pin
+	// the explicit value so a refactor surfaces the change.
+	vocab := DvDetailVocabulary()
+	found := false
+	for _, v := range vocab {
+		if v == "no-dv" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("vocab missing no-dv: %v", vocab)
+	}
+}
+
+func TestAllPossibleDvDetailTags_IncludesNoDv(t *testing.T) {
+	// no-dv must be in the cleanup safety-bound (the universe of
+	// labels resolvarr could ever emit). Otherwise an existing
+	// no-dv tag from a previous scan with different config wouldn't
+	// be cleaned up by RemoveOrphanedTags.
+	got := AllPossibleDvDetailTags(DvDetailConfig{Prefix: "p-"})
+	if _, ok := got["p-no-dv"]; !ok {
+		t.Errorf("AllPossibleDvDetailTags missing p-no-dv: keys=%v", keysOf(got))
+	}
+}
+
+func keysOf(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}

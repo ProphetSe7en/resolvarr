@@ -273,10 +273,10 @@ function app() {
     dvBypassCache: false,
     // Tools state — populated by /api/tools/dv/status (resolves
     // ffmpeg + dovi_tool against $PATH; legacy /config/tools/ checked
-    // first as fallback). Empty until first poll. The DV detail tab
-    // shows a "Tools required" notice when dvTools.installed is false
-    // (the install itself happens at container start when
-    // ENABLE_DV_TOOLS=true is set on the container template).
+    // first as fallback). Empty until first poll. As of v0.3.5 tools
+    // ship baked into the image (Dockerfile dv-tools stage), so the
+    // status should always be installed=true; the "Tools unreachable"
+    // UI branch is defensive against a broken image build.
     dvTools: { installed: false },
     // DV scan progress — populated by startDvScanPoll while a scan is
     // running. {running:true, total, processed, extracted, cacheHits,
@@ -2435,13 +2435,12 @@ function app() {
       }
     },
 
-    // installDvTools / uninstallDvTools removed — install now happens
-    // at container start when ENABLE_DV_TOOLS=true is set on the
-    // container template (entrypoint.sh runs apk add ffmpeg + downloads
-    // dovi_tool from GitHub before privilege drop). The DV detail tab
-    // surfaces a notice with the env-var instructions when the tools
-    // aren't resolvable on $PATH; loadDvToolsStatus stays for that
-    // banner check.
+    // installDvTools / uninstallDvTools removed — DV tools (ffmpeg +
+    // dovi_tool) ship baked into the image as of v0.3.5 via the
+    // Dockerfile dv-tools stage. No env var, no install step.
+    // loadDvToolsStatus stays as a defensive health check for the
+    // "Tools unreachable" UI branch (only fires if the image build
+    // is somehow broken — should never happen in normal CI).
 
     // --- DV cache panel (Library scan → DV detail tab) ---
     // GET /api/dv-cache/stats. Server returns zero-valued struct when
@@ -2487,6 +2486,10 @@ function app() {
 
     async runDvDetailScan(mode, bypassOverride) {
       if (!this.scanInstanceId) return;
+      // Defensive re-entry guard — same pattern as runQuickFixChain.
+      // The Run-button gates on scanLoading at the UI layer; this
+      // is the function-level safety net.
+      if (this.scanLoading) return;
       // bypassOverride lets confirmDvDetailApply pass the snapshot it
       // captured before resetting dvBypassCache. Falsy → fall back to
       // the live state (Preview path).
@@ -6046,7 +6049,7 @@ function app() {
         case 'failed':
           return 'Extraction tried but failed — file unreachable, RPU corrupt, or an ffmpeg/dovi_tool error. See the per-row error in the expanded view.';
         case 'tools-missing':
-          return 'ffmpeg or dovi_tool not installed — set ENABLE_DV_TOOLS=true on the container to install them on next start.';
+          return 'ffmpeg or dovi_tool not on PATH. Tools ship baked into the image; if you see this status the image build is broken — check docker logs and report the issue.';
         case 'skipped':
           return 'Not a Dolby Vision file (Radarr mediaInfo says so) — DV detail does not run.';
         case 'no-dv':
@@ -6526,6 +6529,15 @@ function app() {
     // (not in combinedModes for combined mode, or not the rule's own
     // mode for single-mode) are silently dropped.
     async runQuickFixChain(overrideRule) {
+      // Defensive re-entry guard. The disabled-button binding on
+      // both Save and Apply-now already prevents UI-layer
+      // double-clicks, but Alpine event-recovery has been observed
+      // to retry a click handler under unusual conditions (browser
+      // back-button, Alpine error-recovery cycles). Refusing to
+      // re-enter at the function boundary is belt-and-braces — no
+      // false positives because legitimate flows always wait for
+      // ruleEditor.busy to clear before re-firing.
+      if (this.ruleEditor.busy) return;
       // Default source is the wizard's editingRule. overrideRule lets
       // "Apply now" re-fire a previous preview run without reopening
       // the wizard (Apply-after-preview lives at the result panel).

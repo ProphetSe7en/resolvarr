@@ -29,11 +29,12 @@ type Server struct {
 	Health    *health.Poller   // nil-tolerated; /api/health/detailed returns 503 if missing
 	Scheduler *core.Scheduler  // nil-tolerated; schedules CRUD/run-now return 503 if missing
 
-	// M4b Dolby Vision detail tagging — opt-in via ENABLE_DV_TOOLS
-	// container env var. Tools (ffmpeg + dovi_tool) are installed by
-	// the entrypoint script before privilege-drop; the runtime install
-	// button + dvToolsMu serialiser are gone. DvTools.Status() reports
-	// resolution against $PATH (legacy /config/tools/ checked first).
+	// M4b Dolby Vision detail tagging — tools (ffmpeg + dovi_tool)
+	// ship baked into the image as of v0.3.5 (Dockerfile dv-tools
+	// stage). Runtime install button + ENABLE_DV_TOOLS env var both
+	// gone. DvTools.Status() is kept as a defensive health check
+	// against $PATH (legacy /config/tools/ also checked first for
+	// users with leftover bytes from the old install button).
 	DvTools dvdetect.Tools  // value, not pointer — kept for legacy /config/tools/ fallback
 	DvCache *dvdetect.Cache // nil signals "no on-disk memoisation; every scan does full extraction"
 

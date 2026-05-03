@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.3.5-dev — Dolby Vision tools baked in + script parity (2026-05-04)
+
+This batch closes the gap to the upstream TRaSH bash script (`Radarr-DV-HDR-Tagarr/dv-hdr_tagarr.sh`) — same per-file output, plus everything resolvarr already does (web UI, multi-instance sync, cache, scheduling, notifications).
+
+### What you get
+
+- **Dolby Vision tools ship baked into the image.** No more `ENABLE_DV_TOOLS=true` env var. No more 10-15 second install delay on first start. No more "Tools required" notice if you forget to set the var. DV detail tagging works zero-config the moment you turn it on under Settings. Image grows from ~19 MB to ~140 MB to carry `ffmpeg` + `dovi_tool` — well under typical Arr-helper containers (linuxserver/radarr ~190 MB).
+
+- **No-DV tag.** When Radarr's mediaInfo says a file has Dolby Vision but the actual stream has no RPU (corrupt file, transcode-in-progress, mediaInfo lying), DV detail now writes a `no-dv` tag so you can write custom formats that distinguish "claimed DV" from "confirmed DV". Mirrors the upstream TRaSH bash script's `no-dv` tag. Toggle via the per-value list in Settings → DV detail.
+
+- **Cache is now bulletproof against file replacements + tool upgrades.** v0.3.4 cached by movie file ID + size. v0.3.5 adds modification time + the dovi_tool version that produced the result. So:
+  - Replace a file in-place outside Radarr (rare but possible) — old size, new mtime → cache invalidates → fresh extraction.
+  - Upgrade dovi_tool in a future image — every cached entry's version mismatches → cache invalidates → fresh extraction.
+  - Default behaviour: trust the cache. Skip-cache checkbox stays available for paranoid cases.
+
+- **Path resolution moved before cache lookup.** Side effect: scans complete much faster on libraries where many files have path-mapping issues — they fail-fast instead of going through the full pipeline. (Earlier today's slow scans turned out to be cold kernel-cache after Force Update; subsequent scans are back to ~50ms per file.)
+
+- **DV detail tab cleanups.** "Opt-in" badge gone — tools are always there. "Tools required" big banner replaced with a small "Tools ready" indicator showing the installed `ffmpeg` + `dovi_tool` versions. If you ever see "Tools unreachable" in red, that's a bug — please report.
+
+### What stays the same
+
+- Audio / Video / DV detail are still **off by default** per rule. Turn each one on from Settings (per-instance config) or per-rule (in the wizard).
+- Cache `Clear` button + per-scan `Skip cache` checkbox + per-rule `Skip DV cache` (in wizard) all unchanged.
+- Existing v1 caches (from v0.3.4) discard cleanly on first start with v0.3.5 — next DV scan re-extracts. ~10-30 seconds for typical libraries.
+
+### Heads-up
+
+- **Existing testers' container env:** if you previously set `ENABLE_DV_TOOLS=true` on your container template, the variable is now ignored. You can remove it from your container config; harmless either way (entrypoint logs a one-line note if it sees the variable still set).
+- **Legacy `/config/tools/`:** if you ever used the old runtime install button (removed pre-v0.3.0), leftover binaries under `/config/tools/` will be used in preference to the baked-in versions. To switch to the image-bundled binaries: `rm -rf /config/tools` (entrypoint logs a note if it sees the directory).
+- **First scan after Force Update may feel slower** while the kernel page-cache warms up around the new baked-in libraries. Subsequent scans are back to normal speed.
+
+### Internal
+
+- Multi-stage Dockerfile with `dv-tools` build stage: `apk add ffmpeg` → `ldd`-extract closure → `wget dovi_tool` → smoke-test → `COPY` to final image. Adds ~35s to CI build time.
+- `set -o pipefail` on the dv-tools `RUN` for fail-fast on download corruption.
+- Cache `cacheFileVersion` 1 → 2; load-time discard on mismatch (no migration needed).
+- `EmitNoDvTag(cfg)` helper in the engine, parallel to `EmitDvDetailTags`.
+- Defensive re-entry guard on `runQuickFixChain` and `runDvDetailScan` — refuses to fire if a previous run is still in progress (the disabled-button binding already prevents this at the UI layer; this is belt-and-braces).
+- Path-failure detection in DV scan handler refactored from substring-matching the user-facing error string to a typed bool flag.
+
+---
+
 ## v0.3.4-dev — Dolby Vision cache management (2026-05-03)
 
 > **Heads-up about the version jump:** v0.3.2 and v0.3.3 weren't published to a clean state — v0.3.1's content (then v0.3.1 again with the Activity→History rename) accidentally landed twice. v0.3.4 is the next clean monotone version. No content lost.

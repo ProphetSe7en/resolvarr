@@ -65,12 +65,14 @@ func (t Tools) DvBinPath() string { return filepath.Join(t.Dir, "dovi_tool") }
 func (t Tools) FfBinPath() string { return filepath.Join(t.Dir, "ffmpeg") }
 
 // ResolveDvBin / ResolveFfBin pick the runtime binary location.
-// With the ENABLE_DV_TOOLS=true entrypoint flow, dovi_tool lands in
-// /usr/local/bin and ffmpeg comes from apk into /usr/bin — both via
-// $PATH. The legacy /config/tools/ location (from the now-removed
-// Settings → Tools install button) is checked first as a fallback so
-// existing test fixtures + any pre-existing manual installs still
-// resolve. Returns "" when neither location yields a runnable binary.
+// As of v0.3.5 both binaries ship baked into the image (Dockerfile
+// dv-tools stage): dovi_tool at /usr/local/bin, ffmpeg at /usr/bin —
+// both reachable via $PATH. The legacy /config/tools/ location (from
+// the now-removed Settings → Tools install button + the v0.3.4-era
+// ENABLE_DV_TOOLS entrypoint install) is checked first as a fallback
+// so existing test fixtures + any pre-existing manual installs still
+// resolve. Returns "" when neither location yields a runnable binary
+// (in baked-in deployments this should be unreachable).
 func (t Tools) ResolveDvBin() string { return resolveBin(t.DvBinPath(), "dovi_tool") }
 func (t Tools) ResolveFfBin() string { return resolveBin(t.FfBinPath(), "ffmpeg") }
 

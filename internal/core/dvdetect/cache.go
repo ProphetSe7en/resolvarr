@@ -43,7 +43,16 @@ type Cache struct {
 // caches as if they were corrupt-empty — preferable to silently
 // loading entries with the wrong shape, which would surface as
 // zero-valued Detail fields and wasted re-extraction.
-const cacheFileVersion = 1
+//
+// Version history:
+//   v1 — original (key: movieFileId:size, no tool-version validation)
+//   v2 — file-identity triplet key (movieFileId:size:mtime) plus
+//        per-entry DoviToolVersion; mismatch on either bypasses the
+//        cache. Bumped 2026-05-03 to make cache trustworthy enough
+//        to default Skip cache OFF: file replacements that keep size
+//        (mtime catches them) and dovi_tool upgrades (per-entry
+//        version field catches them) no longer return stale detail.
+const cacheFileVersion = 2
 
 // fileEnvelope wraps the cache map with a schema version. Older
 // dv-cache.json files (no envelope, just a bare map of entries)
@@ -54,17 +63,30 @@ type fileEnvelope struct {
 	Entries map[string]Entry `json:"entries"`
 }
 
-// Entry is what the cache stores per (movieFileId, size) pair.
+// Entry is what the cache stores per (movieFileId, size, mtime) triplet.
 // Found distinguishes "extraction succeeded, here's the detail"
 // from "extraction succeeded, no RPU found" (the legitimate "API
 // said DV but stream actually has none" case — caller emits no-dv
 // tag). Both states get cached; only hard errors don't.
+//
+// Mtime + DoviToolVersion are the v2 additions:
+//   - Mtime is the file's modification time (Unix seconds). Same
+//     movieFileId + same size + different mtime = file was replaced
+//     in-place (rare but possible: cp/rsync over the file outside
+//     Radarr). Cache miss on mtime mismatch via the key.
+//   - DoviToolVersion is the `dovi_tool --version` first-line output
+//     captured at the time of extraction. Compared at Get-time
+//     against the current scan's version; mismatch → cache miss
+//     even if file-identity matches. Catches dovi_tool upgrades
+//     (new version may detect different layer/CM-version semantics).
 type Entry struct {
-	MovieFileID int              `json:"movieFileId"`
-	Size        int64            `json:"size"`
-	Detail      engine.DvDetail  `json:"detail"`
-	Found       bool             `json:"found"`     // false = "tried, no RPU" — no-dv branch
-	CachedAt    time.Time        `json:"cachedAt"`
+	MovieFileID     int              `json:"movieFileId"`
+	Size            int64            `json:"size"`
+	Mtime           int64            `json:"mtime"`
+	DoviToolVersion string           `json:"doviToolVersion"`
+	Detail          engine.DvDetail  `json:"detail"`
+	Found           bool             `json:"found"`     // false = "tried, no RPU" — no-dv branch
+	CachedAt        time.Time        `json:"cachedAt"`
 }
 
 // LoadCache reads the persisted cache file. Returns an empty
@@ -110,24 +132,43 @@ func LoadCache(configDir string) (*Cache, error) {
 	return c, nil
 }
 
-// cacheKey is the canonical map key. movieFileId alone isn't
-// sufficient — Radarr reuses the integer when a file is replaced.
-// Including size makes the cache self-invalidate when bytes change.
-func cacheKey(movieFileID int, size int64) string {
-	return fmt.Sprintf("%d:%d", movieFileID, size)
+// cacheKey is the canonical map key. File-identity triplet —
+// movieFileId alone isn't sufficient (Radarr reuses the integer
+// when a file is replaced), and (movieFileId, size) alone misses
+// in-place replacements that happen to keep size constant. The
+// mtime catches those.
+//
+// dovi_tool version is intentionally NOT in the key — it's a
+// per-scan constant; we'd rather store one entry per file and
+// reject on tool-mismatch at Get-time than fragment the cache by
+// every dovi_tool version we've ever run.
+func cacheKey(movieFileID int, size, mtime int64) string {
+	return fmt.Sprintf("%d:%d:%d", movieFileID, size, mtime)
 }
 
-// Get returns a cached entry if (movieFileId, size) is known.
-// Second return is false for cache misses — caller does the slow
-// ffmpeg+dovi_tool work, then calls Put to memoise.
-func (c *Cache) Get(movieFileID int, size int64) (Entry, bool) {
+// Get returns a cached entry if (movieFileId, size, mtime) is
+// known AND the entry's DoviToolVersion matches the current scan's
+// version. Second return is false for cache misses — caller does
+// the slow ffmpeg+dovi_tool work, then calls Put to memoise.
+//
+// Tool-version mismatch is treated as a miss (not a hit with a
+// version warning) so the next Put overwrites the entry with
+// fresh detail under the new tool. No "old vs new" comparison is
+// surfaced — the user only sees fresh data.
+func (c *Cache) Get(movieFileID int, size, mtime int64, doviToolVersion string) (Entry, bool) {
 	if c == nil {
 		return Entry{}, false
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	e, ok := c.data[cacheKey(movieFileID, size)]
-	return e, ok
+	e, ok := c.data[cacheKey(movieFileID, size, mtime)]
+	if !ok {
+		return Entry{}, false
+	}
+	if e.DoviToolVersion != doviToolVersion {
+		return Entry{}, false
+	}
+	return e, true
 }
 
 // Put memoises a detection result. Always overwrites the existing
@@ -139,30 +180,32 @@ func (c *Cache) Get(movieFileID int, size int64) (Entry, bool) {
 // cached: they're often transient (transcode in progress, file
 // briefly unreadable) and a stuck cache entry would mask future
 // recovery.
-func (c *Cache) Put(movieFileID int, size int64, detail engine.DvDetail, found bool) {
+func (c *Cache) Put(movieFileID int, size, mtime int64, doviToolVersion string, detail engine.DvDetail, found bool) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.data[cacheKey(movieFileID, size)] = Entry{
-		MovieFileID: movieFileID,
-		Size:        size,
-		Detail:      detail,
-		Found:       found,
-		CachedAt:    time.Now().UTC(),
+	c.data[cacheKey(movieFileID, size, mtime)] = Entry{
+		MovieFileID:     movieFileID,
+		Size:            size,
+		Mtime:           mtime,
+		DoviToolVersion: doviToolVersion,
+		Detail:          detail,
+		Found:           found,
+		CachedAt:        time.Now().UTC(),
 	}
 }
 
 // Delete removes one entry. Used by the "rescan this movie" UI
 // action when the user wants to force a fresh extraction.
-func (c *Cache) Delete(movieFileID int, size int64) {
+func (c *Cache) Delete(movieFileID int, size, mtime int64) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.data, cacheKey(movieFileID, size))
+	delete(c.data, cacheKey(movieFileID, size, mtime))
 }
 
 // Clear wipes every entry. Used by the "Clear cache" button on
@@ -331,6 +374,6 @@ func (c *Cache) PruneStaleByLiveSet(liveKeys map[string]bool) int {
 
 // LiveKey is exported so the scan handler can build the live-set
 // without re-implementing the key format.
-func LiveKey(movieFileID int, size int64) string {
-	return cacheKey(movieFileID, size)
+func LiveKey(movieFileID int, size, mtime int64) string {
+	return cacheKey(movieFileID, size, mtime)
 }

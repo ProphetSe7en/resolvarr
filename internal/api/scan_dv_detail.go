@@ -85,7 +85,7 @@ func (s *Server) runDvDetail(parentCtx context.Context, cfg core.Config, inst *c
 	state := s.DvTools.Status(toolsCtx)
 	toolsCancel()
 	if !state.Installed {
-		return nil, newAPIError(400, "DV detail tools not installed — set ENABLE_DV_TOOLS=true on the container and restart")
+		return nil, newAPIError(400, "DV detail tools not reachable on PATH — ffmpeg + dovi_tool ship baked into the image, so this means the image build is broken. Check docker logs and report the issue with the image SHA.")
 	}
 
 	// Reserve the global single-in-flight slot. Wrap parentCtx with the
@@ -244,48 +244,71 @@ func (s *Server) runDvDetail(parentCtx context.Context, cfg core.Config, inst *c
 		st.CurrentTitle = item.Title
 		s.dvScanMu.Unlock()
 
-		// Cache lookup: (movieFileId, size). nil cache → always miss.
-		// req.BypassDvCache (per-scan checkbox in Run controls, or
-		// per-rule JobOptions.BypassDvCache for saved rules) skips
-		// both Get and Put — every file is re-extracted, nothing is
-		// memoised. For users who don't trust (movieFileId, size) as
-		// a sufficient cache key (e.g. re-encodes that produce
-		// coincidentally-identical sizes, or after a dovi_tool upgrade
-		// where they want a fresh extraction without using the Clear
-		// cache button).
+		// File-identity resolution comes BEFORE the cache lookup
+		// (v2 cache key = movieFileId + size + mtime; need mtime).
+		// req.BypassDvCache skips both Get and Put — every file is
+		// re-extracted, nothing is memoised. Available as a per-scan
+		// checkbox + per-rule JobOptions field for users who want
+		// to force fresh extraction (e.g. paranoid debugging) — but
+		// the v2 cache key already catches in-place file replacement
+		// (mtime) and dovi_tool upgrades (version field on the
+		// stored Entry), so day-to-day there's rarely a reason to.
 		var detail engine.DvDetail
 		var foundRPU bool
 		var status string
 		var reason string
+		// pathIssue: set to true in the two path-resolution failure
+		// branches below (no-path / unreachable). Read further down
+		// to decide whether to emit no-dv (extraction failures emit
+		// it, path issues do NOT — operational vs file-content fail).
+		// Bool flag instead of substring-matching reason text — the
+		// reason strings are user-facing copy that's likely to change.
+		var pathIssue bool
 
 		movieFileID := item.MovieFile.ID
 		size := item.MovieFile.Size
-		var hit bool
-		var entry dvdetect.Entry
-		if !req.BypassDvCache {
-			entry, hit = s.DvCache.Get(movieFileID, size)
-		}
-		if hit {
-			detail = entry.Detail
-			foundRPU = entry.Found
-			status = "cached"
-			resp.Totals.DvCacheHits++
+
+		containerPath := inst.TranslatePath(item.MovieFile.Path)
+		if containerPath == "" {
+			status = "failed"
+			reason = "Radarr returned no path for this movie file"
+			pathIssue = true
+			resp.Totals.DvExtractFailed++
 			s.dvScanMu.Lock()
-			st.CacheHits++
 			st.Processed++
+			st.Failed++
+			s.dvScanMu.Unlock()
+		} else if statInfo, statErr := os.Stat(containerPath); statErr != nil {
+			status = "failed"
+			reason = "media file unreachable: " + containerPath + " — check path mappings"
+			pathIssue = true
+			resp.Totals.DvFileUnreachable++
+			s.dvScanMu.Lock()
+			st.Processed++
+			st.Failed++
 			s.dvScanMu.Unlock()
 		} else {
-			// Cache miss → translate path + run the extraction pipeline.
-			containerPath := inst.TranslatePath(item.MovieFile.Path)
-			if containerPath == "" {
-				status = "failed"
-				reason = "Radarr returned no path for this movie file"
-				resp.Totals.DvExtractFailed++
-			} else if _, statErr := os.Stat(containerPath); statErr != nil {
-				status = "failed"
-				reason = "media file unreachable: " + containerPath + " — check path mappings"
-				resp.Totals.DvFileUnreachable++
+			// File reachable. Cache key uses size + mtime so an
+			// in-place replacement that happens to keep size constant
+			// invalidates the entry via mtime. dovi_tool version is
+			// validated separately inside Cache.Get.
+			mtime := statInfo.ModTime().Unix()
+			var hit bool
+			var entry dvdetect.Entry
+			if !req.BypassDvCache {
+				entry, hit = s.DvCache.Get(movieFileID, size, mtime, state.DvVersion)
+			}
+			if hit {
+				detail = entry.Detail
+				foundRPU = entry.Found
+				status = "cached"
+				resp.Totals.DvCacheHits++
+				s.dvScanMu.Lock()
+				st.CacheHits++
+				st.Processed++
+				s.dvScanMu.Unlock()
 			} else {
+				// Cache miss → run the extraction pipeline.
 				d, ok, runErr := runner.Detect(ctx, containerPath)
 				switch {
 				case errors.Is(runErr, dvdetect.ErrToolsMissing):
@@ -306,7 +329,7 @@ func (s *Server) runDvDetail(parentCtx context.Context, cfg core.Config, inst *c
 					// Cache the negative result so we don't re-run
 					// the extraction every scan for the same file.
 					if !req.BypassDvCache {
-						s.DvCache.Put(movieFileID, size, d, false)
+						s.DvCache.Put(movieFileID, size, mtime, state.DvVersion, d, false)
 					}
 				default:
 					detail = d
@@ -314,24 +337,24 @@ func (s *Server) runDvDetail(parentCtx context.Context, cfg core.Config, inst *c
 					status = "extracted"
 					resp.Totals.DvExtracted++
 					if !req.BypassDvCache {
-						s.DvCache.Put(movieFileID, size, d, true)
+						s.DvCache.Put(movieFileID, size, mtime, state.DvVersion, d, true)
 					}
 				}
+				// Slow-path candidate finished — bump processed regardless
+				// of outcome (extract OK, no RPU, failed, tools missing).
+				// Extracted counter only bumps when we actually ran tools
+				// (status != "failed" && != "tools-missing"); failed counter
+				// catches the rest so totals reconcile.
+				s.dvScanMu.Lock()
+				st.Processed++
+				if status == "extracted" || status == "no-rpu" {
+					st.Extracted++
+				}
+				if status == "failed" || status == "tools-missing" {
+					st.Failed++
+				}
+				s.dvScanMu.Unlock()
 			}
-			// Slow-path candidate finished — bump processed regardless
-			// of outcome (extract OK, no RPU, failed, tools missing).
-			// Extracted counter only bumps when we actually ran tools
-			// (status != "failed" && != "tools-missing"); failed counter
-			// catches the rest so totals reconcile.
-			s.dvScanMu.Lock()
-			st.Processed++
-			if status == "extracted" || status == "no-rpu" {
-				st.Extracted++
-			}
-			if status == "failed" || status == "tools-missing" {
-				st.Failed++
-			}
-			s.dvScanMu.Unlock()
 		}
 
 		baseRow.DvStatus = status
@@ -344,7 +367,18 @@ func (s *Server) runDvDetail(parentCtx context.Context, cfg core.Config, inst *c
 		// the UI doesn't render an all-zero "facts" block; only set it
 		// for cached / extracted / no-rpu where the parsed RPU result
 		// (even zero-valued) is meaningful.
-		if status == "failed" || status == "tools-missing" {
+		//
+		// "tools-missing" rows surface as status-only (we have no
+		// opinion when tools aren't there). Path issues (no-path or
+		// unreachable) also surface as status-only — they're
+		// operational, not extraction outcomes. Both paths use the
+		// shared early-continue below.
+		//
+		// Real extraction errors ("failed" with a runner error from
+		// ffmpeg/dovi_tool on a reachable file) DO get the no-dv
+		// tag — TRaSH parity. The cache doesn't store these, so a
+		// transient error self-heals on the next scan.
+		if status == "tools-missing" || pathIssue {
 			baseRow.DvDecisions = []scanDvDetailDecision{{
 				Status: status,
 				Reason: reason,
@@ -358,11 +392,17 @@ func (s *Server) runDvDetail(parentCtx context.Context, cfg core.Config, inst *c
 			CMVersion: detail.CMVersion,
 		}
 
-		// Build the desired set. foundRPU=false produces no detail tags
-		// — the extra-tags HDR bucket emits "no-dv" for that case.
+		// Build the desired set based on extraction outcome:
+		//   - foundRPU=true → profile/layer/cm tags (real DV detected)
+		//   - foundRPU=false (status no-rpu, or cached negative) → no-dv
+		//   - failed (real extraction error) → no-dv (TRaSH parity)
+		// Each branch consults engine config; "no-dv" can be filtered
+		// out via AllowedValues if the user wants only positive tags.
 		var desired []string
 		if foundRPU {
 			desired = engine.EmitDvDetailTags(detail, engineCfg)
+		} else {
+			desired = engine.EmitNoDvTag(engineCfg)
 		}
 		desiredSet := make(map[string]struct{}, len(desired))
 		for _, tag := range desired {

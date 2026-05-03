@@ -150,16 +150,28 @@ func HdrTypeIndicatesDv(hdrType string) bool {
 var reDvHint = regexp.MustCompile(`(?i)\b(DV|dolby)\b`)
 
 // vocabDvDetail is the closed set of values M4b's DV-detail emits.
-// Two logical groups: profile/layer ("mel" / "fel" / "dvprofile8")
-// and CM version ("cm2" / "cm4"). Order chosen for display: layer
-// info first (most distinctive), then CM version.
+// Three logical groups:
+//   - profile/layer ("mel" / "fel" / "dvprofile8") — emitted by
+//     DvDetail.Tags() based on parsed extraction summary
+//   - CM version ("cm2" / "cm4") — emitted same way
+//   - extraction outcome ("no-dv") — emitted via EmitNoDvTag when
+//     the file was a DV candidate per Radarr's mediaInfo but
+//     extraction returned no RPU (or failed for non-operational
+//     reasons). Mirrors the TRaSH script's `no-dv` tag — lets users
+//     write CFs that distinguish "claimed DV with confirmed
+//     profile" from "claimed DV but unverifiable".
+//
+// Order chosen for display: layer info first (most distinctive),
+// then CM version, then no-dv last (fallback marker, not a positive
+// detection).
 //
 // Single source of truth — DvDetailVocabulary returns it,
 // AllPossibleDvDetailTags + EmittableDvDetailTags both iterate it,
-// and DvDetail.Tags emits values from this set. A new vocab value
-// added here must therefore land in the parser too; the test suite
-// (TestParseDvSummary_*) pins the parser-vs-vocab pair.
-var vocabDvDetail = []string{"mel", "fel", "dvprofile8", "cm2", "cm4"}
+// and DvDetail.Tags + EmitNoDvTag emit values from this set. A new
+// vocab value added here must therefore land in the parser
+// (DvDetail.Tags) or the no-dv branch as appropriate; the test suite
+// (TestParseDvSummary_* + TestEmitNoDvTag_*) pins the pairs.
+var vocabDvDetail = []string{"mel", "fel", "dvprofile8", "cm2", "cm4", "no-dv"}
 
 // DvDetailVocabulary returns the closed set of DV-detail emit
 // values, copied so callers can't mutate the package state. Used
@@ -268,6 +280,9 @@ func EmittableDvDetailTags(cfg DvDetailConfig) map[string]string {
 //     present but every value filtered out by AllowedValues —
 //     callers can `len(...)` either case identically
 //
+// Does NOT emit "no-dv" — that's a separate signal (extraction
+// outcome, not parsed detail). Use EmitNoDvTag for that branch.
+//
 // AllowedValues entries that aren't in the canonical vocabulary
 // are silently ignored at emit-time (the lookup map check just
 // fails). API-layer validation should reject unknown values at
@@ -299,4 +314,32 @@ func EmitDvDetailTags(detail DvDetail, cfg DvDetailConfig) []string {
 		out = append(out, cfg.Prefix+v)
 	}
 	return out
+}
+
+// EmitNoDvTag returns the no-dv tag label (with optional prefix)
+// when the configuration permits it. Called by the scan handler
+// for DV candidates where extraction failed to produce an RPU OR
+// where the cached entry says Found=false. Mirrors TRaSH's
+// `add_tag "$movie_id" "no-dv"` branch.
+//
+// Returns:
+//   - nil when cfg.Enabled is false (master toggle short-circuit)
+//   - nil when AllowedValues filtered "no-dv" out (user opted out
+//     of this signal explicitly)
+//   - one-element slice with the prefixed label otherwise
+//
+// Symmetric with EmitDvDetailTags — both consult the same
+// allowed-values set so a "select"-mode config can pick exactly
+// which DV-detail values flow to Radarr. A user who only wants
+// profile/layer/cm tags can untick "no-dv"; a user who only wants
+// the no-dv signal (rare but valid) can untick everything else.
+func EmitNoDvTag(cfg DvDetailConfig) []string {
+	if !cfg.Enabled {
+		return nil
+	}
+	allowed := dvDetailAllowedValuesSet(cfg.AllowedValues, cfg.SelectMode)
+	if allowed != nil && !allowed["no-dv"] {
+		return nil
+	}
+	return []string{cfg.Prefix + "no-dv"}
 }
