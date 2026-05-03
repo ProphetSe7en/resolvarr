@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -476,6 +477,20 @@ func (s *Scheduler) pruneOrphanLogFiles() {
 		}
 		name := e.Name()
 		if _, ok := keep[name]; ok {
+			continue
+		}
+		// Audit log + adhoc scan dumps share /config/logs/ but are NOT
+		// scheduler output. They're managed by their own retention
+		// (runlog.pruneOldArchives — KeepDays-based). Touching them
+		// here wipes user-visible Activity tab history on every
+		// container restart. Match-and-skip the patterns this prune
+		// shouldn't see:
+		//   runs.log              — current audit log
+		//   runs-YYYYMMDD.log     — rotated audit logs
+		//   scan-{action}-YYYYMMDD-HHMMSS.json — adhoc scan dumps
+		if name == "runs.log" ||
+			(strings.HasPrefix(name, "runs-") && strings.HasSuffix(name, ".log")) ||
+			(strings.HasPrefix(name, "scan-") && strings.HasSuffix(name, ".json")) {
 			continue
 		}
 		full := filepath.Join(s.logDir, name)

@@ -530,13 +530,12 @@
     </div>
 
     <div class="settings-layout">
-      <!-- Sidebar — five focused sub-tabs: Run mode (operations),
+      <!-- Sidebar — focused sub-tabs: Run mode (operations + saved rules),
            Release Groups (the active list), Filters (rules + filter-
-           driven actions Discover + Cleanup), Extra tags (independent
-           media-info tagging), Activity (Quick fix-all + scheduled
-           runs + history). -->
+           driven actions Discover + Cleanup), Audio / Video / DV detail
+           (per-bucket media-info tagging), History (adhoc scan replays). -->
       <!-- Sidebar — sub-tabs hide per-app-type when the action isn't
-           supported (Sonarr currently shows Run mode + Activity only).
+           supported (Sonarr currently shows Run mode + History only).
            scanSectionVisible() encapsulates the per-type visibility
            rules; setScanAppType() also nudges the active section back
            to 'run' when the user switches to a type that doesn't
@@ -566,8 +565,8 @@
         <template x-if="scanSectionVisible('dvdetail')">
           <div class="settings-nav" :class="scanSection === 'dvdetail' && 'settings-nav-active'" @click="setScanSection('dvdetail')" title="Library scan → DV detail (Dolby Vision profile + CM tags). Requires ffmpeg + dovi_tool install.">DV detail</div>
         </template>
-        <template x-if="scanSectionVisible('activity')">
-          <div class="settings-nav" :class="scanSection === 'activity' && 'settings-nav-active'" @click="setScanSection('activity')">Activity</div>
+        <template x-if="scanSectionVisible('history')">
+          <div class="settings-nav" :class="scanSection === 'history' && 'settings-nav-active'" @click="setScanSection('history')">History</div>
         </template>
       </div>
 
@@ -594,14 +593,14 @@
                   <p>This is the orchestrator tab — two equal-weight launchers below let you either run a chain right now or save a chain as a reusable rule.</p>
                   <ul>
                     <li><strong>⚡ Quick fix-all</strong> — opens a wizard, runs a chain of actions in one shot (Discover → Recover → Tag → Audio → Video → DV detail). Pick which phases to run via the wizard's mode + combined-modes selectors. Use this for the common "do everything now" case. One-shot run — no rule is saved.</li>
-                    <li><strong>➕ Create rule</strong> — opens the same wizard but in save-mode. Pick a cron schedule or save as Manual-only (a one-click preset you fire from the rule's card on the Activity tab). Each rule carries its own filter / release-group / extra-tag snapshot, so changing your Library-scan defaults later doesn't perturb saved rules.</li>
+                    <li><strong>➕ Create rule</strong> — opens the same wizard but in save-mode. Pick a cron schedule or save as Manual-only (a one-click preset you fire from the rule's card on the Run mode tab). Each rule carries its own filter / release-group / extra-tag snapshot, so changing your Library-scan defaults later doesn't perturb saved rules.</li>
                   </ul>
                   <p>Standalone actions live on their own sub-tabs:</p>
                   <ul>
                     <li><strong>Tag library</strong> — applies your release-group rules to every movie (own sub-tab in the sidebar).</li>
                     <li><strong>Release Groups</strong> — find new groups (Discover) and recover missing ones (Recover). Both share the unified actions card at the top of that tab.</li>
                   </ul>
-                  <p>Saved <strong>Rules</strong> live on the <strong>Activity</strong> tab — that's where cron-fired rules + their history live.</p>
+                  <p>Saved <strong>Rules</strong> live on the <strong>Run mode</strong> tab — that's where cron-fired rules + their history live. Adhoc scan results (saved automatically when you preview/apply) are on the <strong>History</strong> tab.</p>
                 </div>
                 <div class="help-section">
                   <h4>Preview vs Apply</h4>
@@ -682,14 +681,14 @@
       </template>
       <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;display:flex;flex-direction:column;gap:10px">
         <div style="font-size:15px;font-weight:600;color:var(--text-primary)">➕ Create rule</div>
-        <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;flex:1">Save a chain as a reusable rule — fires on a cron schedule, or manual-only as a saved preset you can fire on demand. Each rule carries its own filter / release-group / extra-tag snapshot. Manage saved rules on the <strong>Activity</strong> tab.</div>
+        <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;flex:1">Save a chain as a reusable rule — fires on a cron schedule, or manual-only as a saved preset you can fire on demand. Each rule carries its own filter / release-group / extra-tag snapshot. Saved rules live on this tab — past run results show up below.</div>
         <button class="btn btn-primary" @click="openCreateRuleWizard()" :disabled="!scanInstanceId" style="white-space:nowrap;align-self:flex-start">+ Create rule</button>
       </div>
     </div>
 
     <!-- Quick fix-all result panel — renders below the launcher when
-         a run has completed. Same shape as the legacy Activity-tab
-         placement; stays here so the result lives where the action
+         a run has completed. Pre-Step-5 it lived on the (now-renamed)
+         Activity tab; stays here so the result lives where the action
          was launched. Hidden when scanAppType is sonarr — QFA chains
          Radarr-only actions, so a leftover Radarr result is misleading
          after a switch. -->
@@ -748,15 +747,15 @@
 
 
 
-    <!-- ===== Saved rules + Activity result panel =====
-         Moved from Activity in Step 5: rules live where they are
-         created (Run mode), so the Create rule launcher above and
-         the saved-rules grid sit on the same tab. Activity becomes
-         a pure history view (scan-history viewer only). The result
+    <!-- ===== Saved rules + result panel =====
+         Moved from the old Activity tab in Step 5: rules live where
+         they are created (Run mode), so the Create rule launcher
+         above and the saved-rules grid sit on the same tab. The
+         History tab is now a pure scan-history viewer. The result
          panel below the rules grid hydrates when a rule's Last-run
          button or the History modal is clicked. -->
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
-      <div style="font-size:18px;font-weight:600;color:var(--text-primary)">Activity</div>
+      <div style="font-size:18px;font-weight:600;color:var(--text-primary)">Saved rules</div>
       <div style="flex:1"></div>
       <button class="btn btn-sm" @click="loadSchedules()" :disabled="schedulesLoading" title="Refresh from server">
         <span x-show="!schedulesLoading">Reload</span>
@@ -767,12 +766,12 @@
       Saved rules — they fire on cron, or you can fire them manually from the card. Each rule carries its own filter, Release-Group selection, and Extra-tags settings independent of the Library scan tabs. <strong>Create new rules from the Run mode tab</strong> — both the Quick fix-all (one-shot) and Create rule (saved) launchers live there.
     </div>
 
-    <!-- ===== Activity result panel =====
+    <!-- ===== Run-mode result panel =====
          Mirrors the Quick fix-all result panel structure. Populated
          by either Run-now (polls until the new history row +
          result-file land) or by the History modal's "View per-
          movie details" action. Same per-phase rows + drill-in
-         modals — keeps the user on Activity, no tab navigation. -->
+         modals — keeps the user on Run mode, no tab navigation. -->
     <div x-show="activityResults" x-cloak style="border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px;margin-bottom:14px;background:var(--bg-page)">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
         <span style="font-size:15px;font-weight:600;color:var(--text-body)">📋 Run result</span>
@@ -3603,6 +3602,15 @@
               <h4>Why it's opt-in</h4>
               <p>Radarr's mediaInfo doesn't expose <strong>RPU</strong> detail (the embedded Dolby Vision metadata layer that carries profile / layer / CM-version) — so DV detail has to read each file directly with <code>ffmpeg</code> + <code>dovi_tool</code>. Set <code>ENABLE_DV_TOOLS=true</code> on the container to install the binaries on next start (kept in <code>/config/tools/</code> on your appdata mount, survives image upgrades). Results are cached to <code>/config/dv-cache.json</code> so re-scans only touch new or changed files.</p>
             </div>
+            <div class="help-section">
+              <h4>File access — the one DV-specific gotcha</h4>
+              <p>Reading the file means resolvarr needs to <strong>open it from inside its own container</strong>. Radarr/Sonarr report a path like <code>/movies/Title.2024.UHD.mkv</code> — that's the path Radarr's container sees. Two scenarios:</p>
+              <ol>
+                <li><strong>Same in-container path in both</strong> — if your Radarr template mounts <code>/mnt/user/movies → /movies</code> and you mount the same source as <code>/movies</code> in resolvarr, no extra config is needed. The path Radarr reports works as-is.</li>
+                <li><strong>Different in-container paths</strong> — if Radarr sees <code>/movies</code> but you mounted the share as <code>/media/movies</code> in resolvarr, you need a Path mapping. Go to <strong>Settings → Instances → click your Radarr → Path mappings</strong> (the section is collapsed by default) and add a row: <code>/movies</code> (Radarr's prefix) → <code>/media/movies</code> (in resolvarr).</li>
+              </ol>
+              <p>If a DV scan result shows <strong>Unreachable</strong> count &gt; 0, that means <code>os.Stat</code> couldn't open the path — usually scenario #2 unmapped. Open the failed row in the per-movie drill-in to see the exact path resolvarr tried.</p>
+            </div>
             <div class="help-tip">
               <strong>Run order:</strong> Video tags first (so the base <code>dv</code> tag exists), then DV detail layers profile / layer / CM tags on top. Quick fix-all + schedules sequence them automatically.
             </div>
@@ -3638,8 +3646,8 @@
 
           <!-- Live DV scan progress lives at the document root as a
                fixed-position banner (search "DV-SCAN-PROGRESS-BANNER"
-               below) so it surfaces on every tab — including Activity
-               when fired by a rule run, and Run mode when fired by
+               below) so it surfaces on every tab — including History
+               when reviewing a saved scan, and Run mode when fired by
                Quick fix-all. Single state, single render path. -->
 
           <!-- Tools status banner. Install moved out of the UI entirely
@@ -3734,9 +3742,12 @@
                           x-text="scanResults.dvDetail.mode === 'apply' ? 'Applied' : 'Preview'"></span>
                     <span style="font-size:14px;font-weight:600;color:var(--text-primary)">DV detail results</span>
                   </div>
-                  <button class="icon-btn" @click="dismissDvDetailResults()" title="Dismiss">
-                    <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10 M13 3L3 13"/></svg>
-                  </button>
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <button class="btn btn-sm" @click="viewPhaseDetails({phase: 'dvdetail', response: scanResults.dvDetail})" title="See per-movie list with status chips, profile/layer/CM breakdown, and click-to-filter">View per-movie details</button>
+                    <button class="icon-btn" @click="dismissDvDetailResults()" title="Dismiss">
+                      <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10 M13 3L3 13"/></svg>
+                    </button>
+                  </div>
                 </div>
                 <div style="padding:10px 16px">
                   <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px">
@@ -3763,6 +3774,13 @@
                       <span><span style="color:var(--text-muted-secondary)">·</span> <span style="color:var(--accent-orange)">Tools missing <strong x-text="scanResults.dvDetail.totals.dvToolsMissing"></strong></span></span>
                     </template>
                   </div>
+                  <!-- Inline hint when Unreachable > 0 — almost always a Path Mapping
+                       gap. Helps the user fix it without hunting through help-panels. -->
+                  <template x-if="(scanResults.dvDetail.totals.dvFileUnreachable || 0) > 0">
+                    <div style="margin-top:8px;padding:8px 12px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;font-size:12px;color:var(--text-body);line-height:1.5">
+                      <strong style="color:var(--accent-red)">⚠ Unreachable means resolvarr couldn't open the file path.</strong> Almost always: missing or wrong <strong>Path Mapping</strong>. Go to <strong>Settings → Instances → click your Radarr → Path mappings</strong> (collapsed by default) and add a row that translates the prefix Radarr uses (e.g. <code>/movies</code>) into the path resolvarr can reach (e.g. <code>/media/movies</code>). Open a failed row in the per-movie drill-in to see the exact path resolvarr tried.
+                    </div>
+                  </template>
                   <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--bg-muted);display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px">
                     <span style="font-size:11px;color:var(--text-muted-secondary);text-transform:uppercase;letter-spacing:0.4px;margin-right:4px">Tags to change</span>
                     <span style="color:var(--accent-green)"><span x-text="scanResults.dvDetail.mode === 'apply' ? 'Added' : 'To add'"></span> <strong x-text="scanResults.dvDetail.totals.toAdd || 0"></strong></span>
@@ -3804,20 +3822,20 @@
 
         </div>
 
-        <!-- ===== Activity sub-tab =====
-             Pure history view as of Step 5 — adhoc scan replays only.
+        <!-- ===== History sub-tab =====
+             Pure scan-history view as of Step 5 — adhoc scan replays only.
              Saved rules + their per-run history moved to Run mode where
              they are created and observed. -->
-        <div x-show="scanSection === 'activity'" x-cloak>
+        <div x-show="scanSection === 'history'" x-cloak>
 
-          <button class="help-toggle" :class="helpOpen.activity && 'is-open'" @click="helpOpen.activity = !helpOpen.activity">
+          <button class="help-toggle" :class="helpOpen.history && 'is-open'" @click="helpOpen.history = !helpOpen.history">
             <span class="help-icon">i</span>
-            <span x-text="helpOpen.activity ? 'Hide help' : 'How it works'"></span>
+            <span x-text="helpOpen.history ? 'Hide help' : 'How it works'"></span>
           </button>
-          <div class="help-panel" x-show="helpOpen.activity" x-cloak>
+          <div class="help-panel" x-show="helpOpen.history" x-cloak>
             <div class="help-section">
               <h4>What you do here</h4>
-              <p>This tab is the history view for adhoc scans. Every scan you run by hand — from Tag library, Release Groups (Discover / Recover), Filters (Cleanup), Audio tags, Video tags, DV detail, or Quick fix-all — saves a JSON dump under <code>/config/logs/scan-*.json</code>. Click any row to replay that result in its native panel without re-running the scan.</p>
+              <p>This is the scan-history view. Every scan you run by hand — from Tag library, Release Groups (Discover / Recover), Filters (Cleanup), Audio tags, Video tags, DV detail, or Quick fix-all — saves a JSON dump under <code>/config/logs/scan-*.json</code>. Click any row to replay that result in its native panel without re-running the scan.</p>
               <p>Filter chips above the list narrow by action type. Retention follows the <strong>Settings → Logging</strong> Keep-days setting (default 14). The list is scoped to the currently-selected instance type — switch the instance picker at the top to flip the view.</p>
               <p><strong>Saved rules + their per-run history live on the Run mode tab</strong>, where they're created. This tab is purely for adhoc scan replays.</p>
             </div>
@@ -3886,7 +3904,7 @@
             </template>
           </div>
 
-        </div><!-- /Activity tab -->
+        </div><!-- /History tab -->
 
       </div>
     </div>

@@ -117,7 +117,7 @@ Open the Web UI at `http://your-host:6075`.
 | Container Path | Purpose |
 |---------------|---------|
 | `/config` | Configuration, scan history logs, schedule data |
-| `/media` (or your choice) | **Only required for Dolby Vision detail.** Mount your media library so resolvarr can read files for dovi_tool. Read-only (`:ro`) is sufficient. The mount path inside the container must be configurable to a Path Mapping under Settings → Instances so it matches what Radarr/Sonarr report. Skip this volume if you're not using DV detail tagging. |
+| `/media` (or your choice) | **Only required for Dolby Vision detail.** Mount your media library so resolvarr can read files for dovi_tool. Read-only (`:ro`) is sufficient. Two ways to make paths line up: (1) easiest — use the **same in-container path Radarr/Sonarr uses** (e.g. mount as `/movies` here if Radarr mounts the share as `/movies` too — no Path Mapping needed); (2) **different in-container paths** — pick whatever, then add a Path Mapping under Settings → Instances inside the web UI to translate Radarr's path prefix into yours. Skip this volume entirely if you're not using DV detail tagging. |
 
 ### Ports
 
