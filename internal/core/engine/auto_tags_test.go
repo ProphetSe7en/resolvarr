@@ -113,19 +113,47 @@ func TestAudioChannelsBucket(t *testing.T) {
 
 func TestHasAtmos(t *testing.T) {
 	cases := []struct {
-		features string
-		want     bool
+		name         string
+		features     string
+		relativePath string
+		sceneName    string
+		want         bool
 	}{
-		{"Atmos", true}, {"atmos", true},
-		{"Dolby Atmos / DD+", true},
-		{"", false},
-		{"DTS:X", false},
+		// Authoritative source: audioAdditionalFeatures match wins.
+		{"feature_match_capital", "Atmos", "", "", true},
+		{"feature_match_lower", "atmos", "", "", true},
+		{"feature_match_compound", "Dolby Atmos / DD+", "", "", true},
+
+		// Filename fallback when features blank.
+		{"filename_token_uhd_release",
+			"", "Movie.2024.UHD.BluRay.2160p.HDR10.TrueHD.Atmos.7.1.x265-FLUX.mkv", "",
+			true},
+		{"scenename_token",
+			"", "", "Movie.2024.UHD.BluRay.TrueHD.Atmos.7.1.x265-FLUX",
+			true},
+		{"filename_lowercase",
+			"", "movie.2024.webdl.atmos.5.1-ntb.mkv", "",
+			true},
+
+		// Negative paths.
+		{"empty_all", "", "", "", false},
+		{"features_negative", "DTS:X", "", "", false},
+		{"no_atmos_token_in_filename",
+			"", "Movie.2024.WEB-DL.DDP.5.1.x264-NTb.mkv", "Movie.2024.WEB-DL.DDP.5.1-NTb",
+			false},
+		// Substring guard — "atmospheric" in a movie title shouldn't trigger.
+		{"substring_false_positive_guard",
+			"", "Atmospheric.Pressure.2024.WEB-DL.DDP.5.1-NTb.mkv", "",
+			false},
 	}
 	for _, tc := range cases {
-		got := hasAtmos(tc.features)
-		if got != tc.want {
-			t.Errorf("hasAtmos(%q) = %v, want %v", tc.features, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			got := hasAtmos(tc.features, tc.relativePath, tc.sceneName)
+			if got != tc.want {
+				t.Errorf("hasAtmos(%q, %q, %q) = %v, want %v",
+					tc.features, tc.relativePath, tc.sceneName, got, tc.want)
+			}
+		})
 	}
 }
 

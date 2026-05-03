@@ -35,6 +35,12 @@ type MediaInfo struct {
 	AudioCodec              string  // "TrueHD" | "DTS-X" | "AC3" | etc
 	AudioChannels           float64 // 2.0 | 5.1 | 7.1
 	AudioAdditionalFeatures string  // contains "Atmos" sometimes
+	// RelativePath + SceneName let detection helpers (notably hasAtmos)
+	// fall back on filename tokens when MediaInfo fields are blank.
+	// Old Radarr imports + Atmos-in-EAC3 streams sometimes leave
+	// AudioAdditionalFeatures empty even when the file IS Atmos.
+	RelativePath string // e.g., "Movie.2024.UHD.BluRay.TrueHD.Atmos.7.1.x265-FLUX.mkv"
+	SceneName    string // original release name when imported via Radarr
 }
 
 // BucketConfig captures one bucket's toggle + prefix + per-value
@@ -206,10 +212,41 @@ func audioChannelsBucket(channels float64) string {
 	return ""
 }
 
-// hasAtmos checks both audioAdditionalFeatures (Radarr v5+) and codec
-// (older Radarr stuffs "Atmos" into the codec string sometimes).
-func hasAtmos(audioAdditionalFeatures string) bool {
-	return strings.Contains(strings.ToLower(audioAdditionalFeatures), "atmos")
+// hasAtmos checks Radarr's audioAdditionalFeatures field first (the
+// authoritative source when populated — modern Radarr writes "Atmos"
+// here when MediaInfo detected it at import time). Falls back to a
+// filename-token check on relativePath + sceneName because:
+//   - Older Radarr imports often have audioAdditionalFeatures="" even
+//     for genuine Atmos files.
+//   - MediaInfo's Atmos detection in EAC3 streams is less reliable
+//     than in TrueHD, so EAC3-Atmos files can end up with a blank
+//     features field.
+//
+// Token-based filename match (vs substring) avoids false positives —
+// "atmos" must appear as its own word, separated by . - _ or space.
+// Won't match a movie literally titled "Atmos" because the title
+// rarely sits adjacent to the same delimiters as a release-tag
+// (releases use ".atmos." between codec + channels).
+func hasAtmos(audioAdditionalFeatures, relativePath, sceneName string) bool {
+	if strings.Contains(strings.ToLower(audioAdditionalFeatures), "atmos") {
+		return true
+	}
+	return hasAtmosFilenameToken(relativePath) || hasAtmosFilenameToken(sceneName)
+}
+
+func hasAtmosFilenameToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	lower := strings.ToLower(s)
+	for _, t := range strings.FieldsFunc(lower, func(r rune) bool {
+		return r == '.' || r == '-' || r == '_' || r == ' '
+	}) {
+		if t == "atmos" {
+			return true
+		}
+	}
+	return false
 }
 
 // hdrBuckets returns 0..2 tags from videoDynamicRangeType. Returns
