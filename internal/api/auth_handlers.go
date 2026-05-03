@@ -46,7 +46,7 @@ var setupTmpl = template.Must(template.New("setup").Parse(`<!DOCTYPE html>
 </head>
 <body>
 <div class="card">
-  <h1>Welcome to Tagarr</h1>
+  <h1>Welcome to Resolvarr</h1>
   <p class="sub">Authentication is now required. Create the admin account to continue — you'll use this login every time you access Resolvarr from outside your local network.</p>
   {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
   <form method="POST" action="/setup">
@@ -152,7 +152,7 @@ var loginTmpl = template.Must(template.New("login").Parse(`<!DOCTYPE html>
 </head>
 <body>
 <div class="card">
-  <h1>Tagarr</h1>
+  <h1>Resolvarr</h1>
   {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
   <form method="POST" action="/login{{if .NextEncoded}}?next={{.NextEncoded}}{{end}}">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
