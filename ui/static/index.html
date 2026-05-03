@@ -3611,6 +3611,12 @@
               </ol>
               <p>If a DV scan result shows <strong>Unreachable</strong> count &gt; 0, that means <code>os.Stat</code> couldn't open the path — usually scenario #2 unmapped. Open the failed row in the per-movie drill-in to see the exact path resolvarr tried.</p>
             </div>
+            <div class="help-section">
+              <h4>Cache — how it speeds things up</h4>
+              <p>Every successful DV extraction is saved to <code>/config/dv-cache.json</code> keyed by <strong>movie file ID + size</strong>. Re-scans skip files where both match — the <code>ffmpeg</code> + <code>dovi_tool</code> pipeline only runs once per file. Per-file extraction is actually fast on remux sources (tens of milliseconds once <code>dovi_tool</code> finds the RPU SEI in the first GOP), but cumulative + fork/exec/IO overhead across hundreds of files makes the cache worth having.</p>
+              <p>The <strong>size</strong> half of the key is the auto-invalidation: when Radarr re-imports an upgrade, the new file has the same movie file ID but a different size — the old cache entry is bypassed and the new file gets re-extracted. No manual refresh needed.</p>
+              <p>The <strong>Clear DV cache</strong> button under the Run scan controls forces a full re-extraction on the next scan. Useful when <code>dovi_tool</code> is upgraded (a new version may detect different layer or CM-version semantics on the same file). DV tags already on movies in Radarr are <strong>not</strong> touched by Clear — only the cached extraction results are wiped.</p>
+            </div>
             <div class="help-tip">
               <strong>Run order:</strong> Video tags first (so the base <code>dv</code> tag exists), then DV detail layers profile / layer / CM tags on top. Quick fix-all + schedules sequence them automatically.
             </div>
@@ -3624,6 +3630,11 @@
             <span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;background:var(--alpha-orange);color:var(--accent-orange)">Opt-in</span>
             <div style="flex:1"></div>
             <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-secondary)"
+                     title="Skip /config/dv-cache.json for this scan only — every file goes through ffmpeg + dovi_tool fresh. Default off (cache active).">
+                <input type="checkbox" x-model="dvBypassCache" style="accent-color:var(--accent-orange)">
+                <span>Skip cache</span>
+              </label>
               <span style="font-size:13px;color:var(--text-body);font-weight:500">Run mode:</span>
               <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
                 <input type="radio" x-model="dvDetailRunMode" value="preview" name="dv-detail-mode" style="accent-color:var(--accent-blue)">
@@ -3643,6 +3654,39 @@
             </div>
           </div>
           <div class="settings-section-desc">Layers Dolby Vision profile + layer + CM-version tags (<code>mel</code> / <code>fel</code> / <code>dvprofile8</code> / <code>cm2</code> / <code>cm4</code>) on top of the base <code>dv</code> tag emitted by Video tags → HDR. Cached to <code>/config/dv-cache.json</code> so re-scans only touch new or changed files.</div>
+
+          <!-- Cache panel — sits between the Run controls and the Tools-status banner.
+               Shows current cache state at a glance + the Clear button. The Clear button
+               wipes /config/dv-cache.json (the extraction results memo) but does NOT touch
+               DV tags already on movies in Radarr. See help-panel "Cache — how it speeds
+               things up" for the long form. -->
+          <div style="margin-top:14px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:12px 16px">
+            <div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap">
+              <div style="flex:1;min-width:240px">
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">DV detail cache</div>
+                <template x-if="!dvCacheStats || dvCacheStats.entryCount === 0">
+                  <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">No files cached yet. The first DV scan populates the cache so re-scans are instant for unchanged files.</div>
+                </template>
+                <template x-if="dvCacheStats && dvCacheStats.entryCount > 0">
+                  <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
+                    <strong style="color:var(--text-body)" x-text="dvCacheStats.entryCount"></strong> cached files
+                    · <strong style="color:var(--text-body)" x-text="formatBytes(dvCacheStats.fileSizeBytes)"></strong>
+                    <template x-if="dvCacheStats.newestCachedAt">
+                      <span> · last extraction <strong style="color:var(--text-body)" x-text="formatDate(dvCacheStats.newestCachedAt)"></strong></span>
+                    </template>
+                    <div style="margin-top:4px">Skips re-extraction for files we've already analysed. Auto-refreshed when a file's size changes (Radarr re-import).</div>
+                  </div>
+                </template>
+              </div>
+              <button class="btn btn-sm"
+                      :disabled="!dvCacheStats || dvCacheStats.entryCount === 0 || clearingDvCache"
+                      @click="openClearDvCacheConfirm()"
+                      title="Wipe the cache file. DV tags already on movies in Radarr are not touched.">
+                <span x-show="!clearingDvCache">Clear DV cache</span>
+                <span x-show="clearingDvCache">Clearing…</span>
+              </button>
+            </div>
+          </div>
 
           <!-- Live DV scan progress lives at the document root as a
                fixed-position banner (search "DV-SCAN-PROGRESS-BANNER"
@@ -4009,6 +4053,35 @@
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn" @click="showDvDetailApplyConfirm = false">Cancel</button>
         <button class="btn btn-primary" @click="confirmDvDetailApply()">Apply now</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ CLEAR DV CACHE CONFIRM MODAL ============
+       Destructive but bounded: wipes /config/dv-cache.json (extraction
+       memo). Tags already in Radarr are NOT touched. Modal shows the
+       concrete entry count + size so the user knows exactly what gets
+       wiped before confirming. -->
+  <div class="modal-overlay" x-show="showClearDvCacheConfirm" x-cloak @click.self="showClearDvCacheConfirm = false" @keydown.escape.window="showClearDvCacheConfirm = false">
+    <div class="modal" style="width:520px">
+      <div class="modal-title">Clear DV detail cache?</div>
+      <div style="font-size:13px;color:var(--text-body);line-height:1.6;margin-bottom:16px">
+        <p style="margin-top:0">
+          Deletes <code>/config/dv-cache.json</code> —
+          <template x-if="dvCacheStats">
+            <span><strong x-text="dvCacheStats.entryCount"></strong> cached file<span x-show="dvCacheStats.entryCount !== 1">s</span>, <strong x-text="formatBytes(dvCacheStats.fileSizeBytes)"></strong></span>
+          </template>.
+        </p>
+        <p><strong style="color:var(--accent-green)">Untouched:</strong> DV tags already on movies in Radarr, your DV detail config (allowed values, prefix), filter rules, schedules.</p>
+        <p><strong style="color:var(--accent-orange)">What happens next:</strong> the next DV scan re-runs <code>ffmpeg</code> + <code>dovi_tool</code> on every file. Fast on modern remux sources but adds up — expect noticeably longer scan time depending on library size and disk speed.</p>
+        <p style="margin-bottom:0;color:var(--text-secondary);font-size:12px"><strong>Useful when:</strong> dovi_tool gets upgraded (a new version may detect different layer/CM-version semantics), or files were re-encoded with the same Radarr movie file ID (rare — the size key normally catches that).</p>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" @click="showClearDvCacheConfirm = false" :disabled="clearingDvCache">Cancel</button>
+        <button class="btn btn-danger" @click="confirmClearDvCache()" :disabled="clearingDvCache">
+          <span x-show="!clearingDvCache">Clear DV cache</span>
+          <span x-show="clearingDvCache">Clearing…</span>
+        </button>
       </div>
     </div>
   </div>
@@ -5899,12 +5972,17 @@
             </div>
           </div>
 
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin:6px 0 14px 0">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin:6px 0 8px 0">
             <input type="checkbox" x-model="editingRule.dvDetail.removeOrphanedTags" style="accent-color:var(--accent-blue)">
             <span>Remove orphaned DV-detail tags on Apply <span style="color:var(--accent-orange)">— destructive, off by default</span></span>
           </label>
 
-          <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Requires <code>ffmpeg</code> + <code>dovi_tool</code> installed on Library scan → DV detail. Per-rule allow-lists — empty = "use all values"; explicit list = "only these".</div>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin:0 0 14px 0">
+            <input type="checkbox" x-model="editingRule.options.bypassDvCache" style="accent-color:var(--accent-orange)">
+            <span>Skip DV cache on every fire <span style="color:var(--accent-orange)">— forces fresh ffmpeg + dovi_tool extraction</span></span>
+          </label>
+
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Requires <code>ffmpeg</code> + <code>dovi_tool</code> installed on Library scan → DV detail. Per-rule allow-lists — empty = "use all values"; explicit list = "only these". Skip cache forces re-extraction every fire; useful for occasional refresh after a <code>dovi_tool</code> upgrade, less so as a daily-cron default.</div>
         </div>
       </template>
 

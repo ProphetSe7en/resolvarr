@@ -234,6 +234,20 @@ func TestExtractFromTar_MissingExpectedEntry(t *testing.T) {
 }
 
 func TestStatus_NoBinaries(t *testing.T) {
+	// Status today returns "" for *BinPath when neither the legacy
+	// /config/tools/ location nor $PATH yields a runnable binary.
+	// Earlier versions of Status filled DvBinPath/FfBinPath with the
+	// legacy path even when the file didn't exist; that pre-dated
+	// resolveBin and the move to ENABLE_DV_TOOLS at entrypoint. The
+	// UI now branches on `Installed`, not on the path-string, so
+	// the empty-path-when-missing behaviour is intentional.
+	//
+	// To make the test self-contained we point Dir at a tempdir AND
+	// give it an isolated $PATH so a dovi_tool/ffmpeg accidentally
+	// installed on the test runner doesn't FAIL this test (real
+	// binaries on PATH would resolve, set Installed=true, and trip
+	// the "Installed = true when no binaries present" assertion).
+	t.Setenv("PATH", t.TempDir())
 	tt := Tools{Dir: t.TempDir()}
 	got := tt.Status(context.Background())
 	if got.Installed {
@@ -242,8 +256,8 @@ func TestStatus_NoBinaries(t *testing.T) {
 	if got.DvVersion != "" || got.FfVersion != "" {
 		t.Errorf("expected empty versions, got dv=%q ff=%q", got.DvVersion, got.FfVersion)
 	}
-	if got.DvBinPath == "" || got.FfBinPath == "" {
-		t.Error("expected non-empty paths even when not installed")
+	if got.DvBinPath != "" || got.FfBinPath != "" {
+		t.Errorf("expected empty paths when not installed, got dv=%q ff=%q", got.DvBinPath, got.FfBinPath)
 	}
 }
 
@@ -274,10 +288,25 @@ func TestDefaultTools_Path(t *testing.T) {
 
 func TestStatus_HappyPathViaVersionFn(t *testing.T) {
 	// Inject a stub VersionFn so we don't need real binaries on disk.
-	// Tools.Status's only job is "shell out to each binary, capture
-	// first line of stdout" — we test that it does so.
+	// Tools.Status's only job is "resolve a binary path, shell out
+	// to it, capture first line of stdout" — we test that it does so.
+	//
+	// Path-resolution today uses resolveBin: legacy /config/tools/
+	// → exec.LookPath. We need at least one of those to return a
+	// non-empty path so Status will call VersionFn. Cheapest: drop
+	// empty files at the legacy paths so os.Stat succeeds. That's
+	// enough to exercise Status's "given a resolved path, call
+	// VersionFn" branch without depending on $PATH state.
+	dir := t.TempDir()
+	for _, name := range []string{"dovi_tool", "ffmpeg"} {
+		f, err := os.Create(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("create stub %s: %v", name, err)
+		}
+		f.Close()
+	}
 	tt := Tools{
-		Dir: t.TempDir(),
+		Dir: dir,
 		VersionFn: func(ctx context.Context, bin, flag string) (string, error) {
 			if strings.HasSuffix(bin, "/dovi_tool") {
 				return "dovi_tool 2.1.2", nil

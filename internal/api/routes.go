@@ -74,6 +74,11 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// model. Status reads `which ffmpeg` / `which dovi_tool` so the UI knows
 	// whether DV detail can run.
 	mux.HandleFunc("GET /api/tools/dv/status", s.handleDvToolsStatus)
+	// DV detail cache management. Stats powers the cache panel on the
+	// DV detail tab; Clear is the user-fired "wipe + force re-extract"
+	// action.
+	mux.HandleFunc("GET /api/dv-cache/stats", s.handleDvCacheStats)
+	mux.HandleFunc("DELETE /api/dv-cache", s.handleDvCacheClear)
 	// DV-detail scan progress + cancel — single in-flight scan per
 	// container; UI polls progress every ~1s while running and POSTs
 	// cancel to flip the context.
