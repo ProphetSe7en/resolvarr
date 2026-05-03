@@ -1,0 +1,208 @@
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surface */
+  --bg-app: #0f1117;
+  --bg-page: #0d1117;
+  --bg-card: #161b22;
+  --bg-elevated: #1c2128;
+  --bg-elevated-hover: #1c2129;
+  --bg-muted: #21262d;
+  --bg-panel: #1c2333;
+
+  /* Border */
+  --border-subtle: #30363d;
+  --border-muted: #21262d;
+  --border-faint: #161b22;
+
+  /* Text — bumped for higher dark-mode legibility (all values WCAG AAA on --bg-page) */
+  --text-primary: #f0f6fc;
+  --text-body: #e6edf3;
+  --text-secondary: #b8c0c8;
+  --text-muted: #c0c7d0;
+  --text-muted-secondary: #a8b1bb;
+  --text-soft: #cfd6dd;
+  --text-inverse: #0d1117;
+  --text-on-accent: #fff;
+
+  /* Accent */
+  --accent-blue: #58a6ff;
+  --accent-blue-muted: #1f3a5f;
+  --accent-blue-strong: #1f6feb;
+  --accent-blue-hover: #388bfd;
+  --accent-green: #3fb950;
+  --accent-green-bg: #1a3a1a;
+  --accent-green-strong: #238636;
+  --accent-green-hover: #2ea043;
+  --accent-red: #f85149;
+  --accent-red-soft: #f47067;
+  --accent-red-bg: #3d1f1f;
+  --accent-red-strong: #da3633;
+  --accent-orange: #d29922;
+  --accent-orange-bg: #3d2e0a;
+  --accent-orange-bright: #f0883e;
+  --accent-orange-strong: #9e6a03;
+  --accent-purple: #a371f7;
+  --accent-purple-soft: #d2a8ff;
+  --accent-sky: #79c0ff;
+  --accent-teal: #39d2e0;
+  --accent-mint: #39d353;
+  --accent-pink: #f778ba;
+
+  /* Semantic fills */
+  --fill-blue-soft: #0d2847;
+  --fill-blue-dark: #0d2240;
+  --fill-green-soft: #0d2f1a;
+  --fill-orange-soft: #3d2800;
+  --fill-radarr: #2d1f00;
+
+  /* Alpha fills */
+  --alpha-overlay: rgba(0,0,0,0.6);
+  --alpha-shadow: rgba(0,0,0,0.4);
+  --alpha-hover: rgba(255,255,255,0.03);
+  --alpha-active: rgba(255,255,255,0.04);
+  --alpha-subtle: rgba(255,255,255,0.02);
+  --alpha-orange-soft: rgba(240,136,62,0.06);
+  --alpha-orange: rgba(240,136,62,0.15);
+  --alpha-blue-soft: rgba(88,166,255,0.05);
+  --alpha-blue: rgba(88,166,255,0.15);
+  --alpha-red: rgba(248,81,73,0.15);
+  --alpha-blue-border: rgba(88,166,255,0.25);
+  --alpha-blue-border-strong: rgba(88,166,255,0.3);
+  --alpha-green-soft: rgba(63,185,80,0.1);
+  --alpha-green: rgba(63,185,80,0.15);
+  --alpha-purple: rgba(163,113,247,0.15);
+
+  /* CF categories. The backend manifest may override these at runtime. */
+  --cat-golden-rule: #d2a8ff;
+  --cat-audio: #d29922;
+  --cat-hdr: #a371f7;
+  --cat-streaming: #39d353;
+  --cat-optional: #58a6ff;
+  --cat-unwanted: #f85149;
+  --cat-hq-release-groups: #e3b341;
+  --cat-resolution: #79c0ff;
+  --cat-anime: #f778ba;
+  --cat-french: #39d2e0;
+  --cat-language: #3fb950;
+  --cat-german: #f0883e;
+  --cat-miscellaneous: #8b949e;
+  --cat-other: #8b949e;
+  --cat-required-core: #8b949e;
+
+  /* Profile groups. The backend manifest may override these at runtime. */
+  --grp-sqp: #58a6ff;
+  --grp-standard: #3fb950;
+  --grp-anime: #d2a8ff;
+  --grp-french: #d29922;
+  --grp-german: #f0883e;
+  --grp-imported: #8b949e;
+  --grp-other: #8b949e;
+
+  /* Code syntax (used in <pre>/<code> blocks rendering naming patterns) */
+  --code-string: #9ecbaa;
+
+  /* Status badges (used in changelog dropdown) */
+  --badge-feat-bg: #1b3a2a;
+  --badge-fix-bg: #3d2e0a;
+  --badge-other-bg: #1c2333;
+
+  /* No-auth warning banner */
+  --banner-warn-bg: #5a1f1f;
+  --banner-warn-border: #8b2d2d;
+  --banner-warn-text: #ffdada;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Surface — muted warm-grey page; white cards pop on top */
+  --bg-app: #ebeef2;
+  --bg-page: #ebeef2;
+  --bg-card: #ffffff;
+  --bg-elevated: #f6f8fa;
+  --bg-elevated-hover: #eef1f4;
+  --bg-muted: #dee3e8;
+  --bg-panel: #e8ecf0;
+
+  /* Border */
+  --border-subtle: #c8cfd6;
+  --border-muted: #d0d7de;
+  --border-faint: #dde2e7;
+
+  /* Text — bumped contrast for legibility on muted bg */
+  --text-primary: #1f2328;
+  --text-body: #24292f;
+  --text-secondary: #4d535b;
+  --text-muted: #4d535b;
+  --text-muted-secondary: #57606a;
+  --text-soft: #4d535b;
+  --text-inverse: #ffffff;
+  --text-on-accent: #ffffff;
+
+  /* Accent — keep hue, adjust lightness for contrast on light bg */
+  --accent-blue: #0969da;
+  --accent-blue-muted: #ddf4ff;
+  --accent-blue-strong: #0550ae;
+  --accent-blue-hover: #0860ca;
+  --accent-green: #1a7f37;
+  --accent-green-bg: #dafbe1;
+  --accent-green-strong: #116329;
+  --accent-green-hover: #1f883d;
+  --accent-red: #cf222e;
+  --accent-red-soft: #d1242f;
+  --accent-red-bg: #ffebe9;
+  --accent-red-strong: #a40e26;
+  --accent-orange: #9a6700;
+  --accent-orange-bg: #fff8c5;
+  --accent-orange-bright: #bc4c00;
+  --accent-orange-strong: #7d4e00;
+  --accent-purple: #8250df;
+  --accent-purple-soft: #6639ba;
+  --accent-sky: #218bff;
+  --accent-teal: #0a7c84;
+  --accent-mint: #1a7f37;
+  --accent-pink: #bf3989;
+
+  /* Semantic fills (light, low-saturation backgrounds) */
+  --fill-blue-soft: #ddf4ff;
+  --fill-blue-dark: #b6e3ff;
+  --fill-green-soft: #dafbe1;
+  --fill-orange-soft: #fff8c5;
+  --fill-radarr: #fff1c2;
+
+  /* Alpha overlays — invert to dark-on-light */
+  --alpha-overlay: rgba(0,0,0,0.4);
+  --alpha-shadow: rgba(0,0,0,0.08);
+  --alpha-hover: rgba(0,0,0,0.04);
+  --alpha-active: rgba(0,0,0,0.06);
+  --alpha-subtle: rgba(0,0,0,0.02);
+  --alpha-orange-soft: rgba(154,103,0,0.06);
+  --alpha-orange: rgba(154,103,0,0.15);
+  --alpha-blue-soft: rgba(9,105,218,0.06);
+  --alpha-blue: rgba(9,105,218,0.12);
+  --alpha-red: rgba(207,34,46,0.12);
+  --alpha-blue-border: rgba(9,105,218,0.25);
+  --alpha-blue-border-strong: rgba(9,105,218,0.4);
+  --alpha-green-soft: rgba(26,127,55,0.08);
+  --alpha-green: rgba(26,127,55,0.15);
+  --alpha-purple: rgba(130,80,223,0.18);
+
+  /* CF categories / profile groups inherit dark-mode values from :root —
+     they are decorative chips that read on either background, and the
+     backend manifest may override them at runtime. */
+
+  /* Code syntax (light-mode override for naming-pattern blocks) */
+  --code-string: #1a7f37;
+
+  /* Status badges (light-mode override) */
+  --badge-feat-bg: #dafbe1;
+  --badge-fix-bg: #fff8c5;
+  --badge-other-bg: #ddf4ff;
+
+  /* No-auth warning banner (light-mode override) */
+  --banner-warn-bg: #ffebe9;
+  --banner-warn-border: #ffcecb;
+  --banner-warn-text: #82071e;
+}

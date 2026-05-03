@@ -1,0 +1,38 @@
+/* layout.css — page chrome, sub-tab grid, row scaffolds. Holds the
+   structural primitives every feature relies on; component visuals
+   live in components.css. */
+
+/* Top nav */
+.topnav { display: flex; align-items: center; background: var(--bg-card); border-bottom: 1px solid var(--border-subtle); padding: 0 24px; height: 56px; }
+.topnav .logo { font-size: 18px; font-weight: 700; color: var(--accent-blue); margin-right: 32px; letter-spacing: -0.5px; }
+.topnav .version { font-size: 12px; color: var(--text-secondary); margin-left: -24px; margin-right: 32px; }
+.topnav .tabs { display: flex; gap: 0; height: 100%; }
+.topnav .tab { padding: 0 20px; height: 100%; display: flex; align-items: center; color: var(--text-soft); cursor: pointer; border-bottom: 2px solid transparent; font-size: 15px; font-weight: 500; transition: all 0.15s; user-select: none; }
+.topnav .tab:hover { color: var(--text-primary); }
+.topnav .tab.active { color: var(--text-primary); border-bottom-color: var(--accent-blue); }
+
+.page { padding: 24px; max-width: 1280px; margin: 0 auto; }
+.section-title { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+.section-subtitle { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
+
+/* Settings sidebar layout — reused by Library scan (Run mode/Release Groups/
+   Filters/Extra tags), Webhooks (Setup/On Grab/On Import/On Delete/Activity),
+   and Settings (Instances/qBittorrent/Notifications/Display/About). */
+.settings-layout { display: flex; gap: 0; min-height: 400px; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; }
+.settings-sidebar { width: 180px; flex-shrink: 0; border-right: 1px solid var(--border-subtle); padding-top: 8px; }
+.settings-nav { display: flex; align-items: center; gap: 8px; padding: 10px 16px; font-size: 14px; color: var(--text-secondary); cursor: pointer; border-left: 3px solid transparent; transition: color 0.15s, background 0.15s; }
+.settings-nav:hover { color: var(--text-body); background: var(--alpha-hover); }
+.settings-nav-active { color: var(--text-body); border-left-color: var(--accent-green); background: var(--alpha-active); }
+.settings-content { flex: 1; padding: 16px 24px; }
+.settings-section-title { font-size: 16px; font-weight: 600; color: var(--text-body); margin-bottom: 4px; }
+.settings-section-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; line-height: 1.5; }
+
+.setting-row { display: flex; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--bg-muted); }
+.setting-row:last-child { border-bottom: none; }
+.setting-label { width: 160px; flex-shrink: 0; font-size: 13px; color: var(--text-body); padding-top: 6px; }
+.setting-value { flex: 1; }
+
+/* Instance row — Settings → Instances list */
+.inst-row { display: flex; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--bg-muted); gap: 8px; }
+.inst-row:last-child { border-bottom: none; }
+.inst-icon { width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0; object-fit: contain; background: var(--bg-muted); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: var(--accent-blue); }

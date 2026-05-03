@@ -1,0 +1,489 @@
+/* components.css — reusable atoms (buttons, inputs, modal, toast,
+   segmented control, toggle switch, status pills). Layout primitives
+   live in layout.css; feature-specific styling lives in features.css. */
+
+/* Buttons */
+.btn { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-muted); color: var(--text-primary); font-size: 12px; cursor: pointer; font-weight: 500; transition: all 0.15s; font-family: inherit; }
+.btn:hover { background: var(--border-subtle); border-color: var(--text-secondary); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--accent-green-strong); border-color: var(--accent-green-strong); color: var(--text-on-accent); }
+.btn-primary:hover { background: var(--accent-green-hover); border-color: var(--accent-green-hover); }
+.btn-danger { background: var(--accent-red-strong); border-color: var(--accent-red-strong); color: var(--text-on-accent); }
+.btn-danger:hover { background: var(--accent-red); }
+.btn-blue { background: var(--accent-blue-strong); border-color: var(--accent-blue-strong); color: var(--text-on-accent); }
+.btn-blue:hover { background: var(--accent-blue-hover); }
+.btn-warn { background: var(--accent-orange-bg); border-color: var(--accent-orange); color: var(--accent-orange); }
+.btn-warn:hover { background: var(--accent-orange-bg); border-color: var(--accent-orange-bright); }
+.btn-purple { background: #6e40c9; border-color: #6e40c9; color: var(--text-on-accent); }
+.btn-purple:hover { background: #8957e5; }
+.btn-teal { background: #0e6e6e; border-color: #0e6e6e; color: var(--text-on-accent); }
+.btn-teal:hover { background: #117a7a; }
+/* btn-selected — neutral active state for filter chips whose row-badge counterpart
+   is also neutral (no color story). Slightly darker bg + brighter border so the
+   chip reads as "this filter is active" without implying success/warning/etc. */
+.btn-selected { background: var(--border-subtle); border-color: var(--accent-blue); color: var(--text-on-accent); }
+.btn-selected:hover { background: var(--bg-elevated-hover); }
+.btn-sm { padding: 4px 10px; font-size: 13px; }
+
+/* Inputs */
+.input { background: var(--bg-page); border: 1px solid var(--border-subtle); color: var(--text-primary); padding: 6px 10px; border-radius: 6px; font-size: 13px; font-family: inherit; }
+.input:focus { outline: none; border-color: var(--accent-blue); }
+
+/* Status pills — instance connection state */
+.status-connected { color: var(--accent-green); font-size: 12px; font-weight: 600; }
+.status-failed { color: var(--accent-red); font-size: 12px; font-weight: 600; }
+.status-testing { color: var(--accent-orange); font-size: 12px; font-weight: 600; }
+.spinner { display:inline-block;width:10px;height:10px;border:2px solid var(--accent-orange);border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:4px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Modal */
+.modal-overlay { position: fixed; inset: 0; background: var(--alpha-overlay); display: flex; align-items: center; justify-content: center; z-index: 100; }
+/* overscroll-behavior:contain stops the scroll-chain — when a scrollable modal
+   reaches its top/bottom, the page underneath stops scrolling instead of the
+   modal scroll spilling through. Applied to .modal so any modal that opts into
+   internal scrolling via inline `overflow-y:auto;max-height` gets the trap
+   automatically without per-callsite repetition. */
+.modal { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 20px 24px; width: 480px; max-width: 92vw; overscroll-behavior: contain; }
+.modal-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; }
+.form-group { margin-bottom: 12px; }
+.form-group label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.form-group .input { width: 100%; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* Toast — top-center stack, multiple toasts queue + fade with their own
+   timers. Each toast carries an inline × dismiss button so the user is
+   never trapped waiting for a wall-of-text error to expire. */
+.toast-stack { position: fixed; top: 24px; left: 50%; transform: translateX(-50%); z-index: 200; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+.toast { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 10px 12px 10px 18px; font-size: 13px; color: var(--text-primary); box-shadow: 0 4px 16px var(--alpha-overlay); max-width: 560px; pointer-events: auto; display: flex; align-items: flex-start; gap: 12px; line-height: 1.4; }
+.toast.error { border-color: var(--accent-red); }
+.toast.success { border-color: var(--accent-green); }
+.toast-dismiss {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 18px;
+    line-height: 1;
+    padding: 0 2px;
+    cursor: pointer;
+    flex-shrink: 0;
+    align-self: center;
+    transition: color 0.12s;
+}
+.toast-dismiss:hover { color: var(--text-primary); }
+
+/* Segmented control — two-option pill-style toggle in list rows */
+.seg { display: inline-flex; border: 1px solid var(--border-subtle); border-radius: 6px; overflow: hidden; background: var(--bg-page); }
+.seg-btn { background: transparent; color: var(--text-secondary); border: none; padding: 3px 10px; font-size: 11px; cursor: pointer; font-family: inherit; min-width: 56px; transition: background 0.12s, color 0.12s; }
+.seg-btn + .seg-btn { border-left: 1px solid var(--border-subtle); }
+.seg-btn:hover:not(.seg-btn-active):not(:disabled) { color: var(--text-body); background: var(--bg-card); }
+.seg-btn.seg-btn-active { color: var(--text-primary); font-weight: 500; }
+.seg-btn.seg-btn-active[data-variant="filtered"] { background: #1f6feb33; color: var(--accent-sky); }
+.seg-btn.seg-btn-active[data-variant="simple"] { background: #23863633; color: var(--accent-green); }
+.seg-btn:disabled { cursor: default; opacity: 0.5; }
+
+/* Toggle switch — ported from clonarr .toggle, 30x16 compact variant */
+.tg { position: relative; display: inline-block; width: 30px; height: 16px; }
+.tg input { opacity: 0; width: 0; height: 0; }
+.tg .slider { position: absolute; cursor: pointer; inset: 0; background: var(--border-subtle); border-radius: 8px; transition: background 0.15s; }
+.tg .slider:before { position: absolute; content: ""; height: 12px; width: 12px; left: 2px; top: 2px; background: var(--text-secondary); border-radius: 50%; transition: transform 0.15s, background 0.15s; }
+.tg input:checked + .slider { background: var(--accent-blue-strong); }
+.tg input:checked + .slider:before { transform: translateX(14px); background: var(--text-on-accent); }
+.tg input:disabled + .slider { cursor: wait; opacity: 0.5; }
+
+/* Number input with no spinner — used by the schedule modal's hour /
+   minute pickers so users type values directly and don't accidentally
+   tick the clock minute by minute via the up/down arrows. Browser
+   default is to show spin buttons on type=number; this strips them. */
+.input.no-spin::-webkit-inner-spin-button,
+.input.no-spin::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.input.no-spin { -moz-appearance: textfield; }
+
+/* Icon button — square 28x28 pill used in compact action cells (e.g.
+   Scheduled runs row: Run-now / Edit / Delete / History). Inherits
+   colour so the SVG can use fill="currentColor" / stroke="currentColor".
+   Reserves enough hit area for touch without crowding text rows. */
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-muted); color: var(--text-body); cursor: pointer; transition: all 0.15s; }
+.icon-btn:hover:not(:disabled) { background: var(--border-subtle); border-color: var(--text-secondary); color: var(--text-primary); }
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.icon-btn svg { width: 14px; height: 14px; display: block; }
+.icon-btn.icon-btn-danger { color: var(--accent-red); }
+.icon-btn.icon-btn-danger:hover:not(:disabled) { background: #5a1a1a; border-color: var(--accent-red); color: #ff7b72; }
+.icon-btn.icon-btn-primary { color: var(--accent-green); }
+.icon-btn.icon-btn-primary:hover:not(:disabled) { background: var(--accent-green-bg); border-color: var(--accent-green); color: var(--accent-mint); }
+
+/* QFA result phase row — clickable button styled as a one-line summary
+   that opens the per-phase drill-in. Background brightens slightly on
+   hover so the row reads as interactive without being loud. */
+.qfa-phase-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--bg-muted);
+  border-radius: 6px;
+  font-size: 13px;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.qfa-phase-row:hover { background: var(--bg-elevated); border-color: var(--border-subtle); }
+.qfa-phase-row:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+
+/* QFA detail-modal row striping for the audio/video drill-in. Plain
+   utility classes instead of inline `:style` ternaries — the Alpine
+   string-binding-clobbers-static-style trap (caught 2026-04-29 on
+   the M4 results table) makes those unsafe when the static style
+   needs to survive state changes. */
+.qfa-row-even { background: var(--bg-page); }
+.qfa-row-odd  { background: var(--bg-card); }
+.qfa-rollup-alt { background: var(--bg-page); }
+
+/* ===== Card grid (shared by Library scan sub-tabs since 2026-04-28) =====
+   .card-grid is an auto-fitting grid that turns into 1 column on narrow
+   viewports and as many columns as fit at the 320px-min breakpoint
+   otherwise. Each .card is a self-contained unit with optional left
+   status edge, header (icon-btn row + state pill), title, pill-row,
+   and body. Replaces 7-column tables on Run mode + Release Groups
+   that were prone to column-overflow; gives every card vertical room
+   for its own content (multi-line summaries, etc.). */
+/* auto-fill (not auto-fit) keeps card width consistent regardless of
+   card count — a section with one schedule and a section with seven
+   render the cards at the same width. min 300px is tight enough to
+   land 3 columns at typical Library-scan content widths after the
+   sidebar + page chrome. */
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.card { position: relative; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 14px 16px 14px 20px; display: flex; flex-direction: column; gap: 10px; transition: border-color 0.15s, background 0.15s; overflow: hidden; }
+.card:hover { border-color: var(--text-muted-secondary); background: var(--bg-elevated); }
+.card-edge { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
+.card-edge.green { background: var(--accent-green); }
+.card-edge.amber { background: var(--accent-orange); }
+.card-edge.red   { background: var(--accent-red); }
+.card-edge.gray  { background: var(--text-muted-secondary); }
+.card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.card-actions { display: flex; gap: 4px; }
+.card-title { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+.card-subtitle { font-size: 12px; color: var(--text-secondary); }
+.card-body { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px; background: var(--bg-page); border: 1px solid var(--bg-muted); border-radius: 6px; font-size: 12px; }
+
+/* Pills — small rounded labels used for status, mode, instance, etc.
+   Color variants match the rest of the palette. The default (no variant
+   class) is a neutral grey pill. */
+.pill { display: inline-flex; align-items: center; font-size: 11px; padding: 2px 8px; border-radius: 8px; background: var(--bg-muted); color: var(--text-body); font-weight: 500; }
+.pill.green  { color: var(--accent-green); background: var(--alpha-green); }
+.pill.amber  { color: var(--accent-orange); background: var(--alpha-orange); }
+.pill.red    { color: var(--accent-red); background: var(--alpha-red); }
+.pill.gray   { color: var(--text-secondary); background: var(--bg-muted); }
+.pill.blue   { color: var(--accent-sky); background: var(--alpha-blue); }
+.pill.purple { color: var(--accent-purple); background: var(--alpha-purple); }
+.pill-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* Key/value rendering inside .card-body — tiny uppercase label above the
+   value. Used for "Last run" / "Next run" / "Match" / etc. */
+.kv { display: flex; flex-direction: column; gap: 2px; }
+.kv-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted-secondary); }
+.kv-value { color: var(--text-body); }
+.kv-value strong { color: var(--text-primary); }
+.summary { font-size: 11px; color: var(--text-secondary); line-height: 1.5; word-break: break-word; }
+
+/* Schedule rule card — Last-run "view result" button. Renders as inline
+   text (not a real button), turns underlined + brighter on hover so it
+   reads as clickable without adding visual chrome. The arrow at the
+   end is the affordance hint. */
+.schedule-last-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--accent-sky);
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.schedule-last-btn:hover { color: #a5cfff; text-decoration: underline; }
+.schedule-last-btn:focus-visible { outline: 1px solid var(--accent-blue); outline-offset: 2px; border-radius: 3px; }
+.schedule-last-btn strong { color: inherit; }
+.schedule-last-dur { font-size: 10px; color: var(--text-muted-secondary); }
+.schedule-last-btn:hover .schedule-last-dur { color: var(--text-secondary); }
+
+/* Sidebar count pill (.settings-nav .count) — small grey by default,
+   blue when its parent .settings-nav is active. */
+.settings-nav .count { margin-left: auto; font-size: 11px; padding: 1px 7px; border-radius: 8px; background: var(--bg-page); color: var(--text-secondary); }
+.settings-nav.settings-nav-active .count { background: var(--alpha-blue); color: var(--accent-blue); }
+
+/* ===== Data table (CSS-grid based) ====================================
+   Rows-of-records pattern for surfaces where you have many similar items
+   and a card-grid would push action blocks below the fold (e.g. Release
+   Groups → Active groups with 12+ entries). Reuses the grid-template
+   approach already used by other sections so column widths match between
+   header and rows automatically. Wrapper handles borders + horizontal
+   scroll on narrow viewports; rows alternate background for scannability.
+   Column widths are set per consumer via inline grid-template-columns. */
+.data-table { border: 1px solid var(--border-subtle); border-radius: 6px; overflow: hidden; }
+.data-table-head { display: grid; gap: 10px; padding: 8px 12px; background: var(--bg-card); border-bottom: 1px solid var(--border-subtle); font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.4px; align-items: center; }
+.data-table-row { display: grid; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--bg-muted); font-size: 13px; }
+.data-table-row:last-child { border-bottom: none; }
+.data-table-row.row-disabled { opacity: 0.55; }
+.data-table-row .cell-num { font-variant-numeric: tabular-nums; color: var(--text-body); }
+.data-table-row .cell-num.cell-num-zero { color: var(--text-muted-secondary); }
+.data-table-row code.cell-code { background: var(--bg-page); padding: 1px 6px; border-radius: 3px; color: var(--accent-sky); font-size: 12px; }
+.count-link { background: transparent; border: none; padding: 0; font: inherit; color: var(--accent-blue); cursor: pointer; font-variant-numeric: tabular-nums; text-decoration: none; }
+.count-link:hover { text-decoration: underline; color: var(--accent-sky); }
+.count-link:focus { outline: 1px solid var(--accent-blue); outline-offset: 2px; border-radius: 2px; }
+
+/* Mode chip — click-to-toggle replacement for the seg-button pair on
+   Release Groups rows. Reuses .pill color tokens; cursor:pointer signals
+   it's interactive; hover lightens the bg. The two variants share the
+   same width so a row's column width doesn't jitter when you flip mode. */
+.mode-chip { display: inline-block; min-width: 64px; text-align: center; padding: 2px 10px; border-radius: 8px; font-size: 11px; font-weight: 500; cursor: pointer; border: 1px solid transparent; transition: background 0.12s, border-color 0.12s; }
+.mode-chip:hover:not(:disabled) { border-color: #4d566b; }
+.mode-chip:disabled { cursor: wait; opacity: 0.5; }
+.mode-chip.mode-filtered { color: var(--accent-sky); background: var(--alpha-blue); }
+.mode-chip.mode-simple   { color: var(--accent-green); background: var(--alpha-green-soft); }
+
+/* Token-highlight palette used by highlightMatchTokens() across every
+   result panel that surfaces filename context (Tag library, Discover,
+   Recover, Compare, Tag inventory). Mockup-driven tone-down: text
+   colour + dotted underline instead of full background fill, hues
+   lifted (lighter / desaturated) so they don't share pixels with the
+   verdict palette (add green / remove red / keep grey). Information
+   preserved — token type still readable from colour, font-weight
+   500 keeps tokens distinguishable from surrounding mono text.
+   white-space:nowrap + display:inline-block prevents long tokens
+   like -126811 from splitting across lines inside word-break:break-all
+   parents (the 2026-04-26 trap caught in the discover panel). */
+.tok-rg, .tok-quality, .tok-audio {
+    font-weight: 500;
+    border-bottom: 1px dotted;
+    padding: 0 1px;
+    white-space: nowrap;
+    display: inline-block;
+}
+.tok-rg      { color: var(--accent-sky); border-bottom-color: rgba(121,192,255,0.5); }
+.tok-quality { color: var(--accent-green); border-bottom-color: rgba(126,231,135,0.45); }
+.tok-audio   { color: var(--accent-orange); border-bottom-color: var(--alpha-orange); }
+
+/* Verdict-numeral colours — used by group-header badges and totals
+   strip. Only the numerals carry verdict colour; surrounding labels
+   stay neutral grey so the eye lands on the digits without the row
+   competing for attention. */
+.v-num-add  { color: var(--accent-green); font-weight: 600; }
+.v-num-rem  { color: var(--accent-red); font-weight: 600; }
+.v-num-keep { color: var(--text-body); font-weight: 600; }
+.v-num-miss { color: var(--accent-orange); font-weight: 600; }
+
+/* Verdict text accents — used on per-movie row title-lines instead
+   of the older filled-pill ADD/REMOVE/KEEP badges. Same colour family
+   as the numerals, no background fill. The +/− glyph rides the colour
+   so the eye picks up direction at a glance without the row turning
+   into a christmas tree. */
+.v-add  { color: var(--accent-green); font-weight: 600; }
+.v-rem  { color: var(--accent-red); font-weight: 600; }
+.v-keep { color: var(--text-secondary); font-weight: 600; }
+.v-miss { color: var(--accent-orange); font-weight: 600; }
+
+/* Verdict dots — paired with neutral text + coloured numeral on the
+   group-header badges. Replaces the older filled-pill badge style. */
+.v-dot      { display: inline-block; width: 8px; height: 8px; border-radius: 50%; vertical-align: 1px; margin-right: 5px; }
+.v-dot-add  { background: var(--accent-green); }
+.v-dot-rem  { background: var(--accent-red); }
+.v-dot-keep { background: var(--text-muted-secondary); }
+
+/* App-type pills used by the Tag inventory App-type picker (and later
+   other pages that scope features per Arr type). Big, readable, looks
+   like clickable section-title text — active is full-strength, inactive
+   is dimmed, disabled is greyed out with a tooltip. Clicking the active
+   pill is a no-op; clicking a disabled pill is blocked at the JS layer.
+   Visual rhythm: pills sit on the same baseline so the eye can scan
+   "Radarr · Sonarr" as alternatives. */
+.apptype-pill {
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-muted-secondary);
+    cursor: pointer;
+    transition: color 0.12s;
+    line-height: 1.2;
+}
+.apptype-pill:hover:not(:disabled):not(.is-active) { color: var(--text-body); }
+.apptype-pill.is-active { color: var(--text-body); border-bottom: 2px solid var(--accent-blue); padding-bottom: 2px; }
+.apptype-pill.is-disabled { color: #484f58; cursor: not-allowed; }
+.apptype-pill:disabled { cursor: not-allowed; }
+
+/* Per-sub-tab help-panel toggle ("ⓘ How it works"). Sits at the top
+   of each sub-tab content area. Click to expand the inline panel
+   underneath; click again to collapse. Default closed. */
+.help-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--alpha-green-soft);
+    border: 1px solid var(--alpha-green);
+    color: var(--accent-mint);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 12px 5px 10px;
+    border-radius: 14px;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s, background 0.12s;
+    font-family: inherit;
+}
+.help-toggle:hover { color: var(--accent-green); border-color: var(--accent-mint); background: var(--alpha-green); }
+.help-toggle.is-open {
+    /* Keep the same subtle green — no need for a louder open-state.
+       The expanded panel below the toggle is the visual cue that
+       help is open. */
+    color: var(--accent-mint);
+    border-color: var(--alpha-green);
+    background: var(--alpha-green-soft);
+}
+.help-toggle .help-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: currentColor;
+    color: var(--bg-page);
+    font-style: italic; font-weight: 700; font-size: 10px;
+    font-family: Georgia, "Times New Roman", serif;
+    line-height: 1;
+}
+
+.help-panel {
+    margin: 12px 0 18px 0;
+    padding: 16px 20px;
+    background: var(--alpha-hover);
+    border: 1px solid rgba(121,192,255,0.4);
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--text-body);
+    line-height: 1.6;
+}
+.help-panel h4 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    color: var(--accent-sky);
+    font-weight: 600;
+}
+.help-panel p { margin: 0 0 10px 0; }
+.help-panel p:last-child { margin-bottom: 0; }
+.help-panel ul { margin: 6px 0 12px 0; padding-left: 20px; }
+.help-panel ul li { margin-bottom: 4px; }
+.help-panel code {
+    background: var(--bg-page);
+    border: 1px solid var(--bg-muted);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--accent-purple-soft);
+}
+.help-panel strong { color: var(--text-primary); }
+.help-panel em { color: var(--text-body); font-style: italic; }
+.help-panel .help-section + .help-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(121,192,255,0.18); }
+.help-panel .help-tip {
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: var(--bg-page);
+    border-left: 3px solid var(--accent-orange);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+.help-panel .help-tip strong { color: var(--accent-orange); }
+
+/* Extra tags result table — per-tag aggregate row. Grid layout MUST
+   live in a class because Alpine's :style="..." string-binding
+   replaces the inline style attribute wholesale, which would clobber
+   the grid template every time the hover/expanded state flipped. */
+.extratags-row {
+    display: grid;
+    grid-template-columns: 90px 1fr 130px 90px;
+    gap: 0;
+    padding: 10px 14px;
+    border-top: 1px solid var(--bg-muted);
+    cursor: pointer;
+    align-items: center;
+    transition: background 0.1s;
+}
+.extratags-row:hover { background: var(--bg-elevated); }
+.extratags-row-expanded { background: var(--bg-elevated); }
+
+/* Status pills for Extra tags result rows. Visually distinct from
+   buttons — small rounded chip with subtle bg, lowercase, no +/-
+   prefix that could be mistaken for a clickable icon. */
+.action-pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 8px;
+    text-transform: lowercase;
+    letter-spacing: 0.2px;
+}
+.action-pill-add    { color: var(--accent-green); background: var(--alpha-green-soft); }
+.action-pill-remove { color: var(--accent-red); background: var(--alpha-red); }
+.action-pill-keep   { color: var(--text-secondary); background: rgba(139,148,158,0.10); }
+
+/* Per-value allow-list checkbox cluster used inside each Extra tags
+   bucket card. Compact wrap layout — one row of pills per sub-group
+   for Audio, single row for Resolution / Codec / HDR. */
+.value-cluster {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    margin-top: 8px;
+}
+.value-cluster-section {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--bg-muted);
+}
+.value-cluster-section:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+}
+.value-cluster-label {
+    font-size: 11px;
+    color: var(--text-muted-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    margin-bottom: 4px;
+    font-weight: 500;
+}
+.value-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-body);
+    padding: 3px 9px;
+    border-radius: 12px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-page);
+    transition: border-color 0.12s, background 0.12s;
+    user-select: none;
+}
+.value-check:hover { border-color: var(--accent-blue); }
+.value-check input[type="checkbox"] { accent-color: var(--accent-blue); margin: 0; }
+.value-check.is-checked { background: var(--alpha-blue-soft); border-color: var(--alpha-blue-border-strong); }
+.value-cluster-disabled { opacity: 0.4; pointer-events: none; }
+
+/* Generic disabled-pill state. Bind via :class so the inline style="..."
+   stays intact (Alpine's string-form :style="..." would replace it). */
+.is-disabled { opacity: 0.5; pointer-events: none; }
+
+/* Invalid input state — red border. Same Alpine-trap reasoning as
+   .is-disabled: applied via :class so the static style attribute
+   (width / padding / font-size) survives every render. */
+.input-invalid { border-color: var(--accent-red) !important; }
+
+/* Result-card mode chips — bound via :class so the static
+   style="" (font-size / padding / radius / weight / uppercase)
+   isn't clobbered by Alpine's string-form :style binding. Tag
+   library, Extra tags, and DV detail all use the same chip. */
+.chip-mode-apply   { background: var(--alpha-green);  color: var(--accent-green); }
+.chip-mode-preview { background: var(--alpha-blue); color: var(--accent-sky); }
