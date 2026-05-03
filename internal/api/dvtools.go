@@ -19,14 +19,13 @@ import (
 //   - GET  /api/tools/dv/status        → are ffmpeg + dovi_tool present
 //                                         on $PATH (or /config/tools as legacy)
 //
-// Install + Uninstall handlers are gone — the install flow moved to
-// the entrypoint script and runs only when ENABLE_DV_TOOLS=true is
-// set on the container template. The user sets the env var, the
-// container restarts, the entrypoint installs ffmpeg via apk and
-// downloads dovi_tool from GitHub (root needed; runtime install was
-// blocked by the PUID privilege drop). Status here just reports
-// whether the binaries resolved at $PATH so the DV detail tab can
-// surface a "Tools required" notice when the env var isn't set.
+// Install + Uninstall handlers are gone — DV tools (ffmpeg +
+// dovi_tool) ship baked into the image as of v0.3.5 via the
+// Dockerfile dv-tools stage. No env var, no install step. Status
+// here is kept as a defensive health check: it reports whether
+// the binaries resolved at $PATH so the DV detail tab can surface
+// a "Tools unreachable" notice if a future image build is broken
+// (shouldn't happen in normal CI but cheap to defend against).
 
 // dvDetailConfigResponse augments the persisted DvDetailConfig with
 // the closed-vocab list so the UI can render the per-value checkbox
@@ -106,7 +105,7 @@ func validateDvDetailConfig(cfg core.DvDetailConfig) error {
 	}
 	for _, v := range cfg.AllowedValues {
 		if !dvDetailKnownValues[v] {
-			return fmt.Errorf("allowedValues contains unknown value: %q (must be one of: mel, fel, dvprofile8, cm2, cm4)", v)
+			return fmt.Errorf("allowedValues contains unknown value: %q (must be one of: mel, fel, dvprofile8, cm2, cm4, no-dv)", v)
 		}
 	}
 	return nil
@@ -114,8 +113,10 @@ func validateDvDetailConfig(cfg core.DvDetailConfig) error {
 
 // handleDvToolsStatus reports tools state — does dovi_tool / ffmpeg
 // resolve at runtime (legacy /config/tools/ → $PATH). The UI uses
-// this to render the "Tools required" notice on the DV detail tab
-// when the ENABLE_DV_TOOLS env var hasn't been set.
+// this for a small "Tools ready" indicator on the DV detail tab,
+// or "Tools unreachable" if the image build is somehow broken.
+// Tools are baked into the image so the unhealthy branch should
+// never fire in normal deployments.
 func (s *Server) handleDvToolsStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()

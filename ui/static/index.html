@@ -2030,7 +2030,7 @@
                can return to the candidate panel after dismissing it
                without having to re-run the scan. -->
           <div x-show="scanResults.discover && !showDiscoverResultsModal" x-cloak style="margin-top:12px;font-size:12px;color:var(--text-secondary)">
-            Last Discover run: <strong style="color:var(--text-body)" x-text="(scanResults.discover.totals.discovered || 0) + ' candidate' + (((scanResults.discover.totals.discovered || 0) === 1) ? '' : 's')"></strong> ·
+            Last Discover run: <strong style="color:var(--text-body)" x-text="((scanResults.discover && scanResults.discover.totals && scanResults.discover.totals.discovered) || 0) + ' candidate' + ((((scanResults.discover && scanResults.discover.totals && scanResults.discover.totals.discovered) || 0) === 1) ? '' : 's')"></strong> ·
             <button class="btn btn-sm" style="font-size:11px;padding:2px 8px;margin-left:4px" @click="showDiscoverResultsModal = true">Show results</button>
             <button class="btn btn-sm" style="font-size:11px;padding:2px 8px" @click="dismissDiscoverResults()">Clear</button>
           </div>
@@ -2836,7 +2836,7 @@
                 <div style="margin-bottom:4px"><span style="color:var(--accent-green);font-weight:600">cached</span> — DV detail was extracted on a previous scan and read from <code>/config/dv-cache.json</code> this run. No ffmpeg work; this is the fast path.</div>
                 <div style="margin-bottom:4px"><span style="color:var(--accent-sky);font-weight:600">extracted</span> — Freshly extracted from the file via <code>ffmpeg</code> + <code>dovi_tool</code> during this scan, then written to the cache for next time.</div>
                 <div style="margin-bottom:4px"><span style="color:var(--accent-red);font-weight:600">failed</span> — Extraction tried but failed (file unreachable, RPU corrupt, ffmpeg/dovi_tool error). Open the row for the per-file error.</div>
-                <div style="margin-bottom:4px"><span style="color:var(--accent-orange);font-weight:600">tools-missing</span> — <code>ffmpeg</code> or <code>dovi_tool</code> not on PATH. Set <code>ENABLE_DV_TOOLS=true</code> on the container and restart.</div>
+                <div style="margin-bottom:4px"><span style="color:var(--accent-orange);font-weight:600">tools-missing</span> — <code>ffmpeg</code> or <code>dovi_tool</code> not on PATH. Tools ship baked into the image; if you see this status the image build is broken. Check <code>docker logs</code> and report the issue.</div>
                 <div><span style="color:var(--text-secondary);font-weight:600">skipped</span> — Radarr's mediaInfo doesn't flag the file as Dolby Vision, so DV detail doesn't run.</div>
               </div>
             </div>
@@ -3596,11 +3596,12 @@
                 <li><strong>Profile</strong> — <code>dvprofile5</code> / <code>dvprofile7</code> / <code>dvprofile8</code> (which DV encoding the file uses)</li>
                 <li><strong>Layer</strong> — <code>fel</code> (Full Enhancement Layer) / <code>mel</code> (Minimal Enhancement Layer)</li>
                 <li><strong>CM version</strong> — <code>cm2</code> / <code>cm4</code> (the metadata generation embedded in the RPU)</li>
+                <li><strong>No-DV fallback</strong> — <code>no-dv</code> when Radarr's mediaInfo flagged the file as DV but extraction couldn't confirm it (no RPU found, or the extraction errored). Lets you write custom formats that prefer files with confirmed DV (real <code>dv</code> + profile/layer tags) over files that <em>claim</em> DV but can't be verified. Untick this in the per-value list if you only want positive detections.</li>
               </ul>
             </div>
             <div class="help-section">
-              <h4>Why it's opt-in</h4>
-              <p>Radarr's mediaInfo doesn't expose <strong>RPU</strong> detail (the embedded Dolby Vision metadata layer that carries profile / layer / CM-version) — so DV detail has to read each file directly with <code>ffmpeg</code> + <code>dovi_tool</code>. Set <code>ENABLE_DV_TOOLS=true</code> on the container to install the binaries on next start (kept in <code>/config/tools/</code> on your appdata mount, survives image upgrades). Results are cached to <code>/config/dv-cache.json</code> so re-scans only touch new or changed files.</p>
+              <h4>How it works</h4>
+              <p>Radarr's mediaInfo doesn't expose <strong>RPU</strong> detail (the embedded Dolby Vision metadata layer that carries profile / layer / CM-version) — so DV detail has to read each file directly with <code>ffmpeg</code> + <code>dovi_tool</code>. Both tools ship baked into the image, so DV detail works zero-config out of the box. Results are cached to <code>/config/dv-cache.json</code> so re-scans only touch new or changed files. The Enable toggle below is off by default — turn it on when you want DV-detail tags layered on top of the base <code>dv</code> tag from Video tags.</p>
             </div>
             <div class="help-section">
               <h4>File access — the one DV-specific gotcha</h4>
@@ -3627,7 +3628,6 @@
 
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
             <div class="settings-section-title" style="margin:0">Dolby Vision detail</div>
-            <span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;background:var(--alpha-orange);color:var(--accent-orange)">Opt-in</span>
             <div style="flex:1"></div>
             <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
               <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-secondary)"
@@ -3694,30 +3694,26 @@
                when reviewing a saved scan, and Run mode when fired by
                Quick fix-all. Single state, single render path. -->
 
-          <!-- Tools status banner. Install moved out of the UI entirely
-               — it now happens at container start when ENABLE_DV_TOOLS=true
-               is set on the container template. The notice tells the user
-               which env var to add and where (Unraid template variable
-               or `-e` flag in plain Docker). -->
-          <div style="margin-top:14px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:12px 16px">
-            <template x-if="!dvTools.installed">
-              <div style="font-size:13px;color:var(--text-body);line-height:1.5">
-                <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-                  <span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;background:var(--alpha-orange);color:var(--accent-orange)">Tools required</span>
-                  <strong style="color:var(--text-primary)">Dolby Vision tools aren't installed yet</strong>
-                </div>
-                <p style="margin:0 0 8px 0">DV detail tagging needs <code>ffmpeg</code> + <code>dovi_tool</code>. They're opt-in to keep the base image lean. Setting the container variable below to <code>true</code> installs them automatically on the next container start.</p>
-                <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:6px;padding:8px 12px;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:12px;color:var(--accent-sky)">ENABLE_DV_TOOLS=true</div>
-                <p style="margin:8px 0 0 0;font-size:12px;color:var(--text-secondary)"><strong>Unraid:</strong> edit the resolvarr container in the Docker tab. The <code>ENABLE_DV_TOOLS</code> variable is in the form (recent template versions ship it as a dropdown — pick <code>true</code>). Click <strong>Apply</strong> — Unraid restarts the container which runs the install. <strong>Plain Docker:</strong> add <code>-e ENABLE_DV_TOOLS=true</code> to your <code>docker run</code> command or compose file. First start takes ~10-15 s extra while a static <code>ffmpeg</code> (~40 MB) + <code>dovi_tool</code> (~10 MB) download; subsequent starts skip the install. Watch <code>docker logs resolvarr</code> after restart — the entrypoint logs every step.</p>
-                <p style="margin:8px 0 0 0;font-size:12px;color:var(--text-secondary)"><strong>Older template?</strong> If your <code>ENABLE_DV_TOOLS</code> variable is missing or hidden under <em>Show advanced settings</em>, refresh the template by re-running the install <code>curl</code> from the README — it overwrites the local file with the latest. Existing settings are preserved.</p>
-              </div>
-            </template>
+          <!-- Tools status — small indicator. Tools (ffmpeg + dovi_tool)
+               are baked into the image as of v0.3.5; the dvTools.installed
+               check is kept defensively in case a future image is built
+               without the dv-tools stage (won't happen in normal CI but
+               cheap to defend against). When healthy, just show a thin
+               "Tools ready" line with versions. When unhealthy (very
+               rare), show a brief error pointing at the github issue
+               tracker so reports include this as evidence. -->
+          <div style="margin-top:14px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:8px 14px">
             <template x-if="dvTools.installed">
               <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--text-secondary)">
                 <span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;background:var(--alpha-green-soft);color:var(--accent-green)">Tools ready</span>
                 <code x-text="(dvTools.dvVersion || 'dovi_tool').split('\n')[0]"></code>
                 <span style="color:var(--text-muted-secondary)">·</span>
                 <code x-text="(dvTools.ffVersion || 'ffmpeg').split('\n')[0]"></code>
+              </div>
+            </template>
+            <template x-if="!dvTools.installed">
+              <div style="font-size:12px;color:var(--accent-orange);line-height:1.5">
+                <strong>Tools unreachable.</strong> <code>ffmpeg</code> + <code>dovi_tool</code> ship baked into the image — if you're seeing this, something's wrong with the image. Check <code>docker logs resolvarr</code> for hints and <a href="https://github.com/prophetse7en/resolvarr/issues" style="color:var(--accent-sky)">report the issue</a> with the image SHA.
               </div>
             </template>
           </div>
@@ -5935,8 +5931,8 @@
               </ul>
             </div>
             <div class="help-section">
-              <h4>Why it's opt-in</h4>
-              <p>Radarr's mediaInfo doesn't expose <strong>RPU</strong> detail (the embedded Dolby Vision metadata layer that carries profile / layer / CM-version) — DV detail reads each file directly with <code>ffmpeg</code> + <code>dovi_tool</code>. Set <code>ENABLE_DV_TOOLS=true</code> on the container and the binaries get installed on next start (kept in <code>/config/tools/</code>, survives image upgrades). Results cached to <code>/config/dv-cache.json</code> so re-scans only touch new or changed files.</p>
+              <h4>How it works</h4>
+              <p>Radarr's mediaInfo doesn't expose <strong>RPU</strong> detail (the embedded Dolby Vision metadata layer that carries profile / layer / CM-version) — DV detail reads each file directly with <code>ffmpeg</code> + <code>dovi_tool</code>. Both tools ship baked into the image, so DV detail works without configuration. Results cached to <code>/config/dv-cache.json</code> so re-scans only touch new or changed files. The Enable toggle below is off by default — turn it on per-rule to layer DV-detail tags onto the base <code>dv</code> tag from Video tags.</p>
             </div>
             <div class="help-section">
               <h4>Remove orphaned DV-detail tags on Apply</h4>

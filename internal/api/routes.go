@@ -70,9 +70,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/dv-detail", s.handleGetDvDetail)
 	mux.HandleFunc("PUT /api/dv-detail", s.handleUpdateDvDetail)
 	// Status endpoint is the only DV-tools surface left — install + uninstall
-	// dropped after the move to the ENABLE_DV_TOOLS env-var-at-entrypoint
-	// model. Status reads `which ffmpeg` / `which dovi_tool` so the UI knows
-	// whether DV detail can run.
+	// dropped after the move to bake-in via the Dockerfile dv-tools stage.
+	// Status reads `which ffmpeg` / `which dovi_tool` for a defensive
+	// "Tools unreachable" indicator if the image build is broken.
 	mux.HandleFunc("GET /api/tools/dv/status", s.handleDvToolsStatus)
 	// DV detail cache management. Stats powers the cache panel on the
 	// DV detail tab; Clear is the user-fired "wipe + force re-extract"
