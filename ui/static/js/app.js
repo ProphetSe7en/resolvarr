@@ -31,7 +31,7 @@ function app() {
     currentPage: 'settings',
     section: 'instances',
     webhookSection: 'setup',  // M-soon placeholder sub-tab — Setup / Grab / Import-Upgrade / Delete / Activity
-    scanSection: 'run',           // 'run' | 'groups' | 'filters' | 'audio' | 'video' | 'dvdetail' | 'activity'
+    scanSection: 'run',           // 'run' | 'groups' | 'filters' | 'audio' | 'video' | 'dvdetail' | 'history'
     // Library scan App-type pill — same pattern as Tag inventory. Picks
     // which Arr type the page operates on; instance dropdown is filtered
     // to that type, sub-tabs hide the ones that don't apply (Sonarr
@@ -43,7 +43,7 @@ function app() {
     // at the top of a sub-tab to expand a longer "How it works" panel.
     // Not persisted — fresh page load = closed again. Keys: run / groups /
     // filters / extra / tags (the standalone Tag inventory page).
-    helpOpen: { run: false, groups: false, filters: false, audio: false, video: false, dvdetail: false, tags: false, activity: false,
+    helpOpen: { run: false, groups: false, filters: false, audio: false, video: false, dvdetail: false, tags: false, history: false,
       // Wizard-step help panels — same toggle pattern as the Library
       // scan fanes. Each wizard step renders its own collapsible
       // "How it works" panel so the inline form copy can stay short.
@@ -277,9 +277,9 @@ function app() {
     dvScanProgress: null,
     _dvScanPollHandle: null,
 
-    // Adhoc-scan history viewer (under Activity tab). Populated by
+    // Adhoc-scan history viewer (under the History tab). Populated by
     // /api/scan/history; rule + schedule runs live in their own per-card
-    // history modal and are excluded from this list.
+    // history modal on the Run mode tab and are excluded from this list.
     scanHistory: [],
     scanHistoryLoading: false,
     scanHistoryFilter: 'all',
@@ -511,11 +511,14 @@ function app() {
     // fired, rendered in a dedicated panel below the schedule list.
     // Stays around until the user dismisses it or fires another run.
     quickFixResults: null,
-    // Activity-tab result panel — mirrors quickFixResults shape
+    // Run-mode result panel — mirrors quickFixResults shape
     // ({startedAt, phases, ok, scheduleName, error}) but populated by
     // schedule Run-now completion + history-detail clicks instead of
-    // a wizard run. Renders inline on Activity so the user stays
-    // where they are after firing/inspecting a schedule.
+    // a wizard run. Renders inline on Run mode so the user stays
+    // where they are after firing/inspecting a schedule. Variable
+    // name is `activityResults` for legacy reasons (the panel lived
+    // on the old Activity tab pre-Step-5 — internal-only, scheduled
+    // for rename in a later cleanup pass).
     activityResults: null,
     // Run-now completion poll handle — set when a Run-now click is
     // waiting for the schedule's history to grow. Cleared when the
@@ -688,7 +691,13 @@ function app() {
       if (savedScanSection === 'extra') {
         this.scanSection = 'video';
         localStorage.setItem('resolvarr-scan-section', 'video');
-      } else if (['run','groups','filters','audio','video','dvdetail','activity'].includes(savedScanSection)) {
+      } else if (savedScanSection === 'activity') {
+        // Step-5 follow-up rename: 'Activity' tab → 'History'. Migrate
+        // existing testers' persisted value so their next page-load
+        // lands them on the renamed (same) tab.
+        this.scanSection = 'history';
+        localStorage.setItem('resolvarr-scan-section', 'history');
+      } else if (['run','groups','filters','audio','video','dvdetail','history'].includes(savedScanSection)) {
         this.scanSection = savedScanSection;
       }
       const savedGroupsSection = localStorage.getItem('resolvarr-groups-section');
@@ -779,10 +788,10 @@ function app() {
     setCurrentPage(page) {
       this.currentPage = page;
       localStorage.setItem('resolvarr-page', page);
-      // Schedules feed both the Run mode rules grid AND the Activity scan
-      // history filter chips — load + poll whenever the user is anywhere
-      // on the Scan tab. Stop the poll when leaving the Scan tab entirely.
-      if (page === 'scan' && (this.scanSection === 'run' || this.scanSection === 'activity')) {
+      // Schedules feed both the Run mode rules grid AND the History scan
+      // filter chips — load + poll whenever the user is anywhere on the
+      // Scan tab. Stop the poll when leaving the Scan tab entirely.
+      if (page === 'scan' && (this.scanSection === 'run' || this.scanSection === 'history')) {
         this.loadSchedules();
         this.startSchedulePoll();
       } else {
@@ -845,17 +854,17 @@ function app() {
     setScanSection(section) {
       this.scanSection = section;
       localStorage.setItem('resolvarr-scan-section', section);
-      // Schedules feed the Run mode rules grid AND the Activity tab — keep
+      // Schedules feed the Run mode rules grid AND the History tab — keep
       // the poll alive whenever the user is on either of those sub-tabs.
-      // Scan history only lives on Activity, so its initial fetch is
-      // gated separately.
-      if (section === 'run' || section === 'activity') {
+      // Scan history only lives on the History tab, so its initial fetch
+      // is gated separately.
+      if (section === 'run' || section === 'history') {
         this.loadSchedules();
         this.startSchedulePoll();
       } else {
         this.stopSchedulePoll();
       }
-      if (section === 'activity') {
+      if (section === 'history') {
         this.loadScanHistory();
       }
     },
@@ -875,11 +884,11 @@ function app() {
       }
     },
 
-    // Per-app-type filter for Activity-tab data. Schedules and scan
-    // history are stored globally but the Activity view scopes to the
-    // currently-selected instance type, mirroring the per-instance-type
-    // sub-tab visibility model. Sonarr users never see Radarr rules
-    // and vice versa.
+    // Per-app-type filter for Run-mode rules + History-tab scans.
+    // Schedules and scan history are stored globally but each view
+    // scopes to the currently-selected instance type, mirroring the
+    // per-instance-type sub-tab visibility model. Sonarr users never
+    // see Radarr rules and vice versa.
     schedulesForCurrentApp() {
       const list = this.schedules || [];
       if (!list.length) return list;
@@ -947,33 +956,38 @@ function app() {
       return t ? t.label : action;
     },
 
-    // Click a row → fetch the dump + hydrate the matching scanResults
-    // slot so the existing per-action result panel renders the historic
-    // run as if it had just completed. Switches the user to the
-    // matching sub-tab so the result is in view; sets historicalRunInfo
-    // so the "Historical run" banner surfaces.
+    // Click a row → fetch the dump + open the matching drill-in modal
+    // ON THE HISTORY TAB. The modal renders over whichever tab the
+    // user is on, so the History tab stays a true history-browser
+    // instead of bouncing the user across sub-tabs every time they
+    // want to peek at a saved result. historicalRunInfo is still set
+    // so if the user later navigates to the originating sub-tab, the
+    // per-tab banner and Apply-gating still surface (defensive; modal
+    // is read-only).
+    //
+    // Cleanup is the one exception: there's no QFA-style drill-in for
+    // it (cleanup result is a small list of deleted tag labels). For
+    // now it still routes to the Filters tab so the existing inline
+    // result panel renders. A dedicated cleanup modal can land later.
     async openScanHistory(row) {
       try {
         const r = await this.apiFetch('/api/scan/history/' + encodeURIComponent(row.file));
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json();
-        // Map action → scanResults slot + sub-tab to land on. Mirrors
-        // the schedule-history hydrate logic at runQuickFixChain's
-        // result panel.
         switch (row.action) {
-          case 'tag':       this.scanResults.tag = data;       this.setScanSection('tag'); break;
-          case 'discover':  this.scanResults.discover = data;  this.setScanSection('groups'); this.showDiscoverResultsModal = true; break;
-          case 'recover':   this.recoverResults = data;        this.setScanSection(this.scanAppType === 'sonarr' ? 'run' : 'groups'); break;
+          case 'tag':       this.scanResults.tag = data;       this.viewPhaseDetails({phase: 'tag',       response: data}); break;
+          case 'discover':  this.scanResults.discover = data;  this.viewPhaseDetails({phase: 'discover',  response: data}); break;
+          case 'recover':   this.recoverResults = data;        this.viewPhaseDetails({phase: 'recover',   response: data}); break;
+          case 'audiotags': this.scanResults.audioTags = data; this.viewPhaseDetails({phase: 'audiotags', response: data}); break;
+          case 'videotags': this.scanResults.videoTags = data; this.viewPhaseDetails({phase: 'videotags', response: data}); break;
+          case 'dvdetail':  this.scanResults.dvDetail = data;  this.viewPhaseDetails({phase: 'dvdetail',  response: data}); break;
+          // Cleanup falls back to sub-tab routing — no drill-in modal yet.
           case 'cleanup':   this.cleanupResults = data;        this.setScanSection('filters'); break;
-          case 'audiotags': this.scanResults.audioTags = data; this.setScanSection('audio'); break;
-          case 'videotags': this.scanResults.videoTags = data; this.setScanSection('video'); break;
-          case 'dvdetail':  this.scanResults.dvDetail = data;  this.setScanSection('dvdetail'); break;
           default: this.showToast('Unknown action: ' + row.action, 'error'); return;
         }
-        // kind enables the Historical-run banner (templates gate on
-        // historicalRunInfo.kind === '<action>'). source distinguishes
-        // adhoc Library-scan dumps from schedule-history rehydration —
-        // the banner copy + Apply-button gating both branch on it.
+        // kind enables the Historical-run banner if the user later
+        // navigates to the originating sub-tab. The modal itself is
+        // independent — clicking from the History tab opens it overlaid.
         this.historicalRunInfo = {
           kind: row.action,
           source: 'adhoc',
@@ -998,10 +1012,10 @@ function app() {
         if (first) this.scanInstanceId = first.id;
       }
       // Initial schedules pull whenever Scan tab opens on Run mode (rules
-      // grid lives there) or Activity (scan-history filter chips). Without
+      // grid lives there) or History (scan-history filter chips). Without
       // this gate, a fresh page-load that lands on Run mode shows an empty
-      // rules grid until the user clicks Activity → Run.
-      if (this.scanSection === 'run' || this.scanSection === 'activity') {
+      // rules grid until the user clicks History → Run.
+      if (this.scanSection === 'run' || this.scanSection === 'history') {
         this.loadSchedules();
         this.startSchedulePoll();
       }
@@ -1284,7 +1298,7 @@ function app() {
         // groups list off the screen — the candidate review is a
         // one-time action, not persistent state. Only opens on a
         // standalone Run Discover (not on the Quick fix-all chain
-        // which has its own combined-result panel on Activity).
+        // which has its own combined-result panel on Run mode).
         if (!this.scanError && this.scanResults.discover) {
           this.showDiscoverResultsModal = true;
         }
@@ -2305,6 +2319,7 @@ function app() {
             enabled: !!this.dvDetail.enabled,
             prefix: this.dvDetail.prefix || '',
             allowedValues: this.dvDetail.allowedValues,
+            selectMode: this.dvDetail.selectMode || '',
             removeOrphanedTags: !!this.dvDetail.removeOrphanedTags,
           }),
         });
@@ -2432,11 +2447,11 @@ function app() {
         this.scanLoading = false;
         this.stopDvScanPoll();
         this.dvScanProgress = null;
-        // Refresh Activity → Scan history if the user is sitting on
-        // that tab so the just-dumped scan appears without manual
-        // reload. No-op when they're elsewhere; the loadScanHistory
-        // tick on Activity-tab landing will pick it up.
-        if (this.scanSection === 'activity') this.loadScanHistory();
+        // Refresh the History tab's scan-list if the user is sitting
+        // on it so the just-dumped scan appears without manual reload.
+        // No-op when they're elsewhere; the loadScanHistory tick on
+        // History-tab landing will pick it up.
+        if (this.scanSection === 'history') this.loadScanHistory();
       }
     },
 
@@ -2540,21 +2555,22 @@ function app() {
       return this.instances.some(i => i.type === type);
     },
     // Sub-tab visibility per app-type. Sonarr currently supports only
-    // Recover (lives on Run mode) + Activity. Tag library / Discover /
+    // Recover (lives on Run mode) + History. Tag library / Discover /
     // Audio / Video / DV detail are Radarr-only until each is ported.
     // When the user switches to Sonarr, the sidebar collapses to just
     // the relevant sub-tabs and a Sonarr-instance-only run mode card.
     scanSectionVisible(section) {
       if (this.scanAppType === 'sonarr') {
         // Sonarr currently exposes Run mode (Quick fix-all + standalone
-        // Recover card) and Activity (history + scheduled rules). Release
-        // Groups, Tag library, Filters, Audio, Video, DV detail are all
+        // Recover card + saved rules grid) and History (adhoc scan
+        // replays). Release Groups, Tag library, Filters, Audio, Video,
+        // DV detail are all
         // radarr-only — they centre on filter-driven group tagging and
         // per-Movie-File MediaInfo, which Sonarr's per-episode-file model
         // doesn't share. Recover is the one Sonarr action implemented today
         // and lives on Run mode (closer to where the user looks for actions
         // when Sonarr is selected).
-        return section === 'run' || section === 'activity';
+        return section === 'run' || section === 'history';
       }
       return true;
     },
@@ -3433,7 +3449,7 @@ function app() {
     reviewScheduleLabel() {
       if (!this.editingRule) return '';
       const cron = (this.editingRule.cron || '').trim();
-      return cron === '' ? 'Manual run only (Run-now button on the Activity card)' : cron;
+      return cron === '' ? 'Manual run only (Run-now button on the Run mode card)' : cron;
     },
 
     // Tracks which auto-tag sections will actually emit on this run
@@ -5499,7 +5515,8 @@ function app() {
     },
 
     // Click handler for phase rows on either result panel (Quick fix-
-    // all on Run mode, Activity on Activity tab). Takes the phase
+    // all + saved-rule run-now both render on Run mode; the History
+    // tab opens the same drill-in modal overlaid). Takes the phase
     // object directly — no need to look it up in a collection — so
     // the same handler serves both panels.
     //
@@ -6740,10 +6757,11 @@ function app() {
           throw new Error(msg || 'HTTP ' + r.status);
         }
         const data = await r.json();
-        // Build the shared phases-array shape so the Activity result
+        // Build the shared phases-array shape so the Run-mode result
         // panel can render the same phase rows + drill-in modals as
         // Quick fix-all. No tab navigation, no clobbering of the
-        // user's standalone scanResults.* slots.
+        // user's standalone scanResults.* slots. (Variable name kept
+        // as `activityResults` for legacy reasons — internal-only.)
         this.activityResults = this.buildActivityResult(schedule, run, data);
         this.closeHistory();
       } catch (e) {

@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.3.1-dev — early-access feedback batch (2026-05-03)
+
+First round of polish based on feedback from the early testers.
+
+### What's better
+
+- **Activity tab renamed to History.** It's purely a scan-history viewer now (saved rules and their per-run history live on Run mode where you create them) — "History" reads more honestly. As a bonus the page heading on Run mode that still said "Activity" got fixed too — it's "Saved rules" now.
+
+- **Scan history actually sticks around now.** Saved scans survived day-to-day, but disappeared every time you Force-Updated the container. Your audit log got reset to empty too. Fixed — both now persist properly across restarts and updates.
+
+- **History tab works as a real history-browser.** Clicking a row used to throw you across to whichever sub-tab the scan originally ran on. Now the result opens as a modal right on History, so you can browse old runs without losing your place. Cleanup is still routed to its own tab (no drill-in modal yet).
+
+- **Dolby Vision setup is much friendlier.**
+  - When a DV scan reports "Unreachable" files, you now get an inline banner explaining the cause (almost always a missing or wrong Path Mapping) with a direct pointer to where to fix it.
+  - The DV help-panel walks you through the two ways paths can line up: same in-container path as Radarr (no Path Mapping needed) or different paths (one row to add).
+  - Same explanation now in the README + Unraid template description for the Media volume so you see it before you even start.
+
+- **Audio/Video/DV tag pickers got Select all/none buttons.** Faster than ticking 12 codecs one by one.
+
+- **Logout button** in the top-right of the UI. Was a glaring omission.
+
+- **Atmos detection.** Some files with Atmos audio weren't being tagged because Radarr's MediaInfo didn't expose it. Resolvarr now also checks the filename for Atmos tokens as a fallback.
+
+- **Light-mode polish.** A couple of pockets where dark-theme colours had leaked into light-mode are fixed.
+
+- **Dev version visible in the UI.** Helps testers report exactly which build they're running.
+
+- **Add-instance dialog.** Placeholders now switch to Radarr/Sonarr-appropriate hints when you pick the type.
+
+- **Dolby Vision tools install fix.** The previous build tried to install ffmpeg as a static binary — it downloaded fine but failed to run on Alpine (wrong libc). Reverted to Alpine's musl-native ffmpeg package. The `ENABLE_DV_TOOLS` toggle is also now a proper dropdown in the Unraid template instead of a free-text field.
+
+### Heads-up
+
+- This is still `:dev`. Force-Update at your own pace, breaking changes between dev builds are still on the table.
+- Light theme is shipped but the dark theme is more polished — feedback on either welcome.
+
+---
+
 ## v0.3.0-dev — first public early-access build (2026-05-03)
 
 First release published to GHCR as `:dev`. Published while we collect feedback from a small group of early testers — occasional breaking changes between dev builds are expected. A first stable `:latest` will land after a soak period.
