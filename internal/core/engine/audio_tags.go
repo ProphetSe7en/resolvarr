@@ -60,7 +60,7 @@ func AudioTagsForFile(mi MediaInfo, cfg AudioTagsConfig) []string {
 	if tag := audioChannelsBucket(mi.AudioChannels); tag != "" && cfg.Audio.allowed(tag) {
 		out = append(out, cfg.Audio.Prefix+tag)
 	}
-	if hasAtmos(mi.AudioAdditionalFeatures) && cfg.Audio.allowed("atmos") {
+	if hasAtmos(mi.AudioAdditionalFeatures, mi.RelativePath, mi.SceneName) && cfg.Audio.allowed("atmos") {
 		out = append(out, cfg.Audio.Prefix+"atmos")
 	}
 	return out

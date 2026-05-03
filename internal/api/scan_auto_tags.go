@@ -157,6 +157,11 @@ func (s *Server) runAutoTags(
 				AudioAdditionalFeatures: item.MovieFile.MediaInfo.AudioAdditionalFeatures,
 			}
 		}
+		// Always carry filename context — hasAtmos uses it to fall back
+		// when audioAdditionalFeatures is blank (older Radarr imports +
+		// Atmos-in-EAC3 streams sometimes leave the field empty).
+		mi.RelativePath = item.MovieFile.RelativePath
+		mi.SceneName = item.MovieFile.SceneName
 		var qualityRes int
 		if item.MovieFile.Quality != nil {
 			qualityRes = item.MovieFile.Quality.Quality.Resolution
