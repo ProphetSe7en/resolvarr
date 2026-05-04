@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.3.6-dev — Sonarr support (2026-05-04)
+
+### What you get
+
+- **Sonarr is now supported.** Recover, Audio tags and Video tags all
+  work the same way as Radarr — Library scan, Quick fix-all, schedules,
+  the whole flow. Tags land on the series itself (Sonarr's tag model
+  only allows series-level tags, not per episode); the result panel
+  expands each series into its seasons + per-episode mediaInfo so you
+  can see exactly which episodes contributed which tags.
+
+- **Show excluded** lets you skip movies / series / seasons you don't
+  want resolvarr to keep checking on Recover scans. Click Exclude on
+  any result row, and they'll be filtered out of every future scan
+  until you click Include again from the Show excluded chip.
+
+- **Plain-language help across the app.** Help panels rewritten to
+  explain features in everyday language — fewer technical terms,
+  more "what this does and why you'd want it". Sonarr-aware where
+  the mechanics differ from Radarr.
+
+- **Footer** showing the running version + project credit, matching
+  the rest of the container family.
+
+### Bug fixes
+
+Various bug fixes and stability improvements.
+
+### Coming next
+
+- **Import / webhook integration.** Bringing in the `tagarr_import`
+  flow so resolvarr can tag files automatically as they land in
+  Radarr/Sonarr, not just on library scan.
+
+---
+
 ## v0.3.5-dev — Dolby Vision tools baked in + script parity (2026-05-04)
 
 This batch closes the gap to the upstream TRaSH bash script (`Radarr-DV-HDR-Tagarr/dv-hdr_tagarr.sh`) — same per-file output, plus everything resolvarr already does (web UI, multi-instance sync, cache, scheduling, notifications).

@@ -50,10 +50,21 @@ func (r *schedulerRunner) RunSchedule(ctx context.Context, job core.ScheduledJob
 		return core.RunSummary{}, fmt.Errorf("instance %q not found", job.InstanceID)
 	}
 	appType := inst.Type
-	if appType != "radarr" {
-		// v1 scope match — see scan_*.go. Sonarr lands later per
-		// per-instance-type-ux.md.
-		return core.RunSummary{}, fmt.Errorf("schedule against non-radarr instance not supported in v1")
+	// Per-mode allowlist mirrors scan.go's dispatcher. Sonarr supports
+	// recover (M3c) + audiotags + videotags (M-Sonarr) + combined chains
+	// over those three. Tag, discover, dvdetail are Radarr-only — the
+	// wizard catalog's appliesTo gates prevent saving Sonarr rules with
+	// those modes, but defend at the schedule entry-point too in case a
+	// hand-edited resolvarr.json sneaks one through.
+	if appType == "sonarr" {
+		switch job.Mode {
+		case core.JobModeRecover, core.JobModeAudioTags, core.JobModeVideoTags, core.JobModeCombined:
+			// supported
+		default:
+			return core.RunSummary{}, fmt.Errorf("Sonarr schedules support recover / audiotags / videotags / combined only — got %q", job.Mode)
+		}
+	} else if appType != "radarr" {
+		return core.RunSummary{}, fmt.Errorf("schedule against unknown instance type %q", appType)
 	}
 
 	// Overlay schedule's per-rule config snapshots over the global cfg.
@@ -369,35 +380,77 @@ func applyRuleOverlay(cfg core.Config, filters *engine.FilterConfig, audioTags *
 // Mode defaults to "apply" — a schedule that previewed-only would
 // never actually update tags, defeating the purpose.
 func (r *schedulerRunner) runAudioTagsSchedule(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, job core.ScheduledJob) (core.RunSummary, error) {
-	req := scanRunRequest{
-		InstanceID: job.InstanceID,
-		Mode:       defaultMode(job.Options.RunMode, "apply"),
-		Action:     "audiotags",
+	target := core.ValidJobTarget(job.Options.AudioTagsTarget)
+	mode := defaultMode(job.Options.RunMode, "apply")
+
+	var primaryResp *scanResponse
+	if target.IncludesPrimary() {
+		req := scanRunRequest{InstanceID: job.InstanceID, Mode: mode, Action: "audiotags"}
+		resp, apiErr := r.server.runAudioTags(ctx, cfg, inst, appType, req)
+		r.server.auditScan("schedule:"+job.ID, "audiotags", inst, req, resp, errMsgOf(apiErr))
+		if apiErr != nil {
+			return core.RunSummary{}, apiErr
+		}
+		primaryResp = resp
 	}
-	resp, apiErr := r.server.runAudioTags(ctx, cfg, inst, appType, req)
-	r.server.auditScan("schedule:"+job.ID, "audiotags", inst, req, resp, errMsgOf(apiErr))
-	if apiErr != nil {
-		return core.RunSummary{}, apiErr
+
+	if target.IncludesSecondary() {
+		resp2, secInst := r.runAutoTagOnSecondary(ctx, cfg, inst, appType, job, "audiotags")
+		if resp2 != nil {
+			combined := combinedScheduleResult{AudioTags: primaryResp, AudioTagsSecondary: resp2}
+			parts := []string{}
+			if primaryResp != nil {
+				parts = append(parts, "audiotags ("+inst.Name+"): "+summarizeAutoTagsResponse(primaryResp, "audio tags").Summary)
+			}
+			parts = append(parts, "audiotags ("+secInst.Name+"): "+summarizeAutoTagsResponse(resp2, "audio tags").Summary)
+			return core.RunSummary{Status: "ok", Summary: strings.Join(parts, "; "), Result: combined}, nil
+		}
 	}
-	out := summarizeAutoTagsResponse(resp, "audio tags")
-	out.Result = resp
+
+	if primaryResp == nil {
+		return core.RunSummary{Status: "error", Summary: "audiotags target=secondary but no secondary instance reachable"},
+			fmt.Errorf("audiotags: target=secondary but secondary unreachable for schedule %s", job.ID)
+	}
+	out := summarizeAutoTagsResponse(primaryResp, "audio tags")
+	out.Result = primaryResp
 	return out, nil
 }
 
 // runVideoTagsSchedule — same shape, video-stream side.
 func (r *schedulerRunner) runVideoTagsSchedule(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, job core.ScheduledJob) (core.RunSummary, error) {
-	req := scanRunRequest{
-		InstanceID: job.InstanceID,
-		Mode:       defaultMode(job.Options.RunMode, "apply"),
-		Action:     "videotags",
+	target := core.ValidJobTarget(job.Options.VideoTagsTarget)
+	mode := defaultMode(job.Options.RunMode, "apply")
+
+	var primaryResp *scanResponse
+	if target.IncludesPrimary() {
+		req := scanRunRequest{InstanceID: job.InstanceID, Mode: mode, Action: "videotags"}
+		resp, apiErr := r.server.runVideoTags(ctx, cfg, inst, appType, req)
+		r.server.auditScan("schedule:"+job.ID, "videotags", inst, req, resp, errMsgOf(apiErr))
+		if apiErr != nil {
+			return core.RunSummary{}, apiErr
+		}
+		primaryResp = resp
 	}
-	resp, apiErr := r.server.runVideoTags(ctx, cfg, inst, appType, req)
-	r.server.auditScan("schedule:"+job.ID, "videotags", inst, req, resp, errMsgOf(apiErr))
-	if apiErr != nil {
-		return core.RunSummary{}, apiErr
+
+	if target.IncludesSecondary() {
+		resp2, secInst := r.runAutoTagOnSecondary(ctx, cfg, inst, appType, job, "videotags")
+		if resp2 != nil {
+			combined := combinedScheduleResult{VideoTags: primaryResp, VideoTagsSecondary: resp2}
+			parts := []string{}
+			if primaryResp != nil {
+				parts = append(parts, "videotags ("+inst.Name+"): "+summarizeAutoTagsResponse(primaryResp, "video tags").Summary)
+			}
+			parts = append(parts, "videotags ("+secInst.Name+"): "+summarizeAutoTagsResponse(resp2, "video tags").Summary)
+			return core.RunSummary{Status: "ok", Summary: strings.Join(parts, "; "), Result: combined}, nil
+		}
 	}
-	out := summarizeAutoTagsResponse(resp, "video tags")
-	out.Result = resp
+
+	if primaryResp == nil {
+		return core.RunSummary{Status: "error", Summary: "videotags target=secondary but no secondary instance reachable"},
+			fmt.Errorf("videotags: target=secondary but secondary unreachable for schedule %s", job.ID)
+	}
+	out := summarizeAutoTagsResponse(primaryResp, "video tags")
+	out.Result = primaryResp
 	return out, nil
 }
 
@@ -415,19 +468,63 @@ func (r *schedulerRunner) runVideoTagsSchedule(ctx context.Context, cfg core.Con
 // audit-style preview (handy for monitoring extraction-failure rate
 // without committing tag writes).
 func (r *schedulerRunner) runDvDetailSchedule(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, job core.ScheduledJob) (core.RunSummary, error) {
-	req := scanRunRequest{
-		InstanceID:    job.InstanceID,
-		Mode:          defaultMode(job.Options.RunMode, "apply"),
-		Action:        "dvdetail",
-		BypassDvCache: job.Options.BypassDvCache,
+	target := core.ValidJobTarget(job.Options.DvDetailTarget)
+	mode := defaultMode(job.Options.RunMode, "apply")
+
+	// A-chain: primary instance.
+	var primaryResp *scanResponse
+	if target.IncludesPrimary() {
+		req := scanRunRequest{
+			InstanceID:    job.InstanceID,
+			Mode:          mode,
+			Action:        "dvdetail",
+			BypassDvCache: job.Options.BypassDvCache,
+		}
+		resp, apiErr := r.server.runDvDetail(ctx, cfg, inst, appType, req)
+		r.server.auditScan("schedule:"+job.ID, "dvdetail", inst, req, resp, errMsgOf(apiErr))
+		if apiErr != nil {
+			return core.RunSummary{}, apiErr
+		}
+		primaryResp = resp
 	}
-	resp, apiErr := r.server.runDvDetail(ctx, cfg, inst, appType, req)
-	r.server.auditScan("schedule:"+job.ID, "dvdetail", inst, req, resp, errMsgOf(apiErr))
-	if apiErr != nil {
-		return core.RunSummary{}, apiErr
+
+	// B-chain: secondary. Single-mode dvdetail rules with target=both
+	// or 'secondary' aggregate the secondary into a combined-shape
+	// result so the schedule's history modal renders both halves via
+	// the existing combined-result drill-in. Single-instance flow
+	// (target=primary only) keeps the legacy raw scanResponse shape
+	// so existing rule history isn't reformatted.
+	if target.IncludesSecondary() {
+		resp2, secInst := r.runAutoTagOnSecondary(ctx, cfg, inst, appType, job, "dvdetail")
+		if resp2 != nil {
+			combined := combinedScheduleResult{
+				DvDetail:          primaryResp,
+				DvDetailSecondary: resp2,
+			}
+			parts := []string{}
+			if primaryResp != nil {
+				parts = append(parts, "dvdetail ("+inst.Name+"): "+summarizeDvDetailResponse(primaryResp).Summary)
+			}
+			parts = append(parts, "dvdetail ("+secInst.Name+"): "+summarizeDvDetailResponse(resp2).Summary)
+			return core.RunSummary{
+				Status:  "ok",
+				Summary: strings.Join(parts, "; "),
+				Result:  combined,
+			}, nil
+		}
+		// Secondary couldn't be resolved; fall through to primary-only
+		// summary if we ran one.
 	}
-	out := summarizeDvDetailResponse(resp)
-	out.Result = resp
+
+	if primaryResp == nil {
+		// target was 'secondary' but secondary unreachable, OR target
+		// was 'primary' but the IncludesPrimary branch above caught
+		// the apiErr. The first case lands here.
+		return core.RunSummary{Status: "error", Summary: "DV detail target=secondary but no secondary instance reachable"},
+			fmt.Errorf("dvdetail: target=secondary but secondary unreachable for schedule %s", job.ID)
+	}
+	out := summarizeDvDetailResponse(primaryResp)
+	out.Result = primaryResp
 	return out, nil
 }
 
@@ -606,7 +703,20 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 		}
 	}
 
-	if includeAudioTags && phaseErr == nil {
+	// Auto-tag phases (audiotags / videotags / dvdetail) follow the
+	// "A-chain → B-chain" execution model: every phase whose target
+	// includes the primary instance fires first, in fixed order
+	// (audio → video → DV); then every phase whose target includes
+	// the secondary instance fires, in the same order. Token allow-
+	// lists are universal — the per-rule config carried in
+	// AudioTags/VideoTags/DvDetail is applied to whichever instance
+	// the phase fires on.
+	audioTarget := core.ValidJobTarget(job.Options.AudioTagsTarget)
+	videoTarget := core.ValidJobTarget(job.Options.VideoTagsTarget)
+	dvTarget := core.ValidJobTarget(job.Options.DvDetailTarget)
+
+	// A-chain — primary instance.
+	if includeAudioTags && phaseErr == nil && audioTarget.IncludesPrimary() {
 		req := scanRunRequest{
 			InstanceID: job.InstanceID,
 			Mode:       defaultMode(job.Options.RunMode, "apply"),
@@ -620,20 +730,8 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 			combined = append(combined, summarizeAutoTagsResponse(resp, "audio tags").Summary)
 			combinedResult.AudioTags = resp
 		}
-		// Optional second audio scan against secondary (independent —
-		// NOT a mirror; secondary's own mediaInfo drives its tags).
-		if phaseErr == nil && job.Options.AutoTagsRunOnSecondary && job.Options.SyncToSecondary {
-			if resp2, secInst := r.runAutoTagOnSecondary(ctx, cfg, inst, appType, job, "audiotags"); resp2 != nil {
-				combined = append(combined, "audiotags ("+secInst.Name+"): "+summarizeAutoTagsResponse(resp2, "audio tags").Summary)
-				combinedResult.AudioTagsSecondary = resp2
-			} else if secInst == nil {
-				// Resolution failed silently — surfaces in the row
-				// summary as missing block; not a hard error.
-			}
-		}
 	}
-
-	if includeVideoTags && phaseErr == nil {
+	if includeVideoTags && phaseErr == nil && videoTarget.IncludesPrimary() {
 		req := scanRunRequest{
 			InstanceID: job.InstanceID,
 			Mode:       defaultMode(job.Options.RunMode, "apply"),
@@ -647,15 +745,8 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 			combined = append(combined, summarizeAutoTagsResponse(resp, "video tags").Summary)
 			combinedResult.VideoTags = resp
 		}
-		if phaseErr == nil && job.Options.AutoTagsRunOnSecondary && job.Options.SyncToSecondary {
-			if resp2, secInst := r.runAutoTagOnSecondary(ctx, cfg, inst, appType, job, "videotags"); resp2 != nil {
-				combined = append(combined, "videotags ("+secInst.Name+"): "+summarizeAutoTagsResponse(resp2, "video tags").Summary)
-				combinedResult.VideoTagsSecondary = resp2
-			}
-		}
 	}
-
-	if includeDvDetail && phaseErr == nil {
+	if includeDvDetail && phaseErr == nil && dvTarget.IncludesPrimary() {
 		req := scanRunRequest{
 			InstanceID:    job.InstanceID,
 			Mode:          defaultMode(job.Options.RunMode, "apply"),
@@ -669,6 +760,29 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 		} else {
 			combined = append(combined, summarizeDvDetailResponse(resp).Summary)
 			combinedResult.DvDetail = resp
+		}
+	}
+
+	// B-chain — secondary instance. Each phase resolves the secondary
+	// independently via runAutoTagOnSecondary which uses
+	// SyncToInstanceID (or first-of-same-type fallback). Skipped
+	// silently when no secondary is reachable.
+	if includeAudioTags && phaseErr == nil && audioTarget.IncludesSecondary() {
+		if resp2, secInst := r.runAutoTagOnSecondary(ctx, cfg, inst, appType, job, "audiotags"); resp2 != nil {
+			combined = append(combined, "audiotags ("+secInst.Name+"): "+summarizeAutoTagsResponse(resp2, "audio tags").Summary)
+			combinedResult.AudioTagsSecondary = resp2
+		}
+	}
+	if includeVideoTags && phaseErr == nil && videoTarget.IncludesSecondary() {
+		if resp2, secInst := r.runAutoTagOnSecondary(ctx, cfg, inst, appType, job, "videotags"); resp2 != nil {
+			combined = append(combined, "videotags ("+secInst.Name+"): "+summarizeAutoTagsResponse(resp2, "video tags").Summary)
+			combinedResult.VideoTagsSecondary = resp2
+		}
+	}
+	if includeDvDetail && phaseErr == nil && dvTarget.IncludesSecondary() {
+		if resp2, secInst := r.runAutoTagOnSecondary(ctx, cfg, inst, appType, job, "dvdetail"); resp2 != nil {
+			combined = append(combined, "dvdetail ("+secInst.Name+"): "+summarizeDvDetailResponse(resp2).Summary)
+			combinedResult.DvDetailSecondary = resp2
 		}
 	}
 
@@ -719,6 +833,7 @@ type combinedScheduleResult struct {
 	VideoTags          *scanResponse `json:"videoTags,omitempty"`
 	VideoTagsSecondary *scanResponse `json:"videoTagsSecondary,omitempty"`
 	DvDetail           *scanResponse `json:"dvDetail,omitempty"`
+	DvDetailSecondary  *scanResponse `json:"dvDetailSecondary,omitempty"`
 }
 
 // combinedScheduleHasAnyResult returns true when at least one phase
@@ -728,14 +843,20 @@ func combinedScheduleHasAnyResult(r combinedScheduleResult) bool {
 	return r.Tag != nil || r.Discover != nil || r.Recover != nil ||
 		r.AudioTags != nil || r.AudioTagsSecondary != nil ||
 		r.VideoTags != nil || r.VideoTagsSecondary != nil ||
-		r.DvDetail != nil
+		r.DvDetail != nil || r.DvDetailSecondary != nil
 }
 
-// runAutoTagOnSecondary fires runAudioTags/runVideoTags against the
-// resolved secondary instance. Returns nil response when:
-//   - SyncToSecondary isn't enabled (no target picker)
+// runAutoTagOnSecondary fires runAudioTags / runVideoTags / runDvDetail
+// against the resolved secondary instance. The caller decides whether
+// to invoke this based on the per-bucket JobTarget (audio/video/dv
+// each carry their own target). resolveSyncTarget falls back to the
+// first other-of-same-type instance when SyncToInstanceID is empty,
+// which matches the wizard's "Auto-pick first available" semantics.
+//
+// Returns nil response when:
 //   - secondary instance can't be resolved (deleted / wrong type)
-//   - phase action isn't audiotags / videotags
+//   - phase action isn't audiotags / videotags / dvdetail
+//   - the run errored (apiErr != nil)
 //
 // The secInst pointer is returned so the caller can include the
 // secondary's name in the summary line. nil/nil means "skipped
@@ -771,6 +892,14 @@ func (r *schedulerRunner) runAutoTagOnSecondary(ctx context.Context, cfg core.Co
 	case "videotags":
 		resp, apiErr := r.server.runVideoTags(ctx, cfg, secInst, appType, req)
 		r.server.auditScan("schedule:"+job.ID, "videotags", secInst, req, resp, errMsgOf(apiErr))
+		if apiErr != nil {
+			return nil, secInst
+		}
+		return resp, secInst
+	case "dvdetail":
+		req.BypassDvCache = job.Options.BypassDvCache
+		resp, apiErr := r.server.runDvDetail(ctx, cfg, secInst, appType, req)
+		r.server.auditScan("schedule:"+job.ID, "dvdetail", secInst, req, resp, errMsgOf(apiErr))
 		if apiErr != nil {
 			return nil, secInst
 		}

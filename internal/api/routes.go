@@ -93,6 +93,14 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Scan (M3 — tag / discover / cleanup / recover, dispatched via action field)
 	mux.HandleFunc("POST /api/scan/run", s.handleScanRun)
 
+	// Recover exclusions — per-instance "skip these in next scan" lists.
+	// User flags faulty / unfixable items; Recover scan filters them out
+	// before the per-item history walk. Restored via the "Show excluded"
+	// panel + per-row Include-again button.
+	mux.HandleFunc("GET /api/recover/exclusions/{instanceId}", s.handleListRecoverExclusions)
+	mux.HandleFunc("POST /api/recover/exclusions/{instanceId}", s.handleAddRecoverExclusions)
+	mux.HandleFunc("DELETE /api/recover/exclusions/{instanceId}", s.handleRemoveRecoverExclusions)
+
 	// Schedules (M3d — saved workflows fired by cron)
 	mux.HandleFunc("GET /api/schedules", s.handleListSchedules)
 	mux.HandleFunc("POST /api/schedules", s.handleCreateSchedule)

@@ -1,0 +1,328 @@
+    <template x-if="scanResults.tag">
+      <div style="margin-bottom:24px">
+        <!-- Historical-run banner — slim, single line. Disclaimer ("page
+             state may be out of sync") moves to the title= tooltip so it's
+             discoverable on hover but doesn't add visual weight. -->
+        <template x-if="historicalRunInfo && historicalRunInfo.kind === 'tag'">
+          <div title="Page state is a snapshot — re-run a scan for current data."
+               style="margin-bottom:10px;padding:6px 12px;background:var(--alpha-blue-soft);border:1px solid var(--alpha-blue-border-strong);border-radius:6px;color:var(--accent-sky);font-size:12px;display:flex;align-items:center;gap:8px">
+            <span style="background:var(--alpha-blue);padding:1px 8px;border-radius:8px;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.4px">Historical</span>
+            <span x-text="historicalRunLabel()"></span>
+          </div>
+        </template>
+
+        <!-- Totals card — title + dismiss merged into the header row.
+             Past-tense verbs in apply mode (Added/Removed/Kept) make the
+             "Apply complete" banner redundant; it's been dropped. -->
+        <div style="margin-bottom:12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border-subtle)">
+            <div style="display:flex;align-items:center;gap:10px">
+              <span style="font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px"
+                    :class="scanResults.tag.mode === 'apply' ? 'chip-mode-apply' : 'chip-mode-preview'"
+                    x-text="scanResults.tag.mode === 'apply' ? 'Applied' : 'Preview'"></span>
+              <span style="font-size:14px;font-weight:600;color:var(--text-primary)">Tag results</span>
+            </div>
+            <button class="icon-btn" @click="dismissTagResults()" title="Dismiss results — won't undo anything; just hides the card so the page is tidy again">
+              <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10 M13 3L3 13"/></svg>
+            </button>
+          </div>
+          <div style="padding:10px 16px">
+            <!-- Primary totals — verb tense flips per mode -->
+            <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px">
+              <strong x-text="scanResults.tag.instance.name" style="color:var(--text-primary);flex-shrink:0;min-width:110px"></strong>
+              <span><span style="color:var(--text-secondary)">Items</span> <strong x-text="scanResults.tag.totals.items"></strong></span>
+              <span style="color:var(--text-muted-secondary)">·</span>
+              <span><span style="color:var(--text-secondary)">Groups</span> <strong x-text="scanResults.tag.totals.groups"></strong></span>
+              <span style="color:var(--text-muted-secondary)">·</span>
+              <span style="color:var(--accent-green)" :title="scanResults.tag.mode === 'apply' ? 'Tag additions written to Radarr in this run' : 'Movies that will get the tag on Apply'"><span x-text="scanResults.tag.mode === 'apply' ? 'Added' : 'To add'"></span> <strong x-text="scanResults.tag.totals.toAdd || 0"></strong></span>
+              <span style="color:var(--text-muted-secondary)">·</span>
+              <span style="color:var(--accent-red)" :title="scanResults.tag.mode === 'apply' ? 'Tag removals written to Radarr in this run' : 'Movies that will lose the tag on Apply'"><span x-text="scanResults.tag.mode === 'apply' ? 'Removed' : 'To remove'"></span> <strong x-text="scanResults.tag.totals.toRemove || 0"></strong></span>
+              <span style="color:var(--text-muted-secondary)">·</span>
+              <span><span style="color:var(--text-secondary)" x-text="scanResults.tag.mode === 'apply' ? 'Kept' : 'To keep'"></span> <strong x-text="scanResults.tag.totals.toKeep || 0"></strong></span>
+              <span style="color:var(--text-muted-secondary)">·</span>
+              <span style="color:var(--accent-orange)" title="Movies in Radarr without an imported file — engine has nothing to evaluate"><span style="color:var(--accent-orange)">No file</span> <strong x-text="scanResults.tag.totals.noFile || 0"></strong></span>
+            </div>
+            <!-- Secondary totals — only when sync was enabled -->
+            <template x-if="scanResults.tag.totals.secondaryToAdd || scanResults.tag.totals.secondaryToRemove || scanResults.tag.totals.secondaryToKeep || scanResults.tag.totals.secondaryMissing">
+              <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:6px;padding-top:8px;border-top:1px solid var(--bg-muted);font-size:13px">
+                <strong x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'Secondary'" style="color:var(--text-primary);flex-shrink:0;min-width:110px"></strong>
+                <span style="color:var(--accent-green)"><span x-text="scanResults.tag.mode === 'apply' ? 'Added' : 'To add'"></span> <strong x-text="scanResults.tag.totals.secondaryToAdd || 0"></strong></span>
+                <span style="color:var(--text-muted-secondary)">·</span>
+                <span style="color:var(--accent-red)" :title="'Orphans = ' + (scanResults.tag.totals.secondaryOrphans || 0)"><span x-text="scanResults.tag.mode === 'apply' ? 'Removed' : 'To remove'"></span> <strong x-text="scanResults.tag.totals.secondaryToRemove || 0"></strong><template x-if="scanResults.tag.totals.secondaryOrphans > 0"><span style="color:var(--text-secondary);font-size:12px"> (<strong x-text="scanResults.tag.totals.secondaryOrphans"></strong> orphan<span x-show="scanResults.tag.totals.secondaryOrphans !== 1">s</span>)</span></template></span>
+                <span style="color:var(--text-muted-secondary)">·</span>
+                <span><span style="color:var(--text-secondary)" x-text="scanResults.tag.mode === 'apply' ? 'Kept' : 'To keep'"></span> <strong x-text="scanResults.tag.totals.secondaryToKeep || 0"></strong></span>
+                <span style="color:var(--text-muted-secondary)">·</span>
+                <span style="color:var(--accent-orange)">Not in <span x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'secondary'"></span> <strong x-text="scanResults.tag.totals.secondaryMissing || 0"></strong></span>
+              </div>
+            </template>
+            <!-- New-tag-labels footnote (slim, only when apply created any) -->
+            <template x-if="scanResults.tag.mode === 'apply' && scanResults.tag.applied && ((scanResults.tag.applied.tagsCreated && scanResults.tag.applied.tagsCreated.length > 0) || (scanResults.tag.applied.secondary && scanResults.tag.applied.secondary.tagsCreated && scanResults.tag.applied.secondary.tagsCreated.length > 0))">
+              <div style="margin-top:6px;padding-top:8px;border-top:1px solid var(--bg-muted);font-size:12px;color:var(--text-secondary)">
+                <template x-if="scanResults.tag.applied.tagsCreated && scanResults.tag.applied.tagsCreated.length > 0">
+                  <span><strong x-text="scanResults.tag.instance.name"></strong> created tag<span x-show="scanResults.tag.applied.tagsCreated.length !== 1">s</span> <code x-text="scanResults.tag.applied.tagsCreated.join(', ')"></code>.</span>
+                </template>
+                <template x-if="scanResults.tag.applied.secondary && scanResults.tag.applied.secondary.tagsCreated && scanResults.tag.applied.secondary.tagsCreated.length > 0">
+                  <span> <strong x-text="scanResults.tag.applied.secondary.instanceName"></strong> created <code x-text="scanResults.tag.applied.secondary.tagsCreated.join(', ')"></code>.</span>
+                </template>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Per-movie detail — visible in BOTH preview AND apply mode.
+             Apply mode is just retrospective ("these movies got the tag");
+             without it the user sees only totals on QFA / direct-apply runs.
+             The Apply-now footer is gated separately below. -->
+        <div>
+            <!-- Combined filter bar — Status group + Instance group share one
+                 row. Past-tense status labels in apply mode. Default chip is
+                 set by pickDefaultScanFilter() so the user never lands on an
+                 empty filter (was a problem with apply runs returning 0/0). -->
+            <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px">
+              <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+                <span style="font-size:11px;color:var(--text-muted-secondary);text-transform:uppercase;letter-spacing:0.4px;margin-right:4px">Status</span>
+                <button class="btn btn-sm" :class="scanFilter === 'add' ? 'btn-primary' : ''" @click="scanFilter = 'add'" :title="scanResults.tag.mode === 'apply' ? 'Movies the engine added a tag to in this run' : 'Movies the engine matched that don\'t yet have the tag — these will be added on Apply'">
+                  <span x-text="scanResults.tag.mode === 'apply' ? 'Added' : 'Match'"></span> <span style="margin-left:4px;opacity:0.7" x-text="'(' + scanFilterCounts().add + ')'"></span>
+                </button>
+                <button class="btn btn-sm" :class="scanFilter === 'remove' ? 'btn-primary' : ''" @click="scanFilter = 'remove'" :title="scanResults.tag.mode === 'apply' ? 'Movies the engine removed a tag from in this run' : 'Movies that have the tag but the engine no longer matches them — these will be removed on Apply'">
+                  <span x-text="scanResults.tag.mode === 'apply' ? 'Removed' : 'Remove'"></span> <span style="margin-left:4px;opacity:0.7" x-text="'(' + scanFilterCounts().remove + ')'"></span>
+                </button>
+                <button class="btn btn-sm" :class="scanFilter === 'keep' ? 'btn-primary' : ''" @click="scanFilter = 'keep'" title="Movies already correctly tagged — no changes needed, surfaced for verification">
+                  <span x-text="scanResults.tag.mode === 'apply' ? 'Kept' : 'Keep'"></span> <span style="margin-left:4px;opacity:0.7" x-text="'(' + scanFilterCounts().keep + ')'"></span>
+                </button>
+                <button x-show="scanInstanceFilter !== 'secondary'" class="btn btn-sm" :class="scanFilter === 'nofile' ? 'btn-primary' : ''" @click="scanFilter = 'nofile'" title="Movies with no imported file in Radarr — engine has nothing to evaluate, decision skipped">
+                  No file <span style="margin-left:4px;opacity:0.7" x-text="'(' + scanFilterCounts().nofile + ')'"></span>
+                </button>
+                <button x-show="scanInstanceFilter !== 'primary' && (scanResults.tag.totals.secondaryMissing || 0) > 0" class="btn btn-sm" :class="scanFilter === 'missing' ? 'btn-primary' : ''" @click="scanFilter = 'missing'">
+                  Not in <span x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'secondary'"></span> <span style="margin-left:4px;opacity:0.7" x-text="'(' + (scanResults.tag.totals.secondaryMissing || 0) + ')'"></span>
+                </button>
+              </div>
+              <!-- Instance group — only when sync was enabled, shown right-aligned -->
+              <template x-if="scanResults.tag.totals.secondaryToAdd || scanResults.tag.totals.secondaryToRemove || scanResults.tag.totals.secondaryToKeep || scanResults.tag.totals.secondaryMissing">
+                <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-left:auto">
+                  <span style="font-size:11px;color:var(--text-muted-secondary);text-transform:uppercase;letter-spacing:0.4px;margin-right:4px">Instance</span>
+                  <button class="btn btn-sm" :class="scanInstanceFilter === 'both' ? 'btn-primary' : ''" @click="setScanInstanceFilter('both')">All</button>
+                  <button class="btn btn-sm" :class="scanInstanceFilter === 'primary' ? 'btn-primary' : ''" @click="setScanInstanceFilter('primary')" x-text="scanResults.tag.instance.name"></button>
+                  <button class="btn btn-sm" :class="scanInstanceFilter === 'secondary' ? 'btn-primary' : ''" @click="setScanInstanceFilter('secondary')" x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'Secondary'"></button>
+                </div>
+              </template>
+            </div>
+
+            <!-- Per-group decisions list — same one-row-per-group pattern as Discover.
+                 Click group header to expand to its movie list. Click a movie inside
+                 to expand to its file-context drill-down. Two-level expansion. -->
+            <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+              <template x-for="(bucket, bidx) in decisionsByGroup()" :key="bucket.group.id">
+                <div :style="bidx % 2 === 0 ? 'background:var(--bg-page)' : 'background:var(--bg-card)'" style="border-bottom:1px solid var(--bg-muted)">
+                  <!-- Group-header row — uses dot+text+number badges instead
+                       of the older filled pills. The eye picks up the action
+                       counts at a glance without the row turning into colour
+                       blocks; surrounding context (tag-code, display-name,
+                       count) stays neutral. -->
+                  <div style="padding:12px 14px;display:flex;align-items:center;gap:12px;cursor:pointer" @click="toggleScanGroupExpanded(bucket.group.id)">
+                    <span style="color:var(--text-secondary);font-size:11px;width:10px;flex-shrink:0" x-text="scanGroupExpanded[bucket.group.id] ? '▼' : '▶'"></span>
+                    <code style="color:var(--accent-sky);font-size:14px;font-weight:600" x-text="bucket.group.tag"></code>
+                    <span style="color:var(--text-body);font-size:13px" x-text="bucket.group.display"></span>
+                    <span style="font-size:12px;color:var(--text-muted-secondary)"><span class="v-num-keep" x-text="bucket.items.length"></span> shown</span>
+                    <div style="flex:1"></div>
+                    <template x-if="bucket.totals.add">
+                      <span style="font-size:12px;color:var(--text-body)"><span class="v-dot v-dot-add"></span><span class="v-num-add" x-text="bucket.totals.add"></span> add</span>
+                    </template>
+                    <template x-if="bucket.totals.remove">
+                      <span style="font-size:12px;color:var(--text-body)"><span class="v-dot v-dot-rem"></span><span class="v-num-rem" x-text="bucket.totals.remove"></span> remove</span>
+                    </template>
+                    <template x-if="bucket.totals.keep">
+                      <span style="font-size:12px;color:var(--text-body)"><span class="v-dot v-dot-keep"></span><span class="v-num-keep" x-text="bucket.totals.keep"></span> keep</span>
+                    </template>
+                  </div>
+
+                  <!-- Expanded movie list under this group — same compact
+                       collapsed-card pattern as Discover and Tag inventory.
+                       Collapsed shows title + (year) + per-instance verdict
+                       (text accent, not pill) + match-location hint. Click
+                       any row to expand for Q/A chips, reason, and full file
+                       context with token highlights. The "missing" secondary
+                       verdict is intentionally NOT rendered on the row —
+                       implied by absence; users who want to audit them use
+                       the dedicated "Missing in secondary" filter chip
+                       above. -->
+                  <template x-if="scanGroupExpanded[bucket.group.id]">
+                    <div style="padding:4px 16px 16px 16px;background:var(--bg-page);border-top:1px solid var(--bg-muted)">
+                      <div style="background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:6px">
+                        <template x-for="item in bucket.items" :key="item.id">
+                          <div style="border-bottom:1px solid var(--bg-muted)">
+                            <div style="padding:8px 14px;cursor:pointer;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap"
+                                 @click="toggleScanRowExpanded(item.id)"
+                                 :style="{ background: scanRowExpanded[item.id] ? 'var(--bg-elevated)' : 'transparent' }">
+                              <span style="color:var(--text-secondary);font-size:11px;width:10px;flex-shrink:0;align-self:center" x-text="scanRowExpanded[item.id] ? '▼' : '▶'"></span>
+                              <span style="color:var(--text-primary);font-size:14px;font-weight:500" x-text="item.title"></span>
+                              <template x-if="item.year">
+                                <span style="color:var(--text-secondary);font-size:12px" x-text="'(' + item.year + ')'"></span>
+                              </template>
+                              <!-- Primary verdict — instance-name prefix only
+                                   when a sync is active so the user can pair
+                                   primary/secondary at a glance. -->
+                              <span style="font-size:12px">
+                                <template x-if="item.secondaryAction">
+                                  <span style="color:var(--text-muted-secondary)" x-text="scanResults.tag.instance.name + ':'"></span>
+                                </template>
+                                <span :class="item.action === 'add' ? 'v-add' : item.action === 'remove' ? 'v-rem' : 'v-keep'"
+                                      x-text="(item.action === 'add' ? '+ ' : item.action === 'remove' ? '− ' : '') + item.action"></span>
+                              </span>
+                              <!-- Secondary verdict — only rendered for add/
+                                   remove/keep. Missing is implied by absence
+                                   (user instruction). -->
+                              <template x-if="item.secondaryAction && (item.secondaryAction === 'add' || item.secondaryAction === 'remove' || item.secondaryAction === 'keep')">
+                                <span style="font-size:12px">
+                                  <span style="color:var(--text-muted-secondary)" x-text="(instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'secondary') + ':'"></span>
+                                  <span :class="item.secondaryAction === 'add' ? 'v-add' : item.secondaryAction === 'remove' ? 'v-rem' : 'v-keep'"
+                                        x-text="(item.secondaryAction === 'add' ? '+ ' : item.secondaryAction === 'remove' ? '− ' : '') + item.secondaryAction"></span>
+                                </span>
+                              </template>
+                              <!-- Concrete WHY: show the actual quality + audio
+                                   tokens that drove the match, not the abstract
+                                   "releaseGroup field" location. The release-
+                                   group itself is implicit in the bucket
+                                   header, so we don't repeat it here. Only
+                                   render details that are present (simple-mode
+                                   groups skip filters and won't have these). -->
+                              <template x-if="item.qualityDetail">
+                                <span style="font-size:12px;color:var(--accent-green)" x-text="item.qualityDetail"></span>
+                              </template>
+                              <template x-if="item.audioDetail">
+                                <span style="font-size:12px;color:var(--accent-orange)" x-text="item.audioDetail"></span>
+                              </template>
+                            </div>
+                            <template x-if="scanRowExpanded[item.id]">
+                              <div style="padding:8px 14px 12px 32px;font-size:13px;color:var(--text-secondary);background:var(--bg-page);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;line-height:1.7">
+                                <!-- Q/A pass/fail + reason on one line, full
+                                     file-context grid below. Q/A get verdict
+                                     text-colour only (no chip background)
+                                     to match the new tone-down. -->
+                                <div style="display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px;font-family:inherit">
+                                  <template x-if="item.quality === 'PASS' || item.quality === 'FAIL'">
+                                    <span :class="item.quality === 'PASS' ? 'v-add' : 'v-rem'" :title="item.qualityDetail" x-text="'Q:' + item.quality"></span>
+                                  </template>
+                                  <template x-if="item.audio === 'PASS' || item.audio === 'FAIL'">
+                                    <span :class="item.audio === 'PASS' ? 'v-add' : 'v-rem'" :title="item.audioDetail" x-text="'A:' + item.audio"></span>
+                                  </template>
+                                  <template x-if="item.reason">
+                                    <span style="font-size:12px;color:var(--text-secondary);font-style:italic" x-text="item.reason"></span>
+                                  </template>
+                                </div>
+                                <template x-if="item.releaseGroup || item.sceneName || item.relativePath">
+                                  <div>
+                                    <div style="display:flex;gap:14px;align-items:baseline;flex-wrap:wrap">
+                                      <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">releaseGroup:</span> <span x-html="highlightMatchTokens(item.releaseGroup || '(empty)', item.releaseGroup)"></span></span>
+                                      <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)" x-text="(currentInstanceType() === 'sonarr' ? 'seriesId' : 'movieId') + ':'"></span> <span style="color:var(--text-body)" x-text="item.id"></span></span>
+                                      <template x-if="item.tmdbId">
+                                        <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">tmdbId:</span> <span style="color:var(--text-body)" x-text="item.tmdbId"></span></span>
+                                      </template>
+                                      <template x-if="item.tvdbId">
+                                        <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">tvdbId:</span> <span style="color:var(--text-body)" x-text="item.tvdbId"></span></span>
+                                      </template>
+                                    </div>
+                                    <template x-if="item.sceneName">
+                                      <div style="display:flex;gap:8px;align-items:baseline;margin-top:2px"><span style="color:var(--text-muted-secondary);flex-shrink:0">sceneName:</span> <span x-html="highlightMatchTokens(item.sceneName, item.releaseGroup)" style="white-space:nowrap;overflow-x:auto;flex:1;min-width:0"></span></div>
+                                    </template>
+                                    <template x-if="item.relativePath">
+                                      <div style="display:flex;gap:8px;align-items:baseline;margin-top:2px"><span style="color:var(--text-muted-secondary);flex-shrink:0">relativePath:</span> <span x-html="highlightMatchTokens(item.relativePath, item.releaseGroup)" style="white-space:nowrap;overflow-x:auto;flex:1;min-width:0"></span></div>
+                                    </template>
+                                  </div>
+                                </template>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <!-- No-file items — when "No file" filter chip is selected -->
+              <template x-if="noFileScanItems().length > 0">
+                <div>
+                  <div style="padding:10px 14px;background:var(--bg-card);border-bottom:1px solid var(--bg-muted);border-top:1px solid var(--bg-muted);font-size:13px;color:var(--accent-orange);font-weight:600">
+                    <span x-text="noFileScanItems().length"></span> item<span x-show="noFileScanItems().length !== 1">s</span> with no file (skipped — no decisions evaluated)
+                  </div>
+                  <template x-for="item in noFileScanItems()" :key="item.id">
+                    <div style="padding:8px 14px;border-bottom:1px solid var(--bg-muted);background:var(--bg-page);display:flex;align-items:center;gap:10px">
+                      <span style="color:var(--text-body);font-size:13px">
+                        <span x-text="item.title"></span><template x-if="item.year"><span style="color:var(--text-secondary)"> (<span x-text="item.year"></span>)</span></template>
+                      </span>
+                      <span style="font-size:11px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:2px 8px;border-radius:8px">no file</span>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <!-- Missing-in-secondary items — when "Missing in secondary" filter chip is selected -->
+              <template x-if="missingScanItems().length > 0">
+                <div>
+                  <div style="padding:10px 14px;background:var(--bg-card);border-bottom:1px solid var(--bg-muted);border-top:1px solid var(--bg-muted);font-size:13px;color:var(--accent-orange);font-weight:600">
+                    <span x-text="missingScanItems().length"></span> primary movie<span x-show="missingScanItems().length !== 1">s</span> not found in <span x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'secondary'"></span> (no matching TmdbID — sync skipped)
+                  </div>
+                  <template x-for="item in missingScanItems()" :key="item.id">
+                    <div style="padding:8px 14px;border-bottom:1px solid var(--bg-muted);background:var(--bg-page);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                      <span style="color:var(--text-body);font-size:13px">
+                        <span x-text="item.title"></span><template x-if="item.year"><span style="color:var(--text-secondary)"> (<span x-text="item.year"></span>)</span></template>
+                      </span>
+                      <span style="font-size:11px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:2px 8px;border-radius:8px">not in secondary</span>
+                      <template x-if="item.tmdbId">
+                        <span style="font-size:11px;color:var(--text-muted-secondary)">tmdbId: <span x-text="item.tmdbId"></span></span>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <template x-if="decisionsByGroup().length === 0 && noFileScanItems().length === 0 && missingScanItems().length === 0">
+                <div style="padding:24px;text-align:center;color:var(--text-secondary);font-size:14px">
+                  <!-- Distinguish "library is fully in sync" (all chips actually have 0)
+                       from "you picked a filter chip with 0" — the latter just changes
+                       chip; the former tells the user nothing's pending. -->
+                  <template x-if="(scanFilterCounts().add + scanFilterCounts().remove + scanFilterCounts().keep + scanFilterCounts().nofile + ((scanResults.tag.totals && scanResults.tag.totals.secondaryMissing) || 0)) === 0">
+                    <span><span x-text="scanResults.tag.mode === 'apply' ? 'Nothing was changed — library was already in sync.' : 'Library is fully in sync — no changes pending.'"></span></span>
+                  </template>
+                  <template x-if="(scanFilterCounts().add + scanFilterCounts().remove + scanFilterCounts().keep + scanFilterCounts().nofile + ((scanResults.tag.totals && scanResults.tag.totals.secondaryMissing) || 0)) > 0">
+                    <span>No items match the current filter — pick a different chip above.</span>
+                  </template>
+                </div>
+              </template>
+            </div>
+
+            <!-- Promote-to-apply — preview-only. Apply mode shows the list above
+                 but no Apply now button (you can't re-apply what's already done). -->
+            <template x-if="scanResults.tag.mode === 'preview'">
+              <div style="margin-top:16px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;display:flex;align-items:center;gap:16px">
+                <div style="flex:1;font-size:13px;color:var(--text-secondary);line-height:1.6">
+                  <template x-if="(scanResults.tag.totals.toAdd + scanResults.tag.totals.toRemove + (scanResults.tag.totals.secondaryToAdd || 0) + (scanResults.tag.totals.secondaryToRemove || 0)) === 0">
+                    <span>No changes would be applied — already in sync.</span>
+                  </template>
+                  <template x-if="(scanResults.tag.totals.toAdd + scanResults.tag.totals.toRemove + (scanResults.tag.totals.secondaryToAdd || 0) + (scanResults.tag.totals.secondaryToRemove || 0)) > 0">
+                    <div>
+                      <div>
+                        <strong x-text="scanResults.tag.instance.name"></strong>:
+                        <strong style="color:var(--accent-green)" x-text="scanResults.tag.totals.toAdd"></strong> add(s),
+                        <strong style="color:var(--accent-red)" x-text="scanResults.tag.totals.toRemove"></strong> removal(s).
+                      </div>
+                      <template x-if="scanResults.tag.totals.secondaryToAdd || scanResults.tag.totals.secondaryToRemove || scanResults.tag.totals.secondaryToKeep || scanResults.tag.totals.secondaryMissing">
+                        <div>
+                          <strong x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'Secondary'"></strong>:
+                          <strong style="color:var(--accent-green)" x-text="scanResults.tag.totals.secondaryToAdd || 0"></strong> add(s),
+                          <strong style="color:var(--accent-red)" x-text="scanResults.tag.totals.secondaryToRemove || 0"></strong> removal(s)<template x-if="scanResults.tag.totals.secondaryOrphans > 0"><span> (incl. <strong x-text="scanResults.tag.totals.secondaryOrphans"></strong> orphan cleanup<span x-show="scanResults.tag.totals.secondaryOrphans !== 1">s</span>)</span></template>.
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+                <button class="btn btn-primary"
+                        @click="openScanApplyConfirm()"
+                        :disabled="(scanResults.tag.totals.toAdd + scanResults.tag.totals.toRemove + (scanResults.tag.totals.secondaryToAdd || 0) + (scanResults.tag.totals.secondaryToRemove || 0)) === 0 || isHistoricalForAction('tag')"
+                        :title="isHistoricalForAction('tag') ? 'Run a fresh Tag preview before applying — this is a saved snapshot, not live data.' : ''">Apply now</button>
+              </div>
+            </template>
+          </div>
+      </div>
+    </template>

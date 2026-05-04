@@ -244,6 +244,166 @@ type Config struct {
 	TrustedProxies         string `json:"trustedProxies,omitempty"`         // comma-separated IPs — reverse-proxy deployments
 	TrustedNetworks        string `json:"trustedNetworks,omitempty"`        // comma-separated IPs/CIDRs for local-bypass; empty = Radarr-parity default
 	SessionTTLDays         int    `json:"sessionTtlDays,omitempty"`         // default 30
+
+	// RecoverExclusions holds per-instance "skip these in the next
+	// Recover scan" lists. Keyed by instance ID. User flags faulty
+	// movies / series / seasons that aren't fixable (no grab history,
+	// permanently missing from indexer, manual import they don't want
+	// re-imported, etc.). The Recover scan filters them out before the
+	// per-item history walk — saves API calls + scan time.
+	//
+	// Restored to the scan list via the "Show excluded" panel + per-row
+	// Include-again button.
+	RecoverExclusions map[string]RecoverExclusion `json:"recoverExclusions,omitempty"`
+}
+
+// RecoverExclusion is the per-instance skip list. Movies (Radarr) is
+// a flat ID list; Series (Sonarr) maps seriesId → []seasonNumbers
+// where an empty / nil seasons slice means "skip the whole series"
+// and a populated slice means "skip only these seasons" (other
+// seasons of the same series stay in the scan).
+//
+// Naming: the front-end calls this "Exclude" / "Show excluded" /
+// "Include again". Stored as RecoverExclusion to keep the JSON key
+// stable across UI rewords.
+type RecoverExclusion struct {
+	Movies []int         `json:"movies,omitempty"` // Radarr movie IDs
+	Series map[int][]int `json:"series,omitempty"` // Sonarr seriesId → seasonNumbers ([] = whole series)
+}
+
+// IsMovieExcluded checks if the given Radarr movie ID is on the
+// exclusion list. Linear scan is fine — exclusion lists are typically
+// 0..few-dozen entries.
+func (e RecoverExclusion) IsMovieExcluded(movieID int) bool {
+	for _, id := range e.Movies {
+		if id == movieID {
+			return true
+		}
+	}
+	return false
+}
+
+// IsSeriesFullyExcluded returns true when the whole series is on the
+// skip list (seasons slice empty / nil). Per-season exclusions return
+// false here — caller should also check IsSeasonExcluded for the
+// specific season number.
+func (e RecoverExclusion) IsSeriesFullyExcluded(seriesID int) bool {
+	if e.Series == nil {
+		return false
+	}
+	seasons, ok := e.Series[seriesID]
+	return ok && len(seasons) == 0
+}
+
+// IsSeasonExcluded returns true when this exact (series, season)
+// pair is excluded. Returns true when the WHOLE series is excluded
+// too — convenience wrapper so the scan loop can call one helper
+// per (series, season).
+func (e RecoverExclusion) IsSeasonExcluded(seriesID, seasonNumber int) bool {
+	if e.Series == nil {
+		return false
+	}
+	seasons, ok := e.Series[seriesID]
+	if !ok {
+		return false
+	}
+	if len(seasons) == 0 {
+		return true // whole-series exclusion catches every season
+	}
+	for _, s := range seasons {
+		if s == seasonNumber {
+			return true
+		}
+	}
+	return false
+}
+
+// AddMovie / RemoveMovie / AddSeries / RemoveSeries / AddSeason /
+// RemoveSeason are pure-function mutators. ConfigStore.Update wraps
+// the caller in the lock + persistence; these are the bit-level diff.
+func (e *RecoverExclusion) AddMovie(id int) {
+	for _, m := range e.Movies {
+		if m == id {
+			return
+		}
+	}
+	e.Movies = append(e.Movies, id)
+}
+
+func (e *RecoverExclusion) RemoveMovie(id int) {
+	out := e.Movies[:0]
+	for _, m := range e.Movies {
+		if m != id {
+			out = append(out, m)
+		}
+	}
+	e.Movies = out
+}
+
+// AddSeries marks an entire series as excluded — replaces any
+// per-season entries for that series with the empty-slice "whole
+// series" sentinel.
+func (e *RecoverExclusion) AddSeries(seriesID int) {
+	if e.Series == nil {
+		e.Series = make(map[int][]int)
+	}
+	e.Series[seriesID] = []int{}
+}
+
+func (e *RecoverExclusion) RemoveSeries(seriesID int) {
+	if e.Series == nil {
+		return
+	}
+	delete(e.Series, seriesID)
+}
+
+// AddSeason adds a per-season exclusion. If the series is currently
+// whole-excluded (empty slice), the call is a no-op — whole-series
+// already covers this season and adding the explicit number would
+// downgrade the meaning.
+func (e *RecoverExclusion) AddSeason(seriesID, seasonNumber int) {
+	if e.Series == nil {
+		e.Series = make(map[int][]int)
+	}
+	cur, ok := e.Series[seriesID]
+	if ok && len(cur) == 0 {
+		return // whole series already excluded
+	}
+	for _, s := range cur {
+		if s == seasonNumber {
+			return // already there
+		}
+	}
+	e.Series[seriesID] = append(cur, seasonNumber)
+}
+
+// RemoveSeason removes a specific season from the per-season list.
+// If the series was whole-excluded (empty slice sentinel) this call
+// is a no-op — to un-exclude a whole series, callers use RemoveSeries.
+// If removing the last per-season entry leaves the slice empty, the
+// map entry is deleted entirely so the series is fully back in scope.
+func (e *RecoverExclusion) RemoveSeason(seriesID, seasonNumber int) {
+	if e.Series == nil {
+		return
+	}
+	cur, ok := e.Series[seriesID]
+	if !ok {
+		return
+	}
+	if len(cur) == 0 {
+		return // whole-series — caller should use RemoveSeries
+	}
+	out := cur[:0]
+	for _, s := range cur {
+		if s != seasonNumber {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		delete(e.Series, seriesID)
+	} else {
+		e.Series[seriesID] = out
+	}
 }
 
 // NotificationAgent is the config shape of one notification provider entry.
@@ -680,6 +840,39 @@ func (s *ConfigStore) migrateSchedulesToRules() bool {
 			sched.ReleaseGroupIDs = ids
 			migrated = true
 		}
+
+		// Per-bucket target migration. Pre-existing rules carry the
+		// boolean AutoTagsRunOnSecondary flag. Translate it once into
+		// per-bucket targets and clear the legacy flag so subsequent
+		// loads see populated targets and the JSON drops the old key.
+		// DV target defaults to 'primary' (DV was always single-instance
+		// pre-migration; user can flip to 'both' explicitly post-migration).
+		if sched.Options.AudioTagsTarget == "" {
+			if sched.Options.AutoTagsRunOnSecondary {
+				sched.Options.AudioTagsTarget = JobTargetBoth
+			} else {
+				sched.Options.AudioTagsTarget = JobTargetPrimary
+			}
+			migrated = true
+		}
+		if sched.Options.VideoTagsTarget == "" {
+			if sched.Options.AutoTagsRunOnSecondary {
+				sched.Options.VideoTagsTarget = JobTargetBoth
+			} else {
+				sched.Options.VideoTagsTarget = JobTargetPrimary
+			}
+			migrated = true
+		}
+		if sched.Options.DvDetailTarget == "" {
+			sched.Options.DvDetailTarget = JobTargetPrimary
+			migrated = true
+		}
+		// Clear the legacy flag now that the targets carry the truth.
+		// Persisted JSON drops it via omitempty since false is its zero.
+		if sched.Options.AutoTagsRunOnSecondary {
+			sched.Options.AutoTagsRunOnSecondary = false
+			migrated = true
+		}
 	}
 	return migrated
 }
@@ -785,6 +978,27 @@ func (s *ConfigStore) Get() Config {
 	out.VideoTags.Codec.AllowedValues = append([]string(nil), s.cfg.VideoTags.Codec.AllowedValues...)
 	out.VideoTags.HDR.AllowedValues = append([]string(nil), s.cfg.VideoTags.HDR.AllowedValues...)
 	out.DvDetail.AllowedValues = append([]string(nil), s.cfg.DvDetail.AllowedValues...)
+	// Deep-copy RecoverExclusions — outer map AND every per-instance
+	// Movies + Series-by-id slice. The Recover scan caches `excl :=
+	// cfg.RecoverExclusions[inst.ID]` for the entire scan duration
+	// (seconds → minutes on large libraries), so a concurrent
+	// POST/DELETE that does the standard filter-in-place pattern
+	// (out := e.Movies[:0]) would mutate the very backing array the
+	// in-flight scan reads from. Header-aliasing race detector would
+	// flag this; deep copy here forecloses the class.
+	if len(s.cfg.RecoverExclusions) > 0 {
+		out.RecoverExclusions = make(map[string]RecoverExclusion, len(s.cfg.RecoverExclusions))
+		for k, v := range s.cfg.RecoverExclusions {
+			ne := RecoverExclusion{Movies: append([]int(nil), v.Movies...)}
+			if len(v.Series) > 0 {
+				ne.Series = make(map[int][]int, len(v.Series))
+				for sid, seasons := range v.Series {
+					ne.Series[sid] = append([]int(nil), seasons...)
+				}
+			}
+			out.RecoverExclusions[k] = ne
+		}
+	}
 	return out
 }
 

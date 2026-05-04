@@ -59,6 +59,12 @@ func (s *Server) runRecoverRadarr(ctx context.Context, inst *core.Instance, req 
 		return nil, newAPIError(502, "arr list items: "+err.Error())
 	}
 
+	// Per-instance exclusion list — user-flagged movies that shouldn't
+	// take up scan time or panel space. Fetched fresh from config; the
+	// list mutates via /api/recover/exclusions endpoints between scans.
+	cfg := s.App.Config.Get()
+	excl := cfg.RecoverExclusions[inst.ID]
+
 	// Build the recover-scope set. Bash filters in jq:
 	//   .hasFile == true && (releaseGroup == null | "" | "Unknown")
 	// hasFile maps to MovieFile != nil for the Go shape. We additionally
@@ -77,6 +83,12 @@ func (s *Server) runRecoverRadarr(ctx context.Context, inst *core.Instance, req 
 			continue
 		}
 		if len(itemFilter) > 0 && !itemFilter[it.ID] {
+			continue
+		}
+		// Excluded movies skip the scan entirely — user marked them as
+		// faulty / unfixable. Surfaces in the "Show excluded" panel
+		// instead so the user can include-again if circumstances change.
+		if excl.IsMovieExcluded(it.ID) {
 			continue
 		}
 		affected = append(affected, it)

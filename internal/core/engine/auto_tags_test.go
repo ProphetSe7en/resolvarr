@@ -309,3 +309,234 @@ func TestAggregateForSeries_HighestPreservesUnknownTags(t *testing.T) {
 		t.Errorf("got %v, want (sorted) %v", got, want)
 	}
 }
+
+// ----- AggregateAudioForSeries -----
+
+func TestAggregateAudioForSeries_Disabled(t *testing.T) {
+	cfg := AudioTagsConfig{Audio: BucketConfig{Enabled: false}}
+	eps := []EpisodeInput{{Info: MediaInfo{AudioCodec: "TrueHD", AudioChannels: 7.1}}}
+	got := AggregateAudioForSeries(eps, cfg)
+	if got != nil {
+		t.Errorf("disabled bucket emitted %v, want nil", got)
+	}
+}
+
+func TestAggregateAudioForSeries_Empty(t *testing.T) {
+	cfg := AudioTagsConfig{Audio: BucketConfig{Enabled: true, SonarrAggregation: AggAllOccurring}}
+	got := AggregateAudioForSeries(nil, cfg)
+	if got != nil {
+		t.Errorf("empty input emitted %v, want nil", got)
+	}
+}
+
+func TestAggregateAudioForSeries_AllOccurringMixed(t *testing.T) {
+	// Mixed series: S1 in 5.1 EAC3, S2 in 7.1 TrueHD-Atmos.
+	// All-occurring → every codec / channel / atmos that appears
+	// in ≥1 episode lands on the series.
+	cfg := AudioTagsConfig{Audio: BucketConfig{Enabled: true, SonarrAggregation: AggAllOccurring}}
+	eps := []EpisodeInput{
+		{Info: MediaInfo{AudioCodec: "EAC3", AudioChannels: 5.1}},
+		{Info: MediaInfo{AudioCodec: "EAC3", AudioChannels: 5.1}},
+		{Info: MediaInfo{AudioCodec: "TrueHD", AudioChannels: 7.1, AudioAdditionalFeatures: "Atmos"}},
+	}
+	got := AggregateAudioForSeries(eps, cfg)
+	sort.Strings(got)
+	want := []string{"5-1", "7-1", "atmos", "eac3", "truehd"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestAggregateAudioForSeries_StrictDropsMixed(t *testing.T) {
+	// Strict: only tags every episode shares survive. Codec differs
+	// here so it drops out; channels match so 5-1 survives.
+	cfg := AudioTagsConfig{Audio: BucketConfig{Enabled: true, SonarrAggregation: AggStrict}}
+	eps := []EpisodeInput{
+		{Info: MediaInfo{AudioCodec: "EAC3", AudioChannels: 5.1}},
+		{Info: MediaInfo{AudioCodec: "TrueHD", AudioChannels: 5.1}},
+	}
+	got := AggregateAudioForSeries(eps, cfg)
+	if len(got) != 1 || got[0] != "5-1" {
+		t.Errorf("got %v, want [5-1]", got)
+	}
+}
+
+func TestAggregateAudioForSeries_HighestChannels(t *testing.T) {
+	// Audio bucket carries ONE strategy across codec/channels/atmos.
+	// AggHighest only ranks channels (5-1<7-1) — audio codecs are
+	// unranked in tagRank so they pass through as unknowns. Result:
+	// ONE highest channel tag + every codec/flag that appeared.
+	// Documenting the actual behaviour so a future tagRank extension
+	// catches the test as it tightens.
+	cfg := AudioTagsConfig{Audio: BucketConfig{Enabled: true, SonarrAggregation: AggHighest}}
+	eps := []EpisodeInput{
+		{Info: MediaInfo{AudioCodec: "EAC3", AudioChannels: 5.1}},
+		{Info: MediaInfo{AudioCodec: "TrueHD", AudioChannels: 7.1}},
+	}
+	got := AggregateAudioForSeries(eps, cfg)
+	sort.Strings(got)
+	want := []string{"7-1", "eac3", "truehd"}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestAggregateAudioForSeries_AppliesPrefix(t *testing.T) {
+	// Prefix on the bucket survives aggregation.
+	cfg := AudioTagsConfig{Audio: BucketConfig{Enabled: true, Prefix: "audio-", SonarrAggregation: AggAllOccurring}}
+	eps := []EpisodeInput{{Info: MediaInfo{AudioCodec: "EAC3", AudioChannels: 5.1}}}
+	got := AggregateAudioForSeries(eps, cfg)
+	sort.Strings(got)
+	want := []string{"audio-5-1", "audio-eac3"}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// ----- AggregateVideoForSeries -----
+
+func TestAggregateVideoForSeries_Empty(t *testing.T) {
+	cfg := VideoTagsConfig{
+		Resolution: BucketConfig{Enabled: true, SonarrAggregation: AggAllOccurring},
+	}
+	got := AggregateVideoForSeries(nil, cfg)
+	if got != nil {
+		t.Errorf("empty input emitted %v, want nil", got)
+	}
+}
+
+func TestAggregateVideoForSeries_PerBucketStrategy(t *testing.T) {
+	// Default-style config: Resolution all-occurring, Codec all-occurring,
+	// HDR strict. Mixed-resolution + mixed-HDR series — resolution
+	// emits both tags, HDR emits nothing (strict drops mixed).
+	cfg := VideoTagsConfig{
+		Resolution: BucketConfig{Enabled: true, SonarrAggregation: AggAllOccurring},
+		Codec:      BucketConfig{Enabled: true, SonarrAggregation: AggAllOccurring},
+		HDR:        BucketConfig{Enabled: true, SonarrAggregation: AggStrict},
+	}
+	eps := []EpisodeInput{
+		{Info: MediaInfo{Height: 1080, VideoCodec: "x264", VideoDynamicRangeType: "HDR10"}},
+		{Info: MediaInfo{Height: 2160, VideoCodec: "x265", VideoDynamicRangeType: ""}}, // SDR
+	}
+	got := AggregateVideoForSeries(eps, cfg)
+	sort.Strings(got)
+	// Resolution all-occurring: 1080p + 2160p
+	// Codec all-occurring: h264 + h265
+	// HDR strict: hdr10 in ep1, sdr in ep2 → nothing survives
+	want := []string{"1080p", "2160p", "h264", "h265"}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestAggregateVideoForSeries_QualityResolutionFallback(t *testing.T) {
+	// Legacy episode has empty mediaInfo but
+	// quality.quality.resolution=1080. Engine should fall back per
+	// VideoTagsForFile's documented behaviour.
+	cfg := VideoTagsConfig{
+		Resolution: BucketConfig{Enabled: true, SonarrAggregation: AggAllOccurring},
+	}
+	eps := []EpisodeInput{
+		{Info: MediaInfo{}, QualityResolution: 1080},
+		{Info: MediaInfo{Height: 2160}},
+	}
+	got := AggregateVideoForSeries(eps, cfg)
+	sort.Strings(got)
+	want := []string{"1080p", "2160p"}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestAggregateVideoForSeries_HDRStrictFullyHDR(t *testing.T) {
+	// Every episode HDR10 → strict keeps it.
+	cfg := VideoTagsConfig{
+		HDR: BucketConfig{Enabled: true, SonarrAggregation: AggStrict},
+	}
+	eps := []EpisodeInput{
+		{Info: MediaInfo{VideoDynamicRangeType: "HDR10"}},
+		{Info: MediaInfo{VideoDynamicRangeType: "HDR10"}},
+	}
+	got := AggregateVideoForSeries(eps, cfg)
+	if len(got) != 1 || got[0] != "hdr10" {
+		t.Errorf("got %v, want [hdr10]", got)
+	}
+}
+
+func TestAggregateVideoForSeries_DisabledBucketSkipped(t *testing.T) {
+	// Resolution disabled — only codec emits.
+	cfg := VideoTagsConfig{
+		Resolution: BucketConfig{Enabled: false, SonarrAggregation: AggAllOccurring},
+		Codec:      BucketConfig{Enabled: true, SonarrAggregation: AggAllOccurring},
+	}
+	eps := []EpisodeInput{
+		{Info: MediaInfo{Height: 1080, VideoCodec: "x264"}},
+	}
+	got := AggregateVideoForSeries(eps, cfg)
+	if len(got) != 1 || got[0] != "h264" {
+		t.Errorf("got %v, want [h264]", got)
+	}
+}
+
+func TestAggregateVideoForSeries_MixedResolutionHighest(t *testing.T) {
+	// Resolution highest → just the top tag.
+	cfg := VideoTagsConfig{
+		Resolution: BucketConfig{Enabled: true, SonarrAggregation: AggHighest},
+	}
+	eps := []EpisodeInput{
+		{Info: MediaInfo{Height: 720}},
+		{Info: MediaInfo{Height: 1080}},
+		{Info: MediaInfo{Height: 2160}},
+	}
+	got := AggregateVideoForSeries(eps, cfg)
+	if len(got) != 1 || got[0] != "2160p" {
+		t.Errorf("got %v, want [2160p]", got)
+	}
+}
+
+func TestAggregateVideoForSeries_HDRHighestMultiTagPerEpisode(t *testing.T) {
+	// hdrBuckets emits 1-2 tags per episode (e.g. "DV HDR10" → ["hdr10","dv"]).
+	// AggHighest must pick the single rank-best across ALL episodes' tags.
+	// Sentinel test: tagRank["dv"]=5, tagRank["hdr10plus"]=4 — even when one
+	// episode has BOTH hdr10+dv and another has hdr10plus, the rank-5 dv
+	// wins over rank-4 hdr10plus. Tightens guarantee on the multi-tag
+	// AggHighest path so a future tagRank reshuffle catches the regression.
+	cfg := VideoTagsConfig{
+		HDR: BucketConfig{Enabled: true, SonarrAggregation: AggHighest},
+	}
+	eps := []EpisodeInput{
+		{Info: MediaInfo{VideoDynamicRangeType: "DV HDR10"}},  // → ["hdr10","dv"]
+		{Info: MediaInfo{VideoDynamicRangeType: "HDR10Plus"}}, // → ["hdr10plus"]
+	}
+	got := AggregateVideoForSeries(eps, cfg)
+	if len(got) != 1 || got[0] != "dv" {
+		t.Errorf("got %v, want [dv]", got)
+	}
+}
+
+func TestAggregateAudioForSeries_SelectModeEmptyTagsNothing(t *testing.T) {
+	// SelectMode="select" with empty AllowedValues = explicit "tag
+	// nothing from this bucket". Engine must return empty even when
+	// the audio bucket is enabled and episodes have populated mediaInfo.
+	// Wraps the BucketConfig.allowed contract — without this gate every
+	// per-episode pass would emit nothing, so the aggregate would also
+	// be empty, but a regression in allowed() would silently flip
+	// behaviour.
+	cfg := AudioTagsConfig{Audio: BucketConfig{
+		Enabled:           true,
+		SonarrAggregation: AggAllOccurring,
+		SelectMode:        "select",
+		AllowedValues:     nil,
+	}}
+	eps := []EpisodeInput{
+		{Info: MediaInfo{AudioCodec: "TrueHD", AudioChannels: 7.1, AudioAdditionalFeatures: "Atmos"}},
+	}
+	got := AggregateAudioForSeries(eps, cfg)
+	if got != nil {
+		t.Errorf("SelectMode=select+empty AllowedValues emitted %v, want nil", got)
+	}
+}

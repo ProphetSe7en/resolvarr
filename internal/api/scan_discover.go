@@ -171,17 +171,25 @@ func (s *Server) runDiscover(ctx context.Context, cfg core.Config, inst *core.In
 		Discovered: out,
 	}
 
-	// Discover write-back: when DiscoverWriteBack=true, persist new
-	// groups to cfg.ReleaseGroups so subsequent runs (and the
-	// frontend chain's Tag phase) pick them up. AutoActivateDiscovered
-	// flags the new entries' Enabled bit. Persistence failure is
-	// non-fatal — the preview is still useful and the user can retry.
+	// Discover write-back: when DiscoverWriteBack=true AND we're in
+	// apply-mode, persist new groups to cfg.ReleaseGroups so subsequent
+	// runs (and the frontend chain's Tag phase) pick them up.
+	// AutoActivateDiscovered flags the new entries' Enabled bit.
+	// Persistence failure is non-fatal — the preview is still useful
+	// and the user can retry.
 	//
-	// Standalone Discover-fane requests don't set these flags so this
-	// branch is a no-op for the manual "Find new groups" UI; it only
-	// fires when the frontend chain (Quick fix-all) or the M3d
-	// schedule-runner sends DiscoverWriteBack=true.
-	if req.DiscoverWriteBack && len(out) > 0 {
+	// Mode gate is defence-in-depth — every current caller already
+	// gates on apply-mode at the call site (frontend chain at
+	// app.js:6921, scheduler_runner.go:559 / :166), so this branch
+	// rarely sees `req.Mode == "preview"`. The gate exists so a
+	// future caller can't silently bypass: a "preview" run must NEVER
+	// write to the user's release-groups list.
+	//
+	// Standalone Discover-fane requests don't set DiscoverWriteBack so
+	// this branch is a no-op for the manual "Find new groups" UI; it
+	// only fires when the frontend chain (Quick fix-all) or the M3d
+	// schedule-runner sends DiscoverWriteBack=true with apply-mode.
+	if req.DiscoverWriteBack && req.Mode == "apply" && len(out) > 0 {
 		added, err := s.applyDiscoverWriteBack(out, inst.Type, req.AutoActivateDiscovered)
 		if err == nil && len(added) > 0 {
 			resp.Applied = &scanApplied{

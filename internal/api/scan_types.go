@@ -148,6 +148,7 @@ type scanDecision struct {
 type scanItem struct {
 	ID             int                    `json:"id"`
 	TmdbID         int                    `json:"tmdbId,omitempty"`
+	TvdbID         int                    `json:"tvdbId,omitempty"` // Sonarr — series tvdbId
 	Title          string                 `json:"title"`
 	Year           int                    `json:"year,omitempty"`
 	CurrentTags    []int                  `json:"currentTags"`
@@ -168,6 +169,48 @@ type scanItem struct {
 	// the right badge per row without re-deriving from counters.
 	// Empty for non-dvdetail runs.
 	DvStatus string `json:"dvStatus,omitempty"` // see scanDvDetailDecision.Status — same vocabulary
+
+	// ----- Sonarr Audio/Video aggregate fields (M-Sonarr) -----
+	//
+	// Populated only on Sonarr action="audiotags"/"videotags" runs.
+	// SeriesID + SeriesTitle alias ID + Title for self-documenting
+	// payloads (existing Sonarr-recover code uses the same fields).
+	// EpisodeFileCount + Episodes give the result-panel a per-series
+	// drill-in so the user can see exactly which episodes contributed
+	// which tags to the series-level aggregate. Empty on Radarr.
+	SeriesID         int                 `json:"seriesId,omitempty"`
+	SeriesTitle      string              `json:"seriesTitle,omitempty"`
+	EpisodeFileCount int                 `json:"episodeFileCount,omitempty"`
+	Episodes         []scanSeriesEpisode `json:"episodes,omitempty"`
+	// Error populates when the per-series episodefiles fetch failed —
+	// the row appears in the result list as a fix-failed-style entry
+	// so the user sees that the series wasn't checked. Empty otherwise.
+	Error string `json:"error,omitempty"`
+}
+
+// scanSeriesEpisode is one episode-file's view inside a Sonarr
+// audio/video result-row's drill-in. Carries enough mediaInfo to
+// render a per-episode summary line PLUS the per-episode tag set
+// the engine emitted (ContributedTags) so the user can verify why
+// each tag landed on the parent series.
+type scanSeriesEpisode struct {
+	EpisodeFileID int    `json:"episodeFileId"`
+	SeasonNumber  int    `json:"seasonNumber"`
+	RelativePath  string `json:"relativePath,omitempty"`
+	SceneName     string `json:"sceneName,omitempty"`
+	// Compact mediaInfo summary — UI renders directly without re-deriving.
+	Resolution    string `json:"resolution,omitempty"`    // "1080p" | "" (resolution-bucket label)
+	VideoCodec    string `json:"videoCodec,omitempty"`    // "h265" / "h264" / "av1" / ""
+	HDR           string `json:"hdr,omitempty"`           // "sdr" / "hdr10" / "hdr10plus" / "dv" / "pq"
+	VideoBitDepth int    `json:"videoBitDepth,omitempty"` // 8 / 10 (raw int — 10bit tag derived in engine)
+	AudioCodec    string `json:"audioCodec,omitempty"`    // "truehd" / "eac3" / etc
+	AudioChannels string `json:"audioChannels,omitempty"` // "7-1" / "5-1" / "2-0"
+	HasAtmos      bool   `json:"hasAtmos,omitempty"`
+	// ContributedTags is the per-episode tag set the active scan's
+	// engine config would emit for THIS file alone. Lets the drill-in
+	// show "S02E05 contributed: hdr10, h265, atmos" so the aggregate
+	// doesn't look magical.
+	ContributedTags []string `json:"contributedTags,omitempty"`
 }
 
 // scanAutoTagDecision is one (movie, auto-tag-label) decision returned

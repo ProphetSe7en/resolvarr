@@ -33,6 +33,42 @@ func ValidJobMode(m JobMode) bool {
 	return false
 }
 
+// JobTarget picks which instance(s) an auto-tag phase runs on inside
+// a combined-mode chain. Empty defaults to "primary" everywhere it's
+// read so legacy rules (saved before this field existed) keep their
+// historical behaviour.
+type JobTarget string
+
+const (
+	JobTargetPrimary   JobTarget = "primary"
+	JobTargetSecondary JobTarget = "secondary"
+	JobTargetBoth      JobTarget = "both"
+)
+
+// IncludesPrimary returns true when the target says the phase should
+// run on the rule's primary instance. Empty target defaults to true
+// (legacy behaviour: phase always ran on primary).
+func (t JobTarget) IncludesPrimary() bool {
+	return t == "" || t == JobTargetPrimary || t == JobTargetBoth
+}
+
+// IncludesSecondary returns true when the target says the phase should
+// also fan out to the secondary instance.
+func (t JobTarget) IncludesSecondary() bool {
+	return t == JobTargetSecondary || t == JobTargetBoth
+}
+
+// ValidJobTarget normalises a JobTarget — empty / unknown values
+// collapse to JobTargetPrimary so a malformed-config rule still runs
+// somewhere instead of silently dropping the phase.
+func ValidJobTarget(t JobTarget) JobTarget {
+	switch t {
+	case JobTargetPrimary, JobTargetSecondary, JobTargetBoth:
+		return t
+	}
+	return JobTargetPrimary
+}
+
 // JobOptions holds every per-run toggle from the bash configs and CLI
 // flags, tagged by which mode each field applies to. Not every field
 // is meaningful in every mode — handlers validate the applicable
@@ -52,16 +88,31 @@ type JobOptions struct {
 	CleanupUnusedTags      bool     `json:"cleanupUnusedTags,omitempty"`
 	RunForGroups           []string `json:"runForGroups,omitempty"` // empty = all configured
 
-	// AutoTagsRunOnSecondary opts the audiotags + videotags phases
-	// of a combined-mode chain into a second independent scan against
-	// the secondary instance picked by SyncToSecondary. Distinct from
-	// SyncToSecondary which mirrors release-group tags via TmdbID;
-	// auto-tags are mediaInfo-derived per file (the 4K version of a
-	// movie has different mediaInfo than the 1080p version), so a
-	// blind mirror would write the wrong tags. Each instance gets
-	// auto-tags based on its own files. DV detail isn't covered —
-	// it's still a single-instance flow.
-	AutoTagsRunOnSecondary bool `json:"autoTagsRunOnSecondary,omitempty"`
+	// Per-bucket instance targets for the auto-tag phases. Each is one
+	// of: "primary" (default) | "secondary" | "both". Drives the
+	// "A-chain → B-chain" execution model — the head phases (discover/
+	// recover/tag) run on the rule's primary instance once; then each
+	// auto-tag phase fans out to whichever instance(s) its target says.
+	// Token allow-lists are universal: the per-rule config (which
+	// codecs / channels / resolutions / DV-detail values to emit) is
+	// applied to whichever instance(s) the phase fires on.
+	//
+	// Distinct from SyncToSecondary which mirrors release-group tag
+	// decisions to a second instance via TmdbID; auto-tags are
+	// mediaInfo-derived per file so a blind mirror would write the
+	// wrong tags (a 4K version has different mediaInfo than the
+	// 1080p version). Each instance gets auto-tags based on its own
+	// files.
+	//
+	// AutoTagsRunOnSecondary is the legacy boolean (pre per-bucket
+	// targets). Migrated to AudioTagsTarget + VideoTagsTarget on
+	// Config.Load: true → 'both' on both, false → 'primary'. Kept on
+	// the struct without a JSON tag so old persisted JSON parses
+	// cleanly into the new shape via the migration step.
+	AutoTagsRunOnSecondary bool      `json:"autoTagsRunOnSecondary,omitempty"`
+	AudioTagsTarget        JobTarget `json:"audioTagsTarget,omitempty"`
+	VideoTagsTarget        JobTarget `json:"videoTagsTarget,omitempty"`
+	DvDetailTarget         JobTarget `json:"dvDetailTarget,omitempty"`
 
 	// DV-detail-mode
 	//
