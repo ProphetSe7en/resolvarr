@@ -31,7 +31,7 @@ function app() {
     currentPage: 'settings',
     section: 'instances',
     webhookSection: 'setup',  // M-soon placeholder sub-tab — Setup / Grab / Import-Upgrade / Delete / Activity
-    scanSection: 'run',           // 'run' | 'groups' | 'filters' | 'audio' | 'video' | 'dvdetail' | 'history'
+    scanSection: 'run',           // 'run' | 'groups' | 'filters' | 'recover' | 'audio' | 'video' | 'dvdetail' | 'history'
     // Library scan App-type pill — same pattern as Tag inventory. Picks
     // which Arr type the page operates on; instance dropdown is filtered
     // to that type, sub-tabs hide the ones that don't apply (Sonarr
@@ -43,7 +43,7 @@ function app() {
     // at the top of a sub-tab to expand a longer "How it works" panel.
     // Not persisted — fresh page load = closed again. Keys: run / groups /
     // filters / extra / tags (the standalone Tag inventory page).
-    helpOpen: { run: false, groups: false, filters: false, audio: false, video: false, dvdetail: false, tags: false, history: false,
+    helpOpen: { run: false, groups: false, filters: false, recover: false, sonarrRecover: false, audio: false, video: false, dvdetail: false, tags: false, history: false,
       // Wizard-step help panels — same toggle pattern as the Library
       // scan fanes. Each wizard step renders its own collapsible
       // "How it works" panel so the inline form copy can stay short.
@@ -87,7 +87,7 @@ function app() {
     discoverSampleExpanded: {},
     scanDiscoverAdding: false,    // discover-mode: loading state for "Add Selected" / "+ Add" submission
     scanDiscoverBannerDismissed: false,  // user dismissed the Run-mode "Discover ran" banner; reset on next scan
-    showDiscoverResultsModal: false,     // modal-overlay flag for the standalone Run Discover candidate panel
+    // Discover detail modal auto-pops on scanResults.discover (no flag).
     // Manual Library-scan sync target. Empty = let the backend
     // auto-pick (single-secondary case). Auto-defaulted in pickDefaultScanFilter
     // when there's exactly one candidate.
@@ -116,10 +116,20 @@ function app() {
     recoverError: '',
     recoverResults: null,        // { instance, totals: {...}, recover: [{id, title, status, recoveredGroup, ...}] }
     recoverFilter: 'all',        // 'all' | status — narrow the row list
-    recoverExpanded: {},         // { [movieId]: true } for drill-down rows
-    recoverApplySelected: {},    // { [movieId]: true } — which would-fix rows to apply
+    recoverExpanded: {},         // { [itemId]: true } for episode/movie drill-down
+    recoverSeriesExpanded: {},   // Sonarr only — { [seriesId]: true } for series cards
+    recoverSeasonExpanded: {},   // Sonarr only — { [`${seriesId}-${seasonNumber}`]: true }
+    recoverApplySelected: {},    // { [itemId]: true } — which would-fix rows to apply
     recoverRename: true,         // mirrors bash RENAME=true default
     recoverApplying: false,      // loading state for apply
+    // Recover exclusions — per-instance "skip these in next scan"
+    // list. User flags faulty / unfixable items via the Exclude
+    // buttons in the result modal. Loaded from /api/recover/exclusions
+    // on demand (when the result modal opens or the show-excluded
+    // panel toggles on). Shape mirrors the GET response — three flat
+    // arrays the markup reads directly.
+    recoverExclusions: { instanceId: '', movies: [], series: [], seasons: [] },
+    recoverExclusionsLoading: false,
     showScanApplyConfirm: false,  // confirm modal before applying a preview's decisions
     instances: [],
     // (legacy single-Discord state was here — replaced by multi-agent)
@@ -490,6 +500,12 @@ function app() {
       isQuickFix: false,      // true → wizard with no name/cron/save (one-shot dispatcher)
       step: 0,                // wizard step index 0..N-1
       activeTab: 'basics',    // tabbed-edit active section
+      // Locked Arr-type for this wizard session — set on open() from
+      // scanAppType (Create / QFA) or the existing rule's instance type
+      // (Edit). Drives the Primary instance dropdown filter and the
+      // mode-catalog filter so the wizard can only ever produce a rule
+      // matching the type the user picked in the page header.
+      appType: 'radarr',
       busy: false,
       error: '',
       cronError: '',
@@ -545,9 +561,7 @@ function app() {
     // scanResults.* slots so opening a QFA detail doesn't disturb
     // whatever live scan happened to be open. qfaDetail is the
     // "which modal is open" toggle.
-    qfaDetail: null,             // 'tag' | 'recover' | 'audio' | 'video' | 'dv' | null
-    qfaDetailTag: null,
-    qfaDetailRecover: null,
+    qfaDetail: null,             // 'audio' | 'video' | 'dv' | null
     qfaDetailAudio: null,        // scan_auto_tags response for an audio phase row
     qfaDetailVideo: null,        // scan_auto_tags response for a video phase row
     qfaDetailDv: null,           // scan_dv_detail response for a DV phase row
@@ -565,9 +579,6 @@ function app() {
     // the per-tag breakdown table; cleared via the "Clear" affordance
     // above the per-movie list. Null = no tag filter (show all).
     qfaDetailAutoTagFilter: null,
-    qfaDetailScanFilter: 'add',          // tag-modal filter chip
-    qfaDetailScanInstanceFilter: 'both', // tag-modal primary/secondary toggle
-    qfaDetailRecoverFilter: 'all',       // recover-modal bucket chip
     qfaDetailAutoFilter: 'add',          // shared audio/video drill-in chip
     // Wizard step order. 'review' is the final-confirmation step; the
     // others map 1:1 onto ruleEditorTabs and inherit the same
@@ -979,33 +990,43 @@ function app() {
       return t ? t.label : action;
     },
 
-    // Click a row → fetch the dump + open the matching drill-in modal
-    // ON THE HISTORY TAB. The modal renders over whichever tab the
-    // user is on, so the History tab stays a true history-browser
-    // instead of bouncing the user across sub-tabs every time they
-    // want to peek at a saved result. historicalRunInfo is still set
-    // so if the user later navigates to the originating sub-tab, the
-    // per-tab banner and Apply-gating still surface (defensive; modal
-    // is read-only).
-    //
-    // Cleanup is the one exception: there's no QFA-style drill-in for
-    // it (cleanup result is a small list of deleted tag labels). For
-    // now it still routes to the Filters tab so the existing inline
-    // result panel renders. A dedicated cleanup modal can land later.
+    // Click a row → fetch the dump + auto-pop the matching per-phase
+    // detail modal in-place. No tab redirect: the modal is a top-level
+    // overlay that renders over whichever sub-tab the user is on, so
+    // the History tab stays a pure browser. Each phase has its own
+    // modal triggered by its own state slot:
+    //   tag/discover/audio/video/dv → viewPhaseDetails dispatcher
+    //   recover                     → recoverResults
+    //   cleanup                     → cleanupResults
+    // historicalRunInfo is set after dispatch so the snapshot banner
+    // + Apply-gating activate inside the modal regardless of phase.
     async openScanHistory(row) {
       try {
         const r = await this.apiFetch('/api/scan/history/' + encodeURIComponent(row.file));
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json();
+        // Close any other open modal first so the new one doesn't
+        // stack behind it. Map row.action to the closeAllResultModals
+        // except-key (discover/audio/video/dv have shorter names there).
+        const exceptMap = {
+          tag: 'tag', discover: 'discover', recover: 'recover', cleanup: 'cleanup',
+          audiotags: 'audio', videotags: 'video', dvdetail: 'dv',
+        };
+        this.closeAllResultModals(exceptMap[row.action] || null);
+        // Each action hydrates the right state slot so its modal
+        // auto-pops. Tag/Discover/Audio/Video/DV route via
+        // viewPhaseDetails which owns the state-set + filter defaults
+        // (so we don't duplicate them here). Recover + Cleanup have
+        // dedicated modals that read recoverResults / cleanupResults
+        // directly — set the slot and return.
         switch (row.action) {
-          case 'tag':       this.scanResults.tag = data;       this.viewPhaseDetails({phase: 'tag',       response: data}); break;
-          case 'discover':  this.scanResults.discover = data;  this.viewPhaseDetails({phase: 'discover',  response: data}); break;
-          case 'recover':   this.recoverResults = data;        this.viewPhaseDetails({phase: 'recover',   response: data}); break;
-          case 'audiotags': this.scanResults.audioTags = data; this.viewPhaseDetails({phase: 'audiotags', response: data}); break;
-          case 'videotags': this.scanResults.videoTags = data; this.viewPhaseDetails({phase: 'videotags', response: data}); break;
-          case 'dvdetail':  this.scanResults.dvDetail = data;  this.viewPhaseDetails({phase: 'dvdetail',  response: data}); break;
-          // Cleanup falls back to sub-tab routing — no drill-in modal yet.
-          case 'cleanup':   this.cleanupResults = data;        this.setScanSection('filters'); break;
+          case 'tag':       this.viewPhaseDetails({ phase: 'tag',       response: data }); break;
+          case 'discover':  this.viewPhaseDetails({ phase: 'discover',  response: data }); break;
+          case 'audiotags': this.viewPhaseDetails({ phase: 'audiotags', response: data }); break;
+          case 'videotags': this.viewPhaseDetails({ phase: 'videotags', response: data }); break;
+          case 'dvdetail':  this.viewPhaseDetails({ phase: 'dvdetail',  response: data }); break;
+          case 'recover':   this.recoverResults = data; break;
+          case 'cleanup':   this.cleanupResults = data; break;
           default: this.showToast('Unknown action: ' + row.action, 'error'); return;
         }
         // kind enables the Historical-run banner if the user later
@@ -1053,6 +1074,52 @@ function app() {
       return !!(this.scanModes.tag || this.scanModes.discover || this.scanModes.recover);
     },
 
+    // closeAllResultModals(except) — close every result-modal slot except
+    // the one passed in. Call before opening a new modal (Run scan
+    // handlers, viewPhaseDetails, openScanHistory) so two modals can't
+    // co-exist visually. Without this, running a fresh Audio scan on top
+    // of an open Tag preview would leave the Tag modal stacked behind.
+    //
+    //   except = 'tag' | 'discover' | 'recover' | 'cleanup' | 'audio' | 'video' | 'dv' | null
+    //
+    // null = close everything (used from clearScanResultsForInstanceChange).
+    closeAllResultModals(except) {
+      if (except !== 'tag') {
+        this.scanResults.tag = null;
+        this.scanGroupExpanded = {};
+        this.scanRowExpanded = {};
+      }
+      if (except !== 'discover') {
+        this.scanResults.discover = null;
+        this.scanDiscoverSelected = {};
+        this.scanDiscoverExpanded = {};
+      }
+      if (except !== 'recover') {
+        this.recoverResults = null;
+        this.recoverApplySelected = {};
+        this.recoverExpanded = {};
+        this.recoverSeriesExpanded = {};
+        this.recoverSeasonExpanded = {};
+      }
+      if (except !== 'cleanup') {
+        this.cleanupResults = null;
+        this.cleanupSelected = {};
+      }
+      if (except !== 'audio' && except !== 'video' && except !== 'dv') {
+        this.qfaDetail = null;
+        this.qfaDetailAudio = null;
+        this.qfaDetailVideo = null;
+        this.qfaDetailDv = null;
+        this.qfaDetailExpanded = {};
+        this.scanResults.audioTags = null;
+        this.scanResults.videoTags = null;
+        this.scanResults.dvDetail = null;
+      }
+      // historicalRunInfo lives across modals — clear only when the new
+      // trigger doesn't itself set it (the caller sets it after, if relevant).
+      this.historicalRunInfo = null;
+    },
+
     // Clear every result/error/expanded/selected state tied to a scan against
     // a specific instance. Called on instance-switch so the user never looks
     // at totals or banners from a previous instance while the picker shows
@@ -1081,9 +1148,195 @@ function app() {
       this.recoverResults = null;
       this.recoverApplySelected = {};
       this.recoverExpanded = {};
+      this.recoverSeriesExpanded = {};
+      this.recoverSeasonExpanded = {};
       this.recoverFilter = 'all';
       this.recoverError = '';
+      // Reset cached exclusion list — fresh open against any instance
+      // re-fetches via loadRecoverExclusions so stale data from a
+      // previous instance can't flash before the GET resolves.
+      this.recoverExclusions = { instanceId: '', movies: [], series: [], seasons: [] };
       if (this.historicalRunInfo && this.historicalRunInfo.kind === 'recover') {
+        this.historicalRunInfo = null;
+      }
+    },
+
+    // ---- Recover exclusions ----
+    //
+    // Per-instance "skip these in next scan" list. User flags faulty
+    // movies / series / seasons via the Exclude buttons in the
+    // result panel. Backend filters them out of the next Recover
+    // scan entirely — saves API calls + result-panel space. The
+    // "Show excluded" panel surfaces what's currently excluded with
+    // an Include-again button per row.
+
+    // Load the exclusion list for the instance the current result
+    // belongs to. Called when the result modal opens (so the
+    // per-row Exclude buttons can know what's already excluded) and
+    // on every mutation so the UI stays in sync without a page reload.
+    async loadRecoverExclusions(instanceId) {
+      if (!instanceId) {
+        this.recoverExclusions = { instanceId: '', movies: [], series: [], seasons: [] };
+        return;
+      }
+      this.recoverExclusionsLoading = true;
+      try {
+        const resp = await this.apiFetch('/api/recover/exclusions/' + encodeURIComponent(instanceId));
+        if (!resp.ok) throw new Error(await resp.text());
+        this.recoverExclusions = await resp.json();
+      } catch (e) {
+        // Non-fatal — just keep the empty default. Failure here means
+        // the Show-excluded panel won't show pre-existing entries
+        // until the user reloads, but exclusion writes still work.
+        console.warn('[recover] load exclusions failed:', e);
+        this.recoverExclusions = { instanceId, movies: [], series: [], seasons: [] };
+      } finally {
+        this.recoverExclusionsLoading = false;
+      }
+    },
+
+    // Three boolean helpers — the wire shape carries title-enriched
+    // entries ({id, title, year, ...}) so we walk and match on .id.
+    // Linear scans — exclusion lists are typically a handful of entries.
+    isMovieExcluded(movieId) {
+      for (const m of (this.recoverExclusions.movies || [])) {
+        if (m.id === movieId) return true;
+      }
+      return false;
+    },
+    isSeriesExcluded(seriesId) {
+      for (const s of (this.recoverExclusions.series || [])) {
+        if (s.id === seriesId) return true;
+      }
+      return false;
+    },
+    isSeasonExcluded(seriesId, seasonNumber) {
+      // Whole-series excluded = season counts as excluded too.
+      if (this.isSeriesExcluded(seriesId)) return true;
+      for (const s of (this.recoverExclusions.seasons || [])) {
+        if (s.seriesId === seriesId && s.seasonNumber === seasonNumber) return true;
+      }
+      return false;
+    },
+
+    // Add-to-exclusions wrappers. Each takes the relevant identity,
+    // POSTs to the API, and refreshes local state. Toast on success
+    // so the user knows the click registered (the result-panel UI
+    // already filters the row, but for the Show-excluded section
+    // toggle the visual feedback is less obvious).
+    async excludeMovie(movieId, title) {
+      if (!this.recoverResults || !this.recoverResults.instance) return;
+      const instId = this.recoverResults.instance.id;
+      try {
+        const resp = await this.apiFetch('/api/recover/exclusions/' + encodeURIComponent(instId), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ movies: [movieId] }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        this.recoverExclusions = await resp.json();
+        this.showToast('Excluded "' + title + '" — won\'t scan it next time.', 'success');
+      } catch (e) {
+        this.showToast('Exclude failed: ' + e.message, 'error');
+      }
+    },
+    async excludeSeries(seriesId, title) {
+      if (!this.recoverResults || !this.recoverResults.instance) return;
+      const instId = this.recoverResults.instance.id;
+      try {
+        const resp = await this.apiFetch('/api/recover/exclusions/' + encodeURIComponent(instId), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ series: [seriesId] }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        this.recoverExclusions = await resp.json();
+        this.showToast('Excluded "' + title + '" — series will be skipped in future scans.', 'success');
+      } catch (e) {
+        this.showToast('Exclude failed: ' + e.message, 'error');
+      }
+    },
+    async excludeSeason(seriesId, seasonNumber, seriesTitle) {
+      if (!this.recoverResults || !this.recoverResults.instance) return;
+      const instId = this.recoverResults.instance.id;
+      try {
+        const resp = await this.apiFetch('/api/recover/exclusions/' + encodeURIComponent(instId), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seasons: [{ seriesId, seasonNumber }] }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        this.recoverExclusions = await resp.json();
+        const lbl = seasonNumber === 0 ? 'Specials' : ('Season ' + seasonNumber);
+        this.showToast('Excluded ' + lbl + ' of "' + seriesTitle + '" — will be skipped in future scans.', 'success');
+      } catch (e) {
+        this.showToast('Exclude failed: ' + e.message, 'error');
+      }
+    },
+
+    // Remove-from-exclusions wrappers. Same shape as the add ones.
+    async includeMovie(movieId, title) {
+      if (!this.recoverResults || !this.recoverResults.instance) return;
+      const instId = this.recoverResults.instance.id;
+      try {
+        const resp = await this.apiFetch('/api/recover/exclusions/' + encodeURIComponent(instId), {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ movies: [movieId] }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        this.recoverExclusions = await resp.json();
+        this.showToast('Included "' + (title || 'movie') + '" again — back in next scan.', 'success');
+      } catch (e) {
+        this.showToast('Include failed: ' + e.message, 'error');
+      }
+    },
+    async includeSeries(seriesId, title) {
+      if (!this.recoverResults || !this.recoverResults.instance) return;
+      const instId = this.recoverResults.instance.id;
+      try {
+        const resp = await this.apiFetch('/api/recover/exclusions/' + encodeURIComponent(instId), {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ series: [seriesId] }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        this.recoverExclusions = await resp.json();
+        this.showToast('Included "' + (title || 'series') + '" again — back in next scan.', 'success');
+      } catch (e) {
+        this.showToast('Include failed: ' + e.message, 'error');
+      }
+    },
+    async includeSeason(seriesId, seasonNumber, seriesTitle) {
+      if (!this.recoverResults || !this.recoverResults.instance) return;
+      const instId = this.recoverResults.instance.id;
+      try {
+        const resp = await this.apiFetch('/api/recover/exclusions/' + encodeURIComponent(instId), {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seasons: [{ seriesId, seasonNumber }] }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        this.recoverExclusions = await resp.json();
+        const lbl = seasonNumber === 0 ? 'Specials' : ('Season ' + seasonNumber);
+        this.showToast('Included ' + lbl + ' of "' + (seriesTitle || 'series') + '" again — back in next scan.', 'success');
+      } catch (e) {
+        this.showToast('Include failed: ' + e.message, 'error');
+      }
+    },
+
+    // recoverExclusionCount drives the "Show excluded (N)" pill.
+    // Counts the three buckets summed.
+    recoverExclusionCount() {
+      const e = this.recoverExclusions || {};
+      return (e.movies || []).length + (e.series || []).length + (e.seasons || []).length;
+    },
+
+    dismissCleanupResults() {
+      this.cleanupResults = null;
+      this.cleanupSelected = {};
+      this.cleanupError = '';
+      if (this.historicalRunInfo && this.historicalRunInfo.kind === 'cleanup') {
         this.historicalRunInfo = null;
       }
     },
@@ -1092,6 +1345,11 @@ function app() {
       this.scanDiscoverSelected = {};
       this.scanDiscoverExpanded = {};
       this.scanDiscoverBannerDismissed = false;
+      // Belt-and-suspenders: clear the in-flight Add flag too. If the user
+      // dismissed mid-add, the orphaned POST drops on the floor when its
+      // response lands; the flag would otherwise stick and disable the
+      // re-opened modal's Add buttons.
+      this.scanDiscoverAdding = false;
       if (this.historicalRunInfo && this.historicalRunInfo.kind === 'discover') {
         this.historicalRunInfo = null;
       }
@@ -1115,6 +1373,8 @@ function app() {
       this.recoverError = '';
       this.recoverApplySelected = {};
       this.recoverExpanded = {};
+      this.recoverSeriesExpanded = {};
+      this.recoverSeasonExpanded = {};
       this.recoverFilter = 'all';
       // Belt-and-suspenders — if a check or apply is in flight when the
       // user switches instances, clear the in-flight flags too so the
@@ -1131,12 +1391,12 @@ function app() {
       }
       if (!this.anyScanModeEnabled()) return;
       this.scanError = '';
+      // Close every result modal so a previous run's stack doesn't
+      // show through behind the new result. Tag/Discover are the
+      // phases this orchestrator dispatches; both will re-open via
+      // viewPhaseDetails after their fetch completes.
+      this.closeAllResultModals(null);
       this.scanResults = { tag: null, discover: null, audioTags: null, videoTags: null, dvDetail: null };
-      this.historicalRunInfo = null;
-      this.scanGroupExpanded = {};
-      this.scanRowExpanded = {};
-      this.scanDiscoverSelected = {};
-      this.scanDiscoverExpanded = {};
       this.scanDiscoverBannerDismissed = false;
       this.scanLoading = true;
       try {
@@ -1172,23 +1432,7 @@ function app() {
         // Phase 4 — Recover lands with M3c.
       } finally {
         this.scanLoading = false;
-        this.scrollToScanResults();
       }
-    },
-
-    // Scrolls the result block into view after a successful scan, but only
-    // when needed. block:'nearest' is the trick — if the anchor is already
-    // visible (Tag library Run scan: result renders right under the card,
-    // user is already looking at the spot) the call is a no-op. When the
-    // anchor is out of viewport (Quick fix-all clicked from the bottom of
-    // the page, results render at the top) it scrolls just enough to bring
-    // the anchor to the closest viewport edge.
-    scrollToScanResults() {
-      if (this.scanError) return;
-      this.$nextTick(() => {
-        const el = document.getElementById('scan-results-anchor');
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      });
     },
 
     // Tag-mode internal — fires POST /api/scan/run with action=tag and
@@ -1240,6 +1484,13 @@ function app() {
           return;
         }
         this.scanResults.tag = await resp.json();
+        // Reset modal-internal expand/filter state so the new result
+        // doesn't inherit stale group/row keys from the previous scan.
+        // (viewPhaseDetails does the same when QFA chain or History
+        // routes through it; runTagInternal is the standalone path.)
+        this.scanGroupExpanded = {};
+        this.scanRowExpanded = {};
+        this.scanInstanceFilter = 'both';
         // Pick the most useful default filter based on the response. In
         // an apply run with 0 added / 0 removed (typical when running
         // QFA against an already-synced library) the old default of
@@ -1278,6 +1529,11 @@ function app() {
 
     async confirmScanApply() {
       this.showScanApplyConfirm = false;
+      // Defense in depth — same reasoning as runRecoverApply.
+      if (this.isHistoricalForAction('tag')) {
+        this.showToast('Run a fresh Tag preview before applying — current panel is a snapshot.', 'error');
+        return;
+      }
       // Promote-to-apply runs against the live instance — clear any
       // historical-run banner so the result that lands isn't labelled
       // "Historical run:" when it's actually fresh-from-Radarr.
@@ -1322,23 +1578,10 @@ function app() {
         // one-time action, not persistent state. Only opens on a
         // standalone Run Discover (not on the Quick fix-all chain
         // which has its own combined-result panel on Run mode).
-        if (!this.scanError && this.scanResults.discover) {
-          this.showDiscoverResultsModal = true;
-        }
+        // scanResults.discover being non-null is enough to auto-pop
+        // the Discover detail modal — no separate flag needed.
       } finally {
         this.scanLoading = false;
-      }
-    },
-
-    closeDiscoverResultsModal() {
-      this.showDiscoverResultsModal = false;
-      // Restore stashed standalone-Discover state when the modal was
-      // opened from a QFA phase row. Keeps the user's own scan data
-      // intact across the QFA drill-in.
-      if (this._qfaDiscoverActive) {
-        this.scanResults.discover = this._qfaStashedDiscover || null;
-        this._qfaStashedDiscover = null;
-        this._qfaDiscoverActive = false;
       }
     },
 
@@ -1427,6 +1670,12 @@ function app() {
       if (!searches || searches.length === 0) return;
       if (!this.scanResults.discover || !this.scanResults.discover.instance) {
         this.showToast('No active instance for the discover result', 'error');
+        return;
+      }
+      // Defense in depth — Add buttons are :disabled when viewing a
+      // snapshot, but refuse here too in case anything bypasses them.
+      if (this.isHistoricalForAction('discover')) {
+        this.showToast('Run a fresh Discover before adding — current panel is a snapshot.', 'error');
         return;
       }
       const instType = this.scanResults.discover.instance.type;
@@ -1525,6 +1774,7 @@ function app() {
         this.showToast('Pick an instance first', 'error');
         return;
       }
+      this.closeAllResultModals('cleanup');
       this.cleanupLoading = true;
       this.cleanupError = '';
       this.cleanupResults = null;
@@ -1591,6 +1841,11 @@ function app() {
     // clears those labels from cleanupSelected.
     async applyCleanupDeletes(labels) {
       if (!labels || labels.length === 0) return;
+      // Defense in depth — same reasoning as runRecoverApply / Discover.
+      if (this.isHistoricalForAction('cleanup')) {
+        this.showToast('Run a fresh Cleanup check before deleting — current panel is a snapshot.', 'error');
+        return;
+      }
       this.cleanupDeleting = true;
       try {
         const resp = await this.apiFetch('/api/scan/run', {
@@ -1669,11 +1924,17 @@ function app() {
         this.showToast('Pick an instance first', 'error');
         return;
       }
+      // Close any other open modal first; closeAllResultModals(except='recover')
+      // also nulls historicalRunInfo so a previous snapshot banner can't carry
+      // over into this fresh live run.
+      this.closeAllResultModals('recover');
       this.recoverLoading = true;
       this.recoverError = '';
       this.recoverResults = null;
       this.recoverApplySelected = {};
       this.recoverExpanded = {};
+      this.recoverSeriesExpanded = {};
+      this.recoverSeasonExpanded = {};
       this.recoverFilter = 'all';
       // Fresh recover replaces any historical-run banner that was tied
       // to an earlier replay.
@@ -1698,6 +1959,11 @@ function app() {
           return;
         }
         this.recoverResults = await resp.json();
+        // Load the per-instance exclusion list so the result panel can
+        // show the Show-excluded count + per-row Include-again buttons.
+        if (this.recoverResults.instance && this.recoverResults.instance.id) {
+          this.loadRecoverExclusions(this.recoverResults.instance.id);
+        }
         // Auto-default would-fix rows to selected so a user who just clicks
         // Apply gets every recoverable item — they untoggle the ones they
         // don't trust. Matches bash's "fix all" semantics with the
@@ -1722,6 +1988,15 @@ function app() {
 
     async runRecoverApply() {
       if (!this.recoverResults) return;
+      // Defense in depth — the partial's Apply button is :disabled when
+      // viewing a snapshot, but a programmatic call (keyboard shortcut,
+      // future code path, replayed event) could otherwise bypass that
+      // and write apply mutations against the snapshot's selection set.
+      // Refuse at the function boundary too.
+      if (this.isHistoricalForAction('recover')) {
+        this.showToast('Run a fresh Recover before applying — current panel is a snapshot.', 'error');
+        return;
+      }
       const ids = Object.keys(this.recoverApplySelected).filter(k => !!this.recoverApplySelected[k]).map(k => parseInt(k, 10));
       if (ids.length === 0) return;
       this.recoverApplying = true;
@@ -1790,6 +2065,114 @@ function app() {
       else next[id] = true;
       this.recoverExpanded = next;
     },
+    toggleRecoverSeriesExpanded(seriesId) {
+      const next = { ...this.recoverSeriesExpanded };
+      if (next[seriesId]) delete next[seriesId];
+      else next[seriesId] = true;
+      this.recoverSeriesExpanded = next;
+    },
+    toggleRecoverSeasonExpanded(seriesId, seasonNumber) {
+      const key = seriesId + '-' + seasonNumber;
+      const next = { ...this.recoverSeasonExpanded };
+      if (next[key]) delete next[key];
+      else next[key] = true;
+      this.recoverSeasonExpanded = next;
+    },
+    recoverSeasonExpandedKey(seriesId, seasonNumber) {
+      return !!this.recoverSeasonExpanded[seriesId + '-' + seasonNumber];
+    },
+
+    // recoverSonarrGroupedItems builds Series → Season → Episodes from the
+    // flat filteredRecoverItems list. Used by the Sonarr-only result tree
+    // (Radarr keeps the flat layout — there's no series/season hierarchy
+    // to fold movies into). Status-counts roll up at each level so series
+    // and season cards can render at-a-glance pills like "Would fix: 12 ·
+    // Flagged: 3" without re-scanning the children.
+    //
+    // Filtering through filteredRecoverItems means a chip-narrowed view
+    // (e.g. recoverFilter='fix-failed') hides series/seasons with no
+    // matching episodes — totals on cards then reflect what's actually
+    // shown, not the full population.
+    recoverSonarrGroupedItems() {
+      const list = this.filteredRecoverItems();
+      const seriesMap = new Map();
+      for (const it of list) {
+        if (!it.seriesId) continue;
+        let series = seriesMap.get(it.seriesId);
+        if (!series) {
+          series = {
+            seriesId:    it.seriesId,
+            seriesTitle: it.seriesTitle || (it.title || '').split(' — ')[0],
+            year:        it.year,
+            tvdbId:      it.tvdbId,
+            seasons:     new Map(),
+            statusCounts: {},
+            total: 0,
+          };
+          seriesMap.set(it.seriesId, series);
+        }
+        // Distinguish "Specials" (Sonarr's real season 0) from "Unknown
+        // season" (shape issue: seasonNumber missing/null/undefined). Both
+        // are bucket-of-last-resort but mean different things — collapsing
+        // them under one label loses signal. seasonKey uses string sentinel
+        // 'unknown' so it can't collide with any real numeric season; the
+        // sort below treats it as last.
+        const hasSeason = typeof it.seasonNumber === 'number';
+        const seasonKey = hasSeason ? it.seasonNumber : 'unknown';
+        let season = series.seasons.get(seasonKey);
+        if (!season) {
+          season = {
+            seasonNumber: hasSeason ? it.seasonNumber : null,
+            episodes: [],
+            statusCounts: {},
+          };
+          series.seasons.set(seasonKey, season);
+        }
+        season.episodes.push(it);
+        season.statusCounts[it.status] = (season.statusCounts[it.status] || 0) + 1;
+        series.statusCounts[it.status] = (series.statusCounts[it.status] || 0) + 1;
+        series.total += 1;
+      }
+      return Array.from(seriesMap.values())
+        .map(s => ({
+          ...s,
+          seasons: Array.from(s.seasons.values())
+            .sort((a, b) => {
+              // "Unknown" (null seasonNumber) always sorts last; otherwise
+              // ascending numeric. Sonarr's Specials (season 0) ends up
+              // first naturally.
+              if (a.seasonNumber === null && b.seasonNumber === null) return 0;
+              if (a.seasonNumber === null) return 1;
+              if (b.seasonNumber === null) return -1;
+              return a.seasonNumber - b.seasonNumber;
+            })
+            .map(sn => ({
+              ...sn,
+              episodes: sn.episodes.slice().sort((a, b) => {
+                const la = this.episodeLabelFromItem(a);
+                const lb = this.episodeLabelFromItem(b);
+                return la.localeCompare(lb);
+              }),
+            })),
+        }))
+        .sort((a, b) => (a.seriesTitle || '').toLowerCase().localeCompare((b.seriesTitle || '').toLowerCase()));
+    },
+    // episodeLabelFromItem extracts the "S01E05" part out of the row's
+    // composite title ("Series — S01E05") so the per-episode row inside a
+    // season card doesn't repeat the series name. Falls back to a regex
+    // pull from relativePath, then to season-only "S01" if everything
+    // else fails.
+    episodeLabelFromItem(it) {
+      if (!it) return '';
+      if (it.seriesTitle && it.title) {
+        const sep = it.seriesTitle + ' — ';
+        if (it.title.startsWith(sep)) return it.title.substring(sep.length);
+      }
+      const m = (it.relativePath || it.title || '').match(/S\d+E\d+(?:[E-]\d+)*/i);
+      if (m) return m[0].toUpperCase();
+      if (typeof it.seasonNumber === 'number') return 'S' + String(it.seasonNumber).padStart(2, '0');
+      return it.title || '';
+    },
 
     toggleRecoverApply(id) {
       const next = { ...this.recoverApplySelected };
@@ -1845,9 +2228,62 @@ function app() {
     // colors and meanings, so merging broke the chip↔badge color story).
     filteredRecoverItems() {
       if (!this.recoverResults) return [];
+      // Excluded chip is its own render branch (handled in the partial
+      // via recoverExcludedDisplay()) — return [] here so the regular
+      // chip render path doesn't double-show anything.
+      if (this.recoverFilter === 'excluded') return [];
       const list = this.recoverResults.recover || [];
       if (this.recoverFilter === 'all') return list;
       return list.filter(it => it.status === this.recoverFilter);
+    },
+
+    // recoverExcludedDisplay returns the excluded items in render-
+    // ready shape — same fields the regular result rows expect so
+    // the partial can reuse the existing card markup. Each entry
+    // carries a kind ('movie' | 'series' | 'season') + identity +
+    // title (best-effort from the API enrichment, with "Movie #ID"
+    // / "Series #ID" fallback when Arr was unreachable when GET
+    // fired).
+    //
+    // Sorted by title (case-insensitive) so the list is stable
+    // across opens. Empty array when nothing is excluded — partial
+    // shows the standard empty-filter message in that case.
+    recoverExcludedDisplay() {
+      const e = this.recoverExclusions || {};
+      const out = [];
+      for (const m of (e.movies || [])) {
+        out.push({
+          kind: 'movie',
+          id: m.id,
+          title: m.title || ('Movie #' + m.id),
+          year: m.year || 0,
+        });
+      }
+      for (const s of (e.series || [])) {
+        out.push({
+          kind: 'series',
+          id: s.id,
+          seriesId: s.id,
+          title: s.title || ('Series #' + s.id),
+          year: s.year || 0,
+          tvdbId: s.tvdbId || 0,
+        });
+      }
+      for (const s of (e.seasons || [])) {
+        const lbl = s.seasonNumber === 0 ? 'Specials' : ('Season ' + s.seasonNumber);
+        const baseTitle = s.seriesTitle || ('Series #' + s.seriesId);
+        out.push({
+          kind: 'season',
+          id: 'season-' + s.seriesId + ':' + s.seasonNumber,
+          seriesId: s.seriesId,
+          seasonNumber: s.seasonNumber,
+          seriesTitle: baseTitle,
+          title: baseTitle + ' — ' + lbl,
+          year: s.year || 0,
+        });
+      }
+      out.sort((a, b) => a.title.localeCompare(b.title));
+      return out;
     },
 
     // recoverStatusLabel + recoverStatusStyle render the per-row badge.
@@ -2494,6 +2930,7 @@ function app() {
       // captured before resetting dvBypassCache. Falsy → fall back to
       // the live state (Preview path).
       const bypassDvCache = bypassOverride !== undefined ? !!bypassOverride : !!this.dvBypassCache;
+      this.closeAllResultModals('dv');
       this.scanLoading = true;
       this.scanResults.dvDetail = null;
       // Fresh scan supersedes any historical replay that was on screen.
@@ -2530,6 +2967,7 @@ function app() {
                         (totals.toRemove || 0) + ' remove · ' +
                         (totals.toKeep || 0) + ' keep';
         this.showToast((mode === 'apply' ? 'DV detail applied — ' : 'DV detail preview ready — ') + summary, 'success');
+        this.viewPhaseDetails({ phase: 'dvdetail', response: this.scanResults.dvDetail });
       } catch (e) {
         this.showToast('DV detail scan failed: ' + e.message, 'error');
       } finally {
@@ -2587,10 +3025,6 @@ function app() {
       } catch (e) {
         this.showToast('Cancel failed: ' + e.message, 'error');
       }
-    },
-
-    dismissDvDetailResults() {
-      this.scanResults.dvDetail = null;
     },
 
     // Sum of pending tag-changes from the most recent DV detail Preview.
@@ -2659,22 +3093,27 @@ function app() {
     },
     // Sub-tab visibility per app-type. Sonarr currently supports only
     // Recover (lives on Run mode) + History. Tag library / Discover /
-    // Audio / Video / DV detail are Radarr-only until each is ported.
-    // When the user switches to Sonarr, the sidebar collapses to just
-    // the relevant sub-tabs and a Sonarr-instance-only run mode card.
+    // Sub-tab visibility per active app-type.
+    //
+    // Sonarr coverage today: Run mode + Recover + Audio tags + Video
+    // tags + History. Recover lives on its own sub-tab between Run mode
+    // and Audio tags (it's the standalone action that doesn't fit the
+    // QFA chain narrative — drives users to it directly without
+    // hunting on Run mode). Release Groups, Tag library, Filters and
+    // DV detail remain Radarr-only — they centre on filter-driven
+    // release-group tagging or per-file DV extraction that doesn't
+    // aggregate to series-level meaningfully.
+    //
+    // 'recover' is Sonarr-only — Radarr keeps Recover on the Release
+    // Groups sub-tab where its discovery + cleanup siblings live.
     scanSectionVisible(section) {
       if (this.scanAppType === 'sonarr') {
-        // Sonarr currently exposes Run mode (Quick fix-all + standalone
-        // Recover card + saved rules grid) and History (adhoc scan
-        // replays). Release Groups, Tag library, Filters, Audio, Video,
-        // DV detail are all
-        // radarr-only — they centre on filter-driven group tagging and
-        // per-Movie-File MediaInfo, which Sonarr's per-episode-file model
-        // doesn't share. Recover is the one Sonarr action implemented today
-        // and lives on Run mode (closer to where the user looks for actions
-        // when Sonarr is selected).
-        return section === 'run' || section === 'history';
+        return section === 'run'   || section === 'recover' ||
+               section === 'audio' || section === 'video'   ||
+               section === 'history';
       }
+      // Radarr: every section except 'recover' (Recover lives on Release Groups).
+      if (section === 'recover') return false;
       return true;
     },
     setScanAppType(type) {
@@ -3152,6 +3591,7 @@ function app() {
     async runAudioTagsScan(mode = 'preview') {
       if (!this.scanInstanceId) { this.showToast('Pick an instance first', 'error'); return; }
       if (!this.anyAudioTagsBucketEnabled()) { this.showToast('Enable Audio bucket first', 'error'); return; }
+      this.closeAllResultModals('audio');
       this.scanLoading = true;
       this.scanError = '';
       this.autoTagRowExpanded = {};
@@ -3176,11 +3616,14 @@ function app() {
           const a = this.scanResults.audioTags.applied;
           this.showToast('Audio tags applied: ' + a.itemsAdded + ' added, ' + a.itemsRemoved + ' removed', 'success');
         }
+        // Open detail modal automatically — same popup pattern as the
+        // other phases. History row click + QFA chain phase click also
+        // route through viewPhaseDetails, so all surfaces converge.
+        this.viewPhaseDetails({ phase: 'audiotags', response: this.scanResults.audioTags });
       } catch (e) {
         this.scanError = e.message || 'Audio-tags scan failed';
       } finally {
         this.scanLoading = false;
-        this.scrollToScanResults();
       }
     },
 
@@ -3196,9 +3639,6 @@ function app() {
     async confirmAudioTagsApply() {
       this.showAudioTagsApplyConfirm = false;
       await this.runAudioTagsScan('apply');
-    },
-    dismissAudioTagsResults() {
-      if (this.scanResults) this.scanResults.audioTags = null;
     },
     audioTagMoviesFor(tag, action) {
       const r = this.scanResults && this.scanResults.audioTags;
@@ -3321,6 +3761,7 @@ function app() {
     async runVideoTagsScan(mode = 'preview') {
       if (!this.scanInstanceId) { this.showToast('Pick an instance first', 'error'); return; }
       if (!this.anyVideoTagsBucketEnabled()) { this.showToast('Enable at least one Video bucket first', 'error'); return; }
+      this.closeAllResultModals('video');
       this.scanLoading = true;
       this.scanError = '';
       this.autoTagRowExpanded = {};
@@ -3345,11 +3786,11 @@ function app() {
           const a = this.scanResults.videoTags.applied;
           this.showToast('Video tags applied: ' + a.itemsAdded + ' added, ' + a.itemsRemoved + ' removed', 'success');
         }
+        this.viewPhaseDetails({ phase: 'videotags', response: this.scanResults.videoTags });
       } catch (e) {
         this.scanError = e.message || 'Video-tags scan failed';
       } finally {
         this.scanLoading = false;
-        this.scrollToScanResults();
       }
     },
 
@@ -3365,9 +3806,6 @@ function app() {
     async confirmVideoTagsApply() {
       this.showVideoTagsApplyConfirm = false;
       await this.runVideoTagsScan('apply');
-    },
-    dismissVideoTagsResults() {
-      if (this.scanResults) this.scanResults.videoTags = null;
     },
     videoTagMoviesFor(tag, action) {
       const r = this.scanResults && this.scanResults.videoTags;
@@ -3488,6 +3926,57 @@ function app() {
       return this.instances.find(i => i.type === primary.type && i.id !== r.instanceId) || null;
     },
 
+    // reviewTargetLabel — render a per-bucket target ('primary' |
+    // 'secondary' | 'both') for the Review step using the resolved
+    // instance names. Falls back to "primary only" when the rule has
+    // a single instance (in which case the picker isn't shown anyway,
+    // but a stale target value should still render gracefully).
+    reviewTargetLabel(target) {
+      const t = target || 'primary';
+      const r = this.editingRule;
+      if (!r) return t;
+      const primary = (this.instances || []).find(i => i.id === r.instanceId) || {};
+      const secondary = this.ruleSecondaryInstance() || {};
+      const pName = primary.name || 'primary';
+      const sName = secondary.name || 'secondary';
+      if (t === 'primary')   return pName + ' only';
+      if (t === 'secondary') return sName + ' only';
+      if (t === 'both')      return 'both — ' + pName + ' then ' + sName;
+      return t;
+    },
+
+    // ruleHasSecondary — true when the rule's primary instance has at
+    // least one same-type sibling (so a secondary target is available).
+    // Drives visibility of the per-bucket target pickers (audio /
+    // video / DV) on each step. With one instance the picker is hidden;
+    // bucket runs against primary implicitly.
+    ruleHasSecondary() {
+      const r = this.editingRule;
+      if (!r) return false;
+      const primary = (this.instances || []).find(i => i.id === r.instanceId);
+      if (!primary) return false;
+      return (this.instances || []).some(i => i.id !== r.instanceId && i.type === primary.type);
+    },
+
+    // ruleSecondaryInstance — the resolved secondary instance for the
+    // current rule. Prefers the explicit syncToInstanceId pick; falls
+    // back to first other-of-same-type. Distinct from
+    // reviewSecondaryInstance which only resolves when tag-sync is on
+    // — the per-bucket target pickers care about secondary regardless
+    // of whether tag-sync is configured (auto-tags can run on secondary
+    // without tag mirroring).
+    ruleSecondaryInstance() {
+      const r = this.editingRule;
+      if (!r) return {};
+      const primary = (this.instances || []).find(i => i.id === r.instanceId);
+      if (!primary) return {};
+      if (r.options && r.options.syncToInstanceId) {
+        const explicit = (this.instances || []).find(i => i.id === r.options.syncToInstanceId);
+        if (explicit) return explicit;
+      }
+      return (this.instances || []).find(i => i.id !== r.instanceId && i.type === primary.type) || {};
+    },
+
     // Active filter list — returns an array of human labels for every
     // enabled filter on the rule's per-rule snapshot. Empty array
     // when all are off (which means "no quality/audio gating — every
@@ -3551,6 +4040,14 @@ function app() {
     // Schedule label for non-quickfix rules.
     reviewScheduleLabel() {
       if (!this.editingRule) return '';
+      // manualOnly is the authoritative UI flag — cron carries a default
+      // placeholder during the wizard session (so the picker has
+      // something to show if the user toggles manualOnly off again).
+      // Save-time persists cron='' for manual rules; both paths land
+      // on the same answer here.
+      if (this.editingRule.manualOnly) {
+        return 'Manual run only (Run-now button on the Run mode card)';
+      }
       const cron = (this.editingRule.cron || '').trim();
       return cron === '' ? 'Manual run only (Run-now button on the Run mode card)' : cron;
     },
@@ -5381,14 +5878,28 @@ function app() {
     },
     // Per-snapshot helpers — each returns an independent deep-clone of
     // the matching global config so the rule editor can mutate freely.
+    // removeOrphanedTags is FORCED off in the snapshot regardless of
+    // the global setting: rules are user-explicit by definition (you
+    // sit in the wizard and tick what you want), and a destructive
+    // cleanup that silently inherits from a Library-scan tab toggle
+    // most users don't remember setting is exactly the kind of
+    // surprise the wizard flow is meant to prevent. The user can
+    // still tick the orphan-cleanup checkbox on the audio/video/dv
+    // step explicitly if they want it.
     snapshotGlobalAudioTags() {
-      return JSON.parse(JSON.stringify(this.audioTags));
+      const snap = JSON.parse(JSON.stringify(this.audioTags));
+      snap.removeOrphanedTags = false;
+      return snap;
     },
     snapshotGlobalVideoTags() {
-      return JSON.parse(JSON.stringify(this.videoTags));
+      const snap = JSON.parse(JSON.stringify(this.videoTags));
+      snap.removeOrphanedTags = false;
+      return snap;
     },
     snapshotGlobalDvDetail() {
-      return JSON.parse(JSON.stringify(this.dvDetail));
+      const snap = JSON.parse(JSON.stringify(this.dvDetail));
+      snap.removeOrphanedTags = false;
+      return snap;
     },
     // Subset of cfg.ReleaseGroups[].id matching the rule's instance type
     // AND currently Enabled. Used to seed editingRule.releaseGroupIds
@@ -5407,10 +5918,29 @@ function app() {
         this.showToast('Configure at least one instance first', 'error');
         return;
       }
-      const inst = this.scanInstanceId ||
-        (this.instances.find(i => i.type === 'radarr') || this.instances[0] || {}).id || '';
+      // Lock the wizard to the Arr-type the user picked in the Library
+      // scan header. The instance dropdown + mode catalog both filter
+      // through this. If the user is on a tab without an app picker we
+      // fall back to whatever scanAppType currently is.
+      const wizardAppType = this.scanAppType || 'radarr';
+      const poolForType = this.instances.filter(i => i.type === wizardAppType);
+      if (poolForType.length === 0) {
+        this.showToast('No ' + (wizardAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance configured — add one in Settings → Instances', 'error');
+        return;
+      }
+      // Prefer the instance the user already had selected on the scan
+      // page, but only if it matches the active app-type. Otherwise
+      // first instance of the picked type.
+      const scanPicked = poolForType.find(i => i.id === this.scanInstanceId);
+      const inst = (scanPicked || poolForType[0]).id;
+      // mode='combined' for every rule. Single-mode runs are expressed
+      // by ticking one chain step (combinedModes carries the user's
+      // pick). Sonarr-context seeds 'recover' since that's the only
+      // currently-supported phase; Radarr starts with no boxes ticked
+      // (user must pick at least one before Save).
+      const seedCombined = wizardAppType === 'sonarr' ? ['recover'] : [];
       this.editingRule = {
-        id: '', name: '', mode: 'tag', instanceId: inst,
+        id: '', name: '', mode: 'combined', instanceId: inst,
         preset: 'daily', hour: 3, minute: 0, hour12: 3, ampm: 'AM', dow: 0, dom: 1,
         cron: '0 3 * * *',
         manualOnly: false,
@@ -5420,7 +5950,7 @@ function app() {
           cleanupUnusedTags: false,
           syncToSecondary: false,
           syncToInstanceId: '',
-          combinedModes: [],
+          combinedModes: seedCombined,
           includeDiscovery: false,
           autoActivateDiscovered: false,
           discoverWriteBack: false,
@@ -5431,6 +5961,17 @@ function app() {
           recoverTestItemId: 0,
           debugTrace: false,
           bypassDvCache: false,
+          // Per-bucket instance target. 'primary' (default), 'secondary',
+          // or 'both'. Audio/Video/DV-tags each pick independently. The
+          // chain runs primary phases first (discover/recover/tag), then
+          // a sub-chain on the primary instance with whichever of
+          // audio/video/dv have target=primary or 'both', then a sub-chain
+          // on the secondary instance with whichever have target=secondary
+          // or 'both'. Token allow-lists are universal — same per-rule
+          // settings get applied to whichever instance(s) run.
+          audioTagsTarget: 'primary',
+          videoTagsTarget: 'primary',
+          dvDetailTarget:  'primary',
         },
         filters:         this.snapshotGlobalFilters(),
         audioTags:       this.snapshotGlobalAudioTags(),
@@ -5438,7 +5979,7 @@ function app() {
         dvDetail:        this.snapshotGlobalDvDetail(),
         releaseGroupIds: this.snapshotGlobalRGIds(inst),
       };
-      this.ruleEditor = { open: true, isCreate: true, isQuickFix: false, step: 0, activeTab: 'basics', busy: false, error: '', cronError: '', nextFires: [] };
+      this.ruleEditor = { open: true, isCreate: true, isQuickFix: false, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [] };
       this.computeRuleEditorNextFires();
     },
 
@@ -5453,18 +5994,21 @@ function app() {
         this.showToast('Configure at least one instance first', 'error');
         return;
       }
-      // Sonarr scans are not implemented yet (scan.go:117 returns 501).
-      // Default to the user's current scan-picker only when it's
-      // Radarr; otherwise fall back to first Radarr instance. Refuse
-      // entirely if no Radarr exists so the user gets a clear message
-      // instead of a per-phase 501.
-      const radarrSeed = this.instances.find(i => i.id === this.scanInstanceId && i.type === 'radarr')
-                      || this.instances.find(i => i.type === 'radarr');
-      if (!radarrSeed) {
-        this.showToast('Quick fix-all needs a Radarr instance — Sonarr scans land with M-Sonarr', 'error');
+      // Quick fix-all locks to whichever Arr-type the user picked in
+      // the Library scan header (scanAppType). Radarr seed includes
+      // the full discover→recover→tag head chain; Sonarr seed picks
+      // only the phases backend supports today (recover + audio +
+      // video — tag/discover land with M-Sonarr Phase 2).
+      const wizardAppType = this.scanAppType === 'sonarr' ? 'sonarr' : 'radarr';
+      const seedInst = this.instances.find(i => i.id === this.scanInstanceId && i.type === wizardAppType)
+                    || this.instances.find(i => i.type === wizardAppType);
+      if (!seedInst) {
+        this.showToast(
+          'Quick fix-all needs a ' + (wizardAppType === 'sonarr' ? 'Sonarr' : 'Radarr') +
+          ' instance — add one in Settings → Instances', 'error');
         return;
       }
-      const inst = radarrSeed.id;
+      const inst = seedInst.id;
       // Pre-fill runMode from the Run mode radio on Run mode (this.scanMode).
       // If the user has Preview selected for the standalone Tag library
       // run-card, opening Quick fix-all should default to Preview too.
@@ -5478,9 +6022,9 @@ function app() {
         // recognisable in the activity log without making the user type.
         name: 'Quick fix-all',
         // Quickfix defaults to combined-mode with the most-common chain
-        // (discover + recover + tag) so the user doesn't have to click
-        // through the chain-step list for the typical "do everything"
-        // case. They can still narrow the chain in Basics.
+        // for the active Arr-type. Radarr: discover+recover+tag head
+        // chain. Sonarr: recover+audiotags+videotags (the three phases
+        // backend supports today). User can narrow the chain in Basics.
         mode: 'combined',
         instanceId: inst,
         // Cron stays unused but kept on the shape so the existing
@@ -5493,7 +6037,7 @@ function app() {
           cleanupUnusedTags: false,
           syncToSecondary: false,
           syncToInstanceId: '',
-          combinedModes: ['discover', 'recover', 'tag'],
+          combinedModes: wizardAppType === 'sonarr' ? ['recover', 'audiotags', 'videotags'] : ['discover', 'recover', 'tag'],
           includeDiscovery: false,
           autoActivateDiscovered: false,
           discoverWriteBack: false,
@@ -5504,6 +6048,17 @@ function app() {
           recoverTestItemId: 0,
           debugTrace: false,
           bypassDvCache: false,
+          // Per-bucket instance target. 'primary' (default), 'secondary',
+          // or 'both'. Audio/Video/DV-tags each pick independently. The
+          // chain runs primary phases first (discover/recover/tag), then
+          // a sub-chain on the primary instance with whichever of
+          // audio/video/dv have target=primary or 'both', then a sub-chain
+          // on the secondary instance with whichever have target=secondary
+          // or 'both'. Token allow-lists are universal — same per-rule
+          // settings get applied to whichever instance(s) run.
+          audioTagsTarget: 'primary',
+          videoTagsTarget: 'primary',
+          dvDetailTarget:  'primary',
         },
         filters:         this.snapshotGlobalFilters(),
         audioTags:       this.snapshotGlobalAudioTags(),
@@ -5511,7 +6066,7 @@ function app() {
         dvDetail:        this.snapshotGlobalDvDetail(),
         releaseGroupIds: this.snapshotGlobalRGIds(inst),
       };
-      this.ruleEditor = { open: true, isCreate: true, isQuickFix: true, step: 0, activeTab: 'basics', busy: false, error: '', cronError: '', nextFires: [] };
+      this.ruleEditor = { open: true, isCreate: true, isQuickFix: true, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [] };
     },
 
     // Translates an existing schedule row into the editingRule shape.
@@ -5548,9 +6103,40 @@ function app() {
         discoverWriteBack: false, discoverScanSecondary: false,
         recoverIncludeSecondary: false, recoverIncludeSonarr: false, recoverSonarrSecondary: false,
         recoverTestItemId: 0, debugTrace: false, bypassDvCache: false,
+        audioTagsTarget: 'primary', videoTagsTarget: 'primary', dvDetailTarget: 'primary',
       }, copy.options || {});
+      // Migrate legacy autoTagsRunOnSecondary boolean → per-bucket
+      // targets. true → audio + video both targets='both'; false →
+      // 'primary'. DV target stays 'primary' (it was always
+      // single-instance pre-migration). Drop the legacy key after
+      // translation so the saved shape stays clean.
+      if (typeof copy.options.autoTagsRunOnSecondary === 'boolean') {
+        const t = copy.options.autoTagsRunOnSecondary ? 'both' : 'primary';
+        if (copy.options.audioTagsTarget === 'primary') copy.options.audioTagsTarget = t;
+        if (copy.options.videoTagsTarget === 'primary') copy.options.videoTagsTarget = t;
+        delete copy.options.autoTagsRunOnSecondary;
+      }
+      // Migrate legacy single-mode rules to combined-mode shape so the
+      // wizard's chain-checkbox UI can edit them. mode='tag' → mode=
+      // 'combined' + combinedModes=['tag']. Save-time persists the
+      // new shape; the chain runner / scheduler-runner already accept
+      // both shapes via has() → r.mode === m || combinedModes.includes(m).
+      if (copy.mode && copy.mode !== 'combined') {
+        const legacyMode = copy.mode;
+        copy.mode = 'combined';
+        copy.options.combinedModes = copy.options.combinedModes || [];
+        if (!copy.options.combinedModes.includes(legacyMode)) {
+          copy.options.combinedModes.push(legacyMode);
+        }
+      }
       this.editingRule = copy;
-      this.ruleEditor = { open: true, isCreate: false, isQuickFix: false, step: 0, activeTab: 'basics', busy: false, error: '', cronError: '', nextFires: [] };
+      // Lock appType to whatever the existing rule's instance is —
+      // editing a Radarr rule should never expose Sonarr instances in
+      // the dropdown, and vice versa. Cross-type "edit" is effectively
+      // a different rule; user must delete + re-create.
+      const editInst = (this.instances || []).find(i => i.id === copy.instanceId);
+      const editAppType = editInst ? editInst.type : 'radarr';
+      this.ruleEditor = { open: true, isCreate: false, isQuickFix: false, step: 0, activeTab: 'basics', appType: editAppType, busy: false, error: '', cronError: '', nextFires: [] };
       this.computeRuleEditorNextFires();
     },
     closeRuleEditor() {
@@ -5607,8 +6193,6 @@ function app() {
     closeQfaDetail() {
       this.qfaDetail = null;
       this.qfaDetailExpanded = {};
-      this.qfaDetailTag = null;
-      this.qfaDetailRecover = null;
       this.qfaDetailAudio = null;
       this.qfaDetailVideo = null;
       this.qfaDetailDv = null;
@@ -5617,6 +6201,27 @@ function app() {
       this.qfaDetailDvStatusHelpOpen = false;
       this.qfaDetailAutoTagFilter = null;
       this.qfaDetailBreakdownOpen = false;
+      // Sonarr per-series-season expansion — keyed by (seriesId,
+      // seasonNumber). Wipes on modal close so a fresh scan doesn't
+      // see leftover expand-state from a prior viewing AND so the map
+      // doesn't grow unbounded across sessions.
+      this.qfaDetailSeasonExpanded = {};
+      // Audio/Video/DV standalone Run scans set scanResults.audioTags etc.
+      // BEFORE viewPhaseDetails routes through this modal. Clear those too
+      // so the orphan state doesn't linger after the modal closes — the
+      // historicalRunInfo banner stays in sync regardless of which path
+      // populated the modal (Run scan / History click / QFA chain phase).
+      if (this.scanResults) {
+        this.scanResults.audioTags = null;
+        this.scanResults.videoTags = null;
+        this.scanResults.dvDetail = null;
+      }
+      if (this.historicalRunInfo &&
+          (this.historicalRunInfo.kind === 'audiotags' ||
+           this.historicalRunInfo.kind === 'videotags' ||
+           this.historicalRunInfo.kind === 'dvdetail')) {
+        this.historicalRunInfo = null;
+      }
     },
 
     // Click handler for phase rows on either result panel (Quick fix-
@@ -5633,26 +6238,49 @@ function app() {
         this.showToast('No detail available for this phase', 'error');
         return;
       }
+      // Close any other open result modal first so two don't stack.
+      // Map phase name to the closeAllResultModals except-key.
+      const exceptMap = {
+        tag: 'tag', discover: 'discover',
+        audiotags: 'audio', videotags: 'video', dvdetail: 'dv',
+      };
+      this.closeAllResultModals(exceptMap[p.phase] || null);
       this.qfaDetailExpanded = {};
       // Pick a sensible default chip based on what the run produced —
       // mirrors pickDefaultScanFilter for live runs so the modal opens
       // on the chip with content rather than an empty default.
       switch (p.phase) {
         case 'tag': {
-          this.qfaDetailTag = p.response;
-          this.qfaDetail = 'tag';
-          this.qfaDetailScanInstanceFilter = 'both';
+          // Tag unified through the top-level Tag detail modal — same
+          // partial that the standalone Tag scan + History surfaces
+          // use. Hydrate scanResults.tag instead of qfaDetailTag; the
+          // modal pops up on scanResults.tag being non-null.
+          this.scanResults.tag = p.response;
+          this.scanGroupExpanded = {};
+          this.scanRowExpanded = {};
           const t = (p.response.totals || {});
-          if ((t.toAdd || 0) + (t.secondaryToAdd || 0) > 0) this.qfaDetailScanFilter = 'add';
-          else if ((t.toRemove || 0) + (t.secondaryToRemove || 0) > 0) this.qfaDetailScanFilter = 'remove';
-          else if ((t.toKeep || 0) + (t.secondaryToKeep || 0) > 0) this.qfaDetailScanFilter = 'keep';
-          else this.qfaDetailScanFilter = 'add';
+          if ((t.toAdd || 0) + (t.secondaryToAdd || 0) > 0) this.scanFilter = 'add';
+          else if ((t.toRemove || 0) + (t.secondaryToRemove || 0) > 0) this.scanFilter = 'remove';
+          else if ((t.toKeep || 0) + (t.secondaryToKeep || 0) > 0) this.scanFilter = 'keep';
+          else this.scanFilter = 'add';
+          this.scanInstanceFilter = 'both';
           break;
         }
         case 'recover':
-          this.qfaDetailRecover = p.response;
-          this.qfaDetail = 'recover';
-          this.qfaDetailRecoverFilter = 'all';
+          // Recover unified through the top-level Recover detail modal
+          // — same partial that the standalone Run Recover + History
+          // surfaces use. Hydrate recoverResults instead of the
+          // QFA-modal-only qfaDetailRecover; the modal pops up on
+          // recoverResults being non-null.
+          this.recoverResults = p.response;
+          this.recoverFilter = 'all';
+          this.recoverApplySelected = {};
+          this.recoverExpanded = {};
+          this.recoverSeriesExpanded = {};
+          this.recoverSeasonExpanded = {};
+          if (p.response && p.response.instance && p.response.instance.id) {
+            this.loadRecoverExclusions(p.response.instance.id);
+          }
           break;
         case 'audiotags': {
           this.qfaDetailAudio = p.response;
@@ -5675,13 +6303,12 @@ function app() {
           break;
         }
         case 'discover':
-          // Discover already has a polished modal — reuse it. Stash
-          // the user's previous standalone-Discover result so a QFA
-          // drill-in doesn't clobber their own scan when closed.
-          this._qfaStashedDiscover = this.scanResults.discover;
-          this._qfaDiscoverActive = true;
+          // Discover unified through the top-level Discover detail modal
+          // — auto-pops on scanResults.discover being non-null. Same
+          // trigger pattern as Recover and Tag.
           this.scanResults.discover = p.response;
-          this.showDiscoverResultsModal = true;
+          this.scanDiscoverSelected = {};
+          this.scanDiscoverExpanded = {};
           break;
         default:
           this.showToast('Unknown phase: ' + p.phase, 'error');
@@ -5695,143 +6322,6 @@ function app() {
       let p = (typeof idx === 'number' && phases[idx] && phases[idx].phase === phase) ? phases[idx] : null;
       if (!p) p = phases.find(x => x.phase === phase);
       this.viewPhaseDetails(p);
-    },
-
-    // ===== QFA Tag-modal helpers — mirror scanFilter / decisionsByGroup
-    // / scanFilterCounts / noFileScanItems / missingScanItems but read
-    // from qfaDetailTag instead of scanResults.tag. Same UX as the
-    // standalone Tag results panel.
-    qfaDetailScanFilterCounts() {
-      const t = this.qfaDetailTag;
-      const out = { add: 0, remove: 0, keep: 0, nofile: 0 };
-      if (!t || !Array.isArray(t.items)) return out;
-      const inst = this.qfaDetailScanInstanceFilter || 'both';
-      for (const it of t.items) {
-        if (it.noFile) { out.nofile++; continue; }
-        for (const d of (it.decisions || [])) {
-          const a = d.action;
-          if (inst === 'secondary') {
-            const sa = d.secondaryAction;
-            if (sa === 'add')    out.add++;
-            if (sa === 'remove') out.remove++;
-            if (sa === 'keep')   out.keep++;
-          } else if (inst === 'primary') {
-            if (a === 'add')    out.add++;
-            if (a === 'remove') out.remove++;
-            if (a === 'keep')   out.keep++;
-          } else {
-            // 'both' — count primary, then add secondary on top.
-            if (a === 'add')    out.add++;
-            if (a === 'remove') out.remove++;
-            if (a === 'keep')   out.keep++;
-            const sa = d.secondaryAction;
-            if (sa === 'add')    out.add++;
-            if (sa === 'remove') out.remove++;
-            if (sa === 'keep')   out.keep++;
-          }
-        }
-      }
-      return out;
-    },
-    qfaDetailDecisionsByGroup() {
-      const t = this.qfaDetailTag;
-      if (!t || !Array.isArray(t.items)) return [];
-      const filter = this.qfaDetailScanFilter || 'add';
-      const inst = this.qfaDetailScanInstanceFilter || 'both';
-      // Skip nofile/missing — these have their own list rendered below.
-      if (filter === 'nofile' || filter === 'missing') return [];
-      const byGroup = new Map();
-      for (const it of t.items) {
-        if (it.noFile) continue;
-        for (const d of (it.decisions || [])) {
-          // Decide which action to compare against the filter chip.
-          let actionMatches = false;
-          let primaryAction = d.action;
-          let secondaryAction = d.secondaryAction;
-          if (inst === 'secondary') {
-            actionMatches = secondaryAction === filter;
-          } else if (inst === 'primary') {
-            actionMatches = primaryAction === filter;
-          } else {
-            actionMatches = primaryAction === filter || secondaryAction === filter;
-          }
-          if (!actionMatches) continue;
-          const key = d.groupId || d.groupTag || '(unknown)';
-          let g = byGroup.get(key);
-          if (!g) {
-            g = {
-              group: { id: key, tag: d.groupTag || key, display: d.groupDisplay || d.groupTag || key },
-              totals: { add: 0, remove: 0, keep: 0 },
-              items: [],
-            };
-            byGroup.set(key, g);
-          }
-          if (primaryAction === 'add')    g.totals.add++;
-          if (primaryAction === 'remove') g.totals.remove++;
-          if (primaryAction === 'keep')   g.totals.keep++;
-          // Build a flat item shape compatible with the standalone-panel
-          // markup so we can mirror its drill-in row layout (title +
-          // chips + file context).
-          g.items.push({
-            id: it.movieId || it.id,
-            title: it.title,
-            year: it.year,
-            tmdbId: it.tmdbId,
-            releaseGroup: it.releaseGroup,
-            sceneName: it.sceneName,
-            relativePath: it.relativePath,
-            quality: d.quality,
-            qualityDetail: d.qualityDetail,
-            audio: d.audio,
-            audioDetail: d.audioDetail,
-            matched: d.matched,
-            matchLocation: d.matchLocation,
-            reason: d.reason,
-            action: primaryAction,
-            secondaryAction: secondaryAction || '',
-          });
-        }
-      }
-      // Match the standalone Tag library sort: items inside each group
-      // sorted alphabetically by title, then groups sorted alphabetically
-      // by tag (case-insensitive). The earlier "biggest-bucket-first"
-      // sort surprised users — the standalone view orders by tag, so
-      // switching from one to the other shuffled the same data.
-      const out = [];
-      for (const g of byGroup.values()) {
-        g.items.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
-        out.push(g);
-      }
-      out.sort((a, b) => a.group.tag.localeCompare(b.group.tag, undefined, { sensitivity: 'base' }));
-      return out;
-    },
-    qfaDetailNoFileItems() {
-      const t = this.qfaDetailTag;
-      if (!t || !Array.isArray(t.items) || (this.qfaDetailScanFilter || 'add') !== 'nofile') return [];
-      return t.items.filter(it => it.noFile);
-    },
-    qfaDetailMissingItems() {
-      const t = this.qfaDetailTag;
-      if (!t || !Array.isArray(t.items) || (this.qfaDetailScanFilter || 'add') !== 'missing') return [];
-      return t.items.filter(it => (it.decisions || []).some(d => d.secondaryAction === 'missing'));
-    },
-    qfaDetailSecondaryName() {
-      const t = this.qfaDetailTag;
-      if (!t || !t.instance) return 'secondary';
-      const sec = this.instances.find(i => i.id !== t.instance.id && i.type === 'radarr');
-      return (sec && sec.name) || 'secondary';
-    },
-
-    // ===== Recover-modal helpers ===================================
-    // Field name is `status` not `bucket` — the inline panel uses
-    // it.status throughout (see index.html:1013). Modal had a typo
-    // that made every chip return 0 rows even when totals had counts.
-    qfaDetailRecoverFiltered() {
-      const r = this.qfaDetailRecover;
-      if (!r || !Array.isArray(r.recover)) return [];
-      const f = this.qfaDetailRecoverFilter || 'all';
-      if (f === 'all') return r.recover;
-      return r.recover.filter(it => (it.status || '').toLowerCase() === f);
     },
 
     // ===== QFA Audio / Video drill-in helpers =====
@@ -5883,12 +6373,17 @@ function app() {
       return out;
     },
 
-    // Movies whose AutoDecisions have at least one entry matching
-    // the active filter chip. Each item is annotated with the
-    // filtered subset of decisions (so the row only shows matching
-    // tags, not the full decision list). Optional tag-filter narrows
-    // further to a specific (bucket, tag) pair — set by clicking a
-    // row in the per-tag breakdown table.
+    // Movies / series whose AutoDecisions have at least one entry
+    // matching the active filter chip. Each item is annotated with
+    // the filtered subset of decisions (so the row only shows
+    // matching tags, not the full decision list). Optional tag-filter
+    // narrows further to a specific (bucket, tag) pair.
+    //
+    // Series with a non-empty error field (Sonarr fetch failure) are
+    // ALWAYS surfaced — they have no decisions to filter on, but
+    // they're failures the user needs to see. Without this branch,
+    // Sonarr fetch errors disappear silently (the row exists in the
+    // response but no chip catches it).
     qfaDetailAutoFilteredItems() {
       const r = this.qfaDetailAutoActive();
       if (!r || !Array.isArray(r.items)) return [];
@@ -5896,6 +6391,10 @@ function app() {
       const tagF = this.qfaDetailAutoTagFilter;
       const out = [];
       for (const it of r.items) {
+        if (it.error) {
+          out.push({ ...it, decisionsFiltered: [], _errorRow: true });
+          continue;
+        }
         const decs = it.autoDecisions || [];
         const matched = decs.filter(d => {
           if ((d.action || '').toLowerCase() !== f) return false;
@@ -5909,6 +6408,19 @@ function app() {
         out.push({ ...it, decisionsFiltered: matched });
       }
       return out;
+    },
+
+    // Count of error rows in the active scan response — used to
+    // surface a "N series failed to fetch" banner above the chip row
+    // when there are any. Sonarr-only in practice (Radarr handler
+    // doesn't produce error rows in this shape) but cheap to evaluate
+    // on Radarr too.
+    qfaDetailAutoErrorCount() {
+      const r = this.qfaDetailAutoActive();
+      if (!r || !Array.isArray(r.items)) return 0;
+      let n = 0;
+      for (const it of r.items) if (it.error) n++;
+      return n;
     },
 
     // Click-handler for a per-tag breakdown row. Sets the tag-filter
@@ -5927,6 +6439,115 @@ function app() {
 
     clearAutoTagFilter() {
       this.qfaDetailAutoTagFilter = null;
+    },
+
+    // ---- Sonarr per-series episode grouping (M-Sonarr Audio/Video) ----
+    //
+    // Sonarr audio/video scans return per-series rows whose Episodes[]
+    // payload carries one entry per episodefile. The drill-in's expanded
+    // view renders these grouped season → episodes (collapsible
+    // seasons, flat episodes inside) — same pattern Recover-Sonarr uses
+    // (partials/recover-result-panel.html). Pure data-shaping; no I/O.
+    //
+    // Empty / non-Sonarr items return [] so the markup branch can
+    // safely no-op render against any item.
+
+    episodesGroupedBySeason(item) {
+      if (!item || !Array.isArray(item.episodes) || item.episodes.length === 0) return [];
+      // Episode-number extraction for stable per-season ordering.
+      // localeCompare on relativePath sorts S01E10 BEFORE S01E2
+      // lexicographically, so we mine the SxxExx token and sort by
+      // (season, episode) numeric. Falls back to episodeFileId when
+      // the token isn't found (mid-process renames).
+      const epOrderKey = (ev) => {
+        const m = (ev.relativePath || '').match(/S(\d+)E(\d+)/i);
+        if (m) return parseInt(m[1], 10) * 1000 + parseInt(m[2], 10);
+        return ev.episodeFileId || 0;
+      };
+      const buckets = new Map();
+      for (const ep of item.episodes) {
+        const k = (typeof ep.seasonNumber === 'number') ? ep.seasonNumber : 'unknown';
+        if (!buckets.has(k)) buckets.set(k, []);
+        buckets.get(k).push(ep);
+      }
+      const out = [];
+      for (const [k, eps] of buckets.entries()) {
+        eps.sort((a, b) => epOrderKey(a) - epOrderKey(b));
+        out.push({
+          seasonNumber: typeof k === 'number' ? k : null,
+          episodes: eps,
+        });
+      }
+      out.sort((a, b) => {
+        // Specials (season 0) ahead of "Unknown" (null); regular
+        // seasons ascending.
+        if (a.seasonNumber === null && b.seasonNumber === null) return 0;
+        if (a.seasonNumber === null) return 1;
+        if (b.seasonNumber === null) return -1;
+        return a.seasonNumber - b.seasonNumber;
+      });
+      return out;
+    },
+
+    // Reused state map: { seriesId: { seasonNumber: true } } so each
+    // (series, season) pair toggles independently. Lives on root state
+    // not item-local because Alpine x-for keys would re-create item
+    // objects on every reactivity tick and clobber expanded-state.
+    qfaDetailSeasonExpanded: {},
+
+    toggleQfaDetailSeasonExpanded(seriesId, seasonNumber) {
+      if (!this.qfaDetailSeasonExpanded[seriesId]) {
+        this.qfaDetailSeasonExpanded[seriesId] = {};
+      }
+      const k = seasonNumber === null ? 'unknown' : seasonNumber;
+      this.qfaDetailSeasonExpanded[seriesId][k] = !this.qfaDetailSeasonExpanded[seriesId][k];
+    },
+
+    qfaDetailSeasonIsExpanded(seriesId, seasonNumber) {
+      const sm = this.qfaDetailSeasonExpanded[seriesId];
+      if (!sm) return false;
+      const k = seasonNumber === null ? 'unknown' : seasonNumber;
+      return !!sm[k];
+    },
+
+    // Format "S01E05" or "S01" fallback for an episode row label.
+    // ev.relativePath usually carries the full release name; we mine
+    // out the first SxxExx token to render a compact label. When the
+    // file doesn't yield one (mid-process renames), fall back to
+    // "S<season>" so the row still has identity. Mirrors backend
+    // sonarrEpisodeLabel().
+    qfaEpisodeLabel(ev) {
+      if (!ev) return '';
+      const m = (ev.relativePath || '').match(/S\d+E\d+(?:[E-]\d+)*/i);
+      if (m) return m[0].toUpperCase();
+      if (typeof ev.seasonNumber === 'number') {
+        return 'S' + String(ev.seasonNumber).padStart(2, '0');
+      }
+      return '';
+    },
+
+    // Compact one-line summary the per-episode row shows next to its
+    // S01E05 label. Pulls from the strings the backend pre-computed
+    // via SummariseMediaInfo (resolution / videoCodec / hdr / audio /
+    // channels). Skips empty pieces so the line stays clean.
+    qfaEpisodeMediaLine(ev) {
+      if (!ev) return '';
+      const parts = [];
+      if (ev.resolution) parts.push(ev.resolution);
+      if (ev.videoCodec) parts.push(ev.videoCodec);
+      if (ev.videoBitDepth === 10) parts.push('10bit');
+      if (ev.hdr && ev.hdr !== 'sdr') parts.push(ev.hdr);
+      if (ev.audioCodec) parts.push(ev.audioCodec);
+      if (ev.audioChannels) parts.push(ev.audioChannels);
+      if (ev.hasAtmos) parts.push('atmos');
+      return parts.join(' · ');
+    },
+
+    // Friendly header label for a season row.
+    qfaSeasonLabel(seasonNumber) {
+      if (seasonNumber === null) return 'Unknown season';
+      if (seasonNumber === 0) return 'Specials';
+      return 'Season ' + seasonNumber;
     },
 
     // ---- DV detail drill-in helpers ----
@@ -6145,6 +6766,76 @@ function app() {
       }
     },
 
+    // ---- Per-instance-type mode availability ----
+    // Single source of truth for which modes apply to which Arr type.
+    // Sonarr today only supports recover; everything else is Radarr-only
+    // until the per-episode-file refactor lands (M-Sonarr). The wizard
+    // mode dropdown + Combined chain checkboxes filter through this so
+    // users on a Sonarr instance never see Radarr-only options that
+    // would 501 at scan time.
+    ruleModeCatalog: [
+      { value: 'tag',       label: 'Tag library — apply your release-group rules to every movie',                  appliesTo: ['radarr'] },
+      { value: 'discover',  label: 'Discover — find new release-groups in your library',                            appliesTo: ['radarr'] },
+      { value: 'recover',   label: 'Recover — fill missing release-group fields from grab history',                 appliesTo: ['radarr', 'sonarr'] },
+      { value: 'audiotags', label: 'Audio tags — informative tags from audio mediaInfo (codec / channels / atmos)', appliesTo: ['radarr', 'sonarr'] },
+      { value: 'videotags', label: 'Video tags — informative tags from video mediaInfo (resolution / codec / HDR)', appliesTo: ['radarr', 'sonarr'] },
+      { value: 'dvdetail',  label: 'DV detail — Dolby Vision profile / CM tags (requires ffmpeg + dovi_tool)',      appliesTo: ['radarr'] },
+      { value: 'combined',  label: 'Combined — chain several of the above in one run',                              appliesTo: ['radarr', 'sonarr'] },
+    ],
+    // ruleCombinedSubstepCatalog drives the chain-step checkboxes on
+    // Basics. M-Sonarr extension contract: when Sonarr support lands
+    // for a phase, add 'sonarr' to the corresponding appliesTo array
+    // here AND wire the matching Sonarr scan path in
+    // internal/api/scan*.go. The wizard, instance dropdown, tab
+    // visibility, and chain runner all key off appliesTo — no other
+    // frontend changes needed.
+    //
+    // Sonarr coverage today: recover + audiotags + videotags. Tag
+    // library + discover land with M-Sonarr Phase 2 (per-episode-file
+    // walk for the release-group tagging path). DV detail stays
+    // Radarr-only — extraction is per-file and series-level
+    // aggregation isn't meaningful.
+    ruleCombinedSubstepCatalog: [
+      { value: 'discover',  label: 'Discover new release-groups',         appliesTo: ['radarr'] },
+      { value: 'recover',   label: 'Recover missing release-groups',      appliesTo: ['radarr', 'sonarr'] },
+      { value: 'tag',       label: 'Tag library',                         appliesTo: ['radarr'] },
+      { value: 'audiotags', label: 'Apply Audio tags',                    appliesTo: ['radarr', 'sonarr'] },
+      { value: 'videotags', label: 'Apply Video tags',                    appliesTo: ['radarr', 'sonarr'] },
+      { value: 'dvdetail',  label: 'Apply DV detail',                     appliesTo: ['radarr'], optIn: true },
+    ],
+    ruleEditorInstanceType() {
+      // Locked at open-time on ruleEditor.appType (Create/QFA seed from
+      // scanAppType, Edit seeds from existing rule's instance.type) so
+      // the wizard can't mid-flight cross the Arr-type boundary.
+      if (this.ruleEditor && this.ruleEditor.appType) return this.ruleEditor.appType;
+      // Fallback only for transitional state where appType isn't set —
+      // resolve from the rule's current instance.
+      const r = this.editingRule;
+      if (!r) return null;
+      const inst = (this.instances || []).find(i => i.id === r.instanceId);
+      return inst ? inst.type : null;
+    },
+    ruleEditorInstancesAvailable() {
+      const t = this.ruleEditorInstanceType();
+      return (this.instances || [])
+        .filter(i => !t || i.type === t)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    },
+    ruleModeOptionsForInstance() {
+      const t = this.ruleEditorInstanceType();
+      if (!t) return this.ruleModeCatalog;
+      return this.ruleModeCatalog.filter(o => o.appliesTo.includes(t));
+    },
+    ruleCombinedSubstepsForInstance() {
+      const t = this.ruleEditorInstanceType();
+      if (!t) return this.ruleCombinedSubstepCatalog;
+      return this.ruleCombinedSubstepCatalog.filter(s => s.appliesTo.includes(t));
+    },
+    ruleDefaultModeForInstanceType(type) {
+      if (type === 'sonarr') return 'recover';
+      return 'tag';
+    },
+
     // ---- Mode / tab visibility helpers ----
     ruleAffectsTag()       { const r = this.editingRule; if (!r) return false; return r.mode === 'tag' || (r.mode === 'combined' && (r.options.combinedModes || []).includes('tag')); },
     ruleAffectsDiscover()  { const r = this.editingRule; if (!r) return false; return r.mode === 'discover' || (r.mode === 'combined' && (r.options.combinedModes || []).includes('discover')); },
@@ -6263,6 +6954,16 @@ function app() {
       const r = this.editingRule;
       if (!r) return null;
       const step = this.ruleEditorCurrentStep();
+      if (step === 'basics') {
+        // Name is required for saved rules (Create flow) — saving with
+        // an empty name produces an unidentifiable card later. QFA is
+        // exempt because it's a one-shot dispatcher: name auto-fills
+        // to "Quick fix-all" and never persists. Block-reason gates
+        // both the Next button (UI) and ruleEditorNext (keyboard).
+        if (!this.ruleEditor.isQuickFix && !(r.name || '').trim()) {
+          return 'Pick a name for the rule before continuing.';
+        }
+      }
       if (step === 'audio' && this.ruleAffectsAudio()) {
         const a = r.audioTags && r.audioTags.audio;
         if (!a || !a.enabled) {
@@ -6375,10 +7076,23 @@ function app() {
     // re-snapshot so we don't carry Sonarr IDs into a Radarr rule (or
     // vice versa). Filters block stays — they're per-Arr-type
     // independent so user-pinned audio/quality preferences still apply.
+    // Mode + combined substeps must also be filtered through the
+    // per-instance-type catalog so a Sonarr rule doesn't end up on a
+    // Radarr-only mode (which would 501 at scan time).
     ruleEditorOnInstanceChange() {
       const r = this.editingRule;
       if (!r) return;
       r.releaseGroupIds = this.snapshotGlobalRGIds(r.instanceId);
+      // Mode is always 'combined' post-dropdown-removal; instance-type
+      // change just filters combinedModes to substeps the new type
+      // supports (Sonarr → only 'recover' today). Sonarr selection
+      // with no 'recover' tick auto-seeds it so the rule has a phase.
+      r.mode = 'combined';
+      const supportedSubs = this.ruleCombinedSubstepsForInstance().map(s => s.value);
+      r.options.combinedModes = (r.options.combinedModes || []).filter(m => supportedSubs.includes(m));
+      if (this.ruleEditorInstanceType() === 'sonarr' && r.options.combinedModes.length === 0) {
+        r.options.combinedModes = ['recover'];
+      }
     },
 
     // ---- Release Groups picker ----
@@ -6549,15 +7263,20 @@ function app() {
       this.ruleEditor.error = '';
 
       // Decide which phases to run based on mode + combinedModes.
-      const phases = [];
+      // headPhases: instance-A-only (discover/recover/tag); they run
+      // first against the rule's primary instance.
+      // autoPhases: per-bucket targets dispatch into a second sub-chain
+      // on the secondary instance when target includes 'secondary'.
       const has = (m) => r.mode === m || (r.mode === 'combined' && (r.options.combinedModes || []).includes(m));
-      if (has('discover'))  phases.push('discover');
-      if (has('recover'))   phases.push('recover');
-      if (has('tag'))       phases.push('tag');
-      if (has('audiotags')) phases.push('audiotags');
-      if (has('videotags')) phases.push('videotags');
-      if (has('dvdetail'))  phases.push('dvdetail');
-      if (phases.length === 0) {
+      const headPhases = [];
+      if (has('discover'))  headPhases.push('discover');
+      if (has('recover'))   headPhases.push('recover');
+      if (has('tag'))       headPhases.push('tag');
+      const autoPhases = [];
+      if (has('audiotags')) autoPhases.push({ phase: 'audiotags', target: r.options.audioTagsTarget || 'primary' });
+      if (has('videotags')) autoPhases.push({ phase: 'videotags', target: r.options.videoTagsTarget || 'primary' });
+      if (has('dvdetail'))  autoPhases.push({ phase: 'dvdetail',  target: r.options.dvDetailTarget  || 'primary' });
+      if (headPhases.length === 0 && autoPhases.length === 0) {
         this.ruleEditor.error = 'No phases to run';
         this.ruleEditor.busy = false;
         return;
@@ -6680,7 +7399,10 @@ function app() {
       // button signal, valid for both flows.
       const isCancelled = () => this.chainCancelRequested || (!overrideRule && !this.editingRule);
       try {
-        for (const phase of phases) {
+        // Phase 1 — head phases (discover / recover / tag) on primary.
+        // These never run against secondary directly; tag-sync mirrors
+        // tag decisions to secondary via TmdbID inside the tag phase.
+        for (const phase of headPhases) {
           if (isCancelled()) break;
           const data = await fetchPhase(phase, r.instanceId);
           results.phases.push({ phase, ok: true, response: data });
@@ -6690,9 +7412,7 @@ function app() {
           // used by subsequent phases. Without this, the next phase's
           // overlay still carries the rule's pre-run RG-ID snapshot —
           // which doesn't include the just-added groups — and the Tag
-          // phase silently skips them. Same fix the schedule path's
-          // runCombinedSchedule does via local cfg.ReleaseGroups
-          // injection; here we extend overlayReleaseGroupIds.
+          // phase silently skips them.
           if (phase === 'discover' && data && data.applied && Array.isArray(data.applied.discoverAdded) && data.applied.discoverAdded.length > 0) {
             const ids = (overlay.overlayReleaseGroupIds || []).slice();
             for (const a of data.applied.discoverAdded) {
@@ -6703,12 +7423,9 @@ function app() {
 
           // Discover ephemeral injection (preview mode): in preview the
           // backend doesn't write to config, so subsequent phases (Tag)
-          // would see zero groups and either error or do nothing. To
-          // give the user a meaningful "what would happen" run, we take
-          // discover's findings and inject them as ephemeral groups —
-          // each marked filtered+enabled with the discovered search
-          // string as both search and tag. They live ONLY for this run;
-          // backend never persists them.
+          // would see zero groups. Inject discover's findings as
+          // ephemeral groups — live only for this run; backend never
+          // persists them.
           if (phase === 'discover' && runMode === 'preview' && data && Array.isArray(data.discovered) && data.discovered.length > 0) {
             const inject = (overlay.overlayInjectGroups || []).slice();
             const seen = new Set(inject.map(g => g.search.toLowerCase()));
@@ -6729,25 +7446,41 @@ function app() {
             }
             overlay.overlayInjectGroups = inject;
           }
+        }
 
-          // Audio + Video tags can optionally run a SECOND time
-          // against the secondary instance. Distinct from tag-sync
-          // (which mirrors by TmdbID) — auto-tags are mediaInfo-
-          // derived per file, so each instance is scanned
-          // independently.
-          if ((phase === 'audiotags' || phase === 'videotags') &&
-              r.options.autoTagsRunOnSecondary &&
-              r.options.syncToSecondary && secondaryTarget) {
+        // Phase 2 — auto-tag sub-chains. Each auto phase
+        // (audiotags / videotags / dvdetail) carries its own per-bucket
+        // target (primary | secondary | both). Run primary's enabled
+        // auto phases first as a contiguous group, then secondary's —
+        // matches the user model "finish chain on instance A, then
+        // chain on instance B". Token allow-lists are universal: same
+        // overlay payload is used for both runs.
+        const runOnInstance = async (instanceId, instanceLabel, includeForTarget) => {
+          for (const a of autoPhases) {
+            if (!includeForTarget(a.target)) continue;
             if (isCancelled()) break;
-            const secData = await fetchPhase(phase, secondaryTarget);
-            results.phases.push({ phase, ok: true, response: secData, instanceLabel: 'secondary' });
+            const data = await fetchPhase(a.phase, instanceId);
+            const row = { phase: a.phase, ok: true, response: data };
+            if (instanceLabel) row.instanceLabel = instanceLabel;
+            results.phases.push(row);
           }
+        };
+        // A-chain: auto phases targeting primary (target = 'primary' OR 'both').
+        await runOnInstance(r.instanceId, null, t => t === 'primary' || t === 'both');
+        // B-chain: auto phases targeting secondary (target = 'secondary' OR 'both').
+        // Skipped silently when no secondary instance configured — the
+        // wizard's target picker hides 'secondary' / 'both' options in
+        // that case, so this guard is defence-in-depth for legacy rules
+        // saved when a secondary existed and later removed.
+        if (secondaryTarget) {
+          await runOnInstance(secondaryTarget, 'secondary', t => t === 'secondary' || t === 'both');
         }
         results.finishedAt = new Date().toISOString();
         results.ok = true;
         this.quickFixResults = results;
         const verb = runMode === 'apply' ? 'applied' : 'previewed';
-        this.showToast('Quick fix-all ' + verb + ': ' + phases.join(', '), 'success');
+        const ranList = [...headPhases, ...autoPhases.map(a => a.phase)];
+        this.showToast('Quick fix-all ' + verb + ': ' + ranList.join(', '), 'success');
         // Only close + clear the wizard when this was a wizard-driven
         // run. Apply-after-preview re-fires without ever opening the
         // wizard — leave editingRule alone in that case.
@@ -6836,6 +7569,7 @@ function app() {
         if (data.videoTags)          phases.push({ phase: 'videotags', ok: true, response: data.videoTags });
         if (data.videoTagsSecondary) phases.push({ phase: 'videotags', ok: true, response: data.videoTagsSecondary, instanceLabel: 'secondary' });
         if (data.dvDetail)           phases.push({ phase: 'dvdetail',  ok: true, response: data.dvDetail });
+        if (data.dvDetailSecondary)  phases.push({ phase: 'dvdetail',  ok: true, response: data.dvDetailSecondary, instanceLabel: 'secondary' });
       }
       return {
         startedAt: (run && run.startedAt) || new Date().toISOString(),

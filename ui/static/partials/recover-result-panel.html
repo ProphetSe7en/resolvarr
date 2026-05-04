@@ -1,0 +1,361 @@
+    <template x-if="recoverResults">
+      <div style="margin-top:14px">
+        <template x-if="historicalRunInfo && historicalRunInfo.kind === 'recover'">
+          <div title="Page state is a snapshot — re-run a Find for current data."
+               style="margin-bottom:10px;padding:6px 12px;background:var(--alpha-blue-soft);border:1px solid var(--alpha-blue-border-strong);border-radius:6px;color:var(--accent-sky);font-size:12px;display:flex;align-items:center;gap:8px">
+            <span style="background:var(--alpha-blue);padding:1px 8px;border-radius:8px;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.4px">Historical</span>
+            <span x-text="historicalRunLabel()"></span>
+          </div>
+        </template>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+          <div style="font-size:13px;color:var(--text-secondary)">
+            Found <strong style="color:var(--text-body)" x-text="recoverResults.totals.recoverAffected || 0"></strong>
+            <span x-text="(recoverResults.instance && recoverResults.instance.type === 'sonarr') ? ('episode file' + ((recoverResults.totals.recoverAffected || 0) !== 1 ? 's' : '')) : ('movie' + ((recoverResults.totals.recoverAffected || 0) !== 1 ? 's' : ''))"></span>
+            needing recovery.
+          </div>
+          <button class="icon-btn" @click="dismissRecoverResults()" title="Dismiss results — won't undo anything; just hides the card">
+            <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10 M13 3L3 13"/></svg>
+          </button>
+        </div>
+        <!-- Totals strip — seven buckets matching bash + container would-fix/fixed split.
+             Each chip carries a left-border accent matching its per-row badge
+             fill color, so the visual link between "filter all Failed-verify rows"
+             and "this row is Failed-verify" is immediate. Active state uses the
+             matching filled .btn-{color} class — except for the neutral
+             no-history bucket which uses .btn-selected (neutral darker bg) since
+             its row badge is also neutral grey (no color story to imply). -->
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
+          <button class="btn btn-sm" :class="recoverFilter === 'all' ? 'btn-selected' : ''" @click="recoverFilter = 'all'" :title="'All affected — total ' + recoverResults.totals.recoverAffected">All <span style="opacity:0.7" x-text="'(' + (recoverResults.totals.recoverAffected || 0) + ')'"></span></button>
+          <button class="btn btn-sm" :class="recoverFilter === 'would-fix' ? 'btn-blue' : ''" @click="recoverFilter = 'would-fix'" :disabled="!recoverResults.totals.recoverWouldFix" :title="'Verified grab found, group recovered (pending apply)'" style="border-left:3px solid var(--accent-blue-strong)">Would fix <span style="opacity:0.7" x-text="'(' + (recoverResults.totals.recoverWouldFix || 0) + ')'"></span></button>
+          <template x-if="(recoverResults.totals.recoverFixed || 0) > 0">
+            <button class="btn btn-sm" :class="recoverFilter === 'fixed' ? 'btn-primary' : ''" @click="recoverFilter = 'fixed'" :title="'Apply succeeded — releaseGroup written'" style="border-left:3px solid var(--accent-green-strong)">Fixed <span style="opacity:0.7" x-text="'(' + recoverResults.totals.recoverFixed + ')'"></span></button>
+          </template>
+          <template x-if="(recoverResults.totals.recoverFixFailed || 0) > 0">
+            <button class="btn btn-sm" :class="recoverFilter === 'fix-failed' ? 'btn-danger' : ''" @click="recoverFilter = 'fix-failed'" :title="'Apply attempt failed (PUT or fetch error)'" style="border-left:3px solid var(--accent-red-strong)">Fix failed <span style="opacity:0.7" x-text="'(' + recoverResults.totals.recoverFixFailed + ')'"></span></button>
+          </template>
+          <button class="btn btn-sm" :class="recoverFilter === 'flagged' ? 'btn-warn' : ''" @click="recoverFilter = 'flagged'" :disabled="!recoverResults.totals.recoverFlagged" :title="'Filename has a group but app field is empty — manual verify recommended'" style="border-left:3px solid var(--accent-orange)">Flagged <span style="opacity:0.7" x-text="'(' + (recoverResults.totals.recoverFlagged || 0) + ')'"></span></button>
+          <button class="btn btn-sm" :class="recoverFilter === 'no-rls-group' ? 'btn-purple' : ''" @click="recoverFilter = 'no-rls-group'" :disabled="!recoverResults.totals.recoverNoGroup" :title="'Verified grab found but it carries no releaseGroup either'" style="border-left:3px solid #6e40c9">No-RlsGroup <span style="opacity:0.7" x-text="'(' + (recoverResults.totals.recoverNoGroup || 0) + ')'"></span></button>
+          <button class="btn btn-sm" :class="recoverFilter === 'no-history' ? 'btn-selected' : ''" @click="recoverFilter = 'no-history'" :disabled="!recoverResults.totals.recoverNoHistory" :title="'No grab/import events for this movie'" style="border-left:3px solid var(--text-muted-secondary)">No history <span style="opacity:0.7" x-text="'(' + (recoverResults.totals.recoverNoHistory || 0) + ')'"></span></button>
+          <button class="btn btn-sm" :class="recoverFilter === 'failed-verify' ? 'btn-teal' : ''" @click="recoverFilter = 'failed-verify'" :disabled="!recoverResults.totals.recoverFailedVerify" :title="'No grab matched the newest import (downloadId/title+year fallback both failed)'" style="border-left:3px solid #0e6e6e">Failed verify <span style="opacity:0.7" x-text="'(' + (recoverResults.totals.recoverFailedVerify || 0) + ')'"></span></button>
+          <!-- Excluded chip — toggle that swaps the result list to show
+               only items the user has previously excluded. Dimmed when
+               the count is 0; clicking still works (no items to show
+               but the empty-state message renders). Distinguishes
+               itself with a dashed left-border so the user reads it as
+               "different category" rather than another status bucket. -->
+          <button class="btn btn-sm" :class="recoverFilter === 'excluded' ? 'btn-warn' : ''" @click="recoverFilter = 'excluded'"
+                  :disabled="recoverExclusionCount() === 0"
+                  :title="recoverExclusionCount() === 0 ? 'Nothing excluded yet' : 'Show items you previously excluded — click Include again on any row to bring it back into the next scan'"
+                  style="border-left:3px dashed var(--text-muted-secondary)">Show excluded <span style="opacity:0.7" x-text="'(' + recoverExclusionCount() + ')'"></span></button>
+        </div>
+
+        <template x-if="recoverResults.totals.recoverAffected === 0">
+          <div style="padding:20px;text-align:center;color:var(--accent-green);font-size:13px;border:1px dashed var(--accent-green-hover);border-radius:8px">
+            <template x-if="recoverResults.instance && recoverResults.instance.type === 'sonarr'">
+              <span>No episode files need recovery — every imported file already has a release group.</span>
+            </template>
+            <template x-if="!recoverResults.instance || recoverResults.instance.type !== 'sonarr'">
+              <span>No movies need recovery — every imported movie already has a release group.</span>
+            </template>
+          </div>
+        </template>
+
+        <!-- Apply controls — visible when at least one row is eligible for
+             apply (would-fix or fix-failed for retry). Wording adapts: pure
+             first-run shows "would-fix"; post-apply with retries shows
+             "applyable" since the set mixes would-fix + fix-failed. -->
+        <template x-if="recoverApplyableCount() > 0 && !recoverApplying">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-bottom:12px;padding:10px 14px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-body)">
+              <input type="checkbox" x-model="recoverRename" style="accent-color:var(--accent-blue)">
+              <span>Trigger Radarr rename after fix</span>
+            </label>
+            <div style="flex:1;font-size:12px;color:var(--text-secondary)">
+              <span x-text="recoverApplySelectedCount() + ' of ' + recoverApplyableCount() + ' selected'"></span>
+              <template x-if="recoverFixFailedSelectedCount() > 0">
+                <span x-text="' (incl. ' + recoverFixFailedSelectedCount() + ' retry)'"></span>
+              </template>
+            </div>
+            <button class="btn btn-sm" @click="recoverSelectAllApply()" :disabled="recoverApplySelectedCount() === recoverApplyableCount()">Select all</button>
+            <button class="btn btn-sm" @click="recoverDeselectAllApply()" :disabled="recoverApplySelectedCount() === 0">Deselect all</button>
+            <button class="btn btn-primary btn-sm"
+                    @click="runRecoverApply()"
+                    :disabled="recoverApplySelectedCount() === 0 || isHistoricalForAction('recover')"
+                    :title="isHistoricalForAction('recover') ? 'Run a fresh Recover before applying — this is a saved snapshot, not live data.' : ''">Apply selected fixes</button>
+          </div>
+        </template>
+
+        <!-- Per-row list. Radarr: flat list (one row per movie). Sonarr:
+             Series → Season → Episodes hierarchy with the two outer
+             levels collapsible. Same per-row markup at the leaf so the
+             drill-down + apply checkbox work identically across types. -->
+        <template x-if="!recoverResults.instance || recoverResults.instance.type !== 'sonarr'">
+        <div x-show="filteredRecoverItems().length > 0" style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+          <template x-for="(it, idx) in filteredRecoverItems()" :key="it.id">
+            <div :style="idx % 2 === 0 ? 'background:var(--bg-page)' : 'background:var(--bg-card)'" style="border-bottom:1px solid var(--bg-muted)">
+              <div style="display:flex;align-items:flex-start;gap:12px;padding:10px 14px">
+                <!-- Apply checkbox — meaningful for would-fix (preview pending),
+                     fixed (already done, locked), and fix-failed (retry eligible). -->
+                <template x-if="it.status === 'would-fix' || it.status === 'fixed' || it.status === 'fix-failed'">
+                  <input type="checkbox"
+                         :checked="it.status === 'fixed' || !!recoverApplySelected[it.id]"
+                         @change="toggleRecoverApply(it.id)"
+                         :disabled="it.status === 'fixed' || recoverApplying"
+                         :title="it.status === 'fixed' ? 'Already fixed' : (it.status === 'fix-failed' ? 'Retry this fix' : 'Include this movie when applying')"
+                         style="accent-color:var(--accent-blue);margin-top:5px">
+                </template>
+                <template x-if="it.status !== 'would-fix' && it.status !== 'fixed' && it.status !== 'fix-failed'">
+                  <div style="width:14px;flex-shrink:0"></div>
+                </template>
+
+                <div style="flex:1;min-width:0;cursor:pointer;display:flex;align-items:center;gap:10px;flex-wrap:wrap" @click="toggleRecoverExpanded(it.id)" :title="recoverExpanded[it.id] ? 'Click to collapse' : 'Click to see details'">
+                  <span style="color:var(--text-secondary);font-size:11px;width:10px;display:inline-block" x-text="recoverExpanded[it.id] ? '▼' : '▶'"></span>
+                  <span style="font-weight:600;font-size:14px;color:var(--text-body)"><span x-text="it.title"></span><template x-if="it.year"><span style="color:var(--text-secondary);font-weight:400"> (<span x-text="it.year"></span>)</span></template></span>
+                  <template x-if="it.recoveredGroup"><span style="font-size:12px;color:var(--text-secondary)">→ <code style="color:var(--accent-sky);background:var(--bg-page);padding:1px 6px;border-radius:3px" x-text="it.recoveredGroup"></code></span></template>
+                  <template x-if="it.filenameGroup"><span style="font-size:12px;color:var(--text-secondary)">filename: <code style="color:var(--accent-orange);background:var(--bg-page);padding:1px 6px;border-radius:3px" x-text="it.filenameGroup"></code></span></template>
+                  <template x-if="it.renameTriggered"><span style="font-size:11px;color:var(--accent-green)">+ rename</span></template>
+                  <!-- Spacer + status pill on the right edge mirrors the
+                       Sonarr series/season card layout: title + recovered-
+                       group context on the left, status pill flush right. -->
+                  <div style="flex:1"></div>
+                  <span class="btn btn-sm" :class="recoverStatusBtnClass(it.status)" style="font-size:11px;padding:2px 9px;cursor:default;pointer-events:none" x-text="recoverStatusLabel(it.status)"></span>
+                </div>
+                <!-- Exclude this movie. Click stops propagation so it
+                     doesn't toggle the row's expand/collapse below. -->
+                <button class="btn btn-sm" @click.stop="excludeMovie(it.id, it.title)" :disabled="isHistoricalForAction('recover')"
+                        :title="isHistoricalForAction('recover') ? 'Run a fresh Recover before excluding — this is a saved snapshot' : 'Skip this movie in future scans. You can include it again from Show excluded below.'"
+                        style="font-size:11px;padding:2px 9px;flex-shrink:0">Exclude</button>
+              </div>
+
+              <!-- Drill-down: per-row context. Same field layout as the
+                   drill-down on Tag library / Discover so the UI feels
+                   consistent. sceneName is often empty on Radarr (only
+                   set when the original release was scene-sourced) — we
+                   just hide the row when it's missing. -->
+              <template x-if="recoverExpanded[it.id]">
+                <div style="padding:6px 16px 14px 38px;background:var(--bg-page);font-size:12px;color:var(--text-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;line-height:1.7">
+                  <div style="display:flex;gap:14px;align-items:baseline;flex-wrap:wrap">
+                    <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">currentGroup:</span> <span :style="it.currentGroup ? 'color:var(--accent-orange)' : 'color:var(--text-muted-secondary);font-style:italic'" x-text="it.currentGroup || '(empty)'"></span></span>
+                    <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">movieId:</span> <span style="color:var(--text-body)" x-text="it.id"></span></span>
+                    <template x-if="it.movieFileId">
+                      <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">movieFileId:</span> <span style="color:var(--text-body)" x-text="it.movieFileId"></span></span>
+                    </template>
+                    <template x-if="it.tmdbId">
+                      <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">tmdbId:</span> <span style="color:var(--text-body)" x-text="it.tmdbId"></span></span>
+                    </template>
+                  </div>
+                  <template x-if="it.sceneName">
+                    <div style="display:flex;gap:8px;align-items:baseline"><span style="color:var(--text-muted-secondary);flex-shrink:0">sceneName:</span> <span style="white-space:nowrap;overflow-x:auto;flex:1;min-width:0;color:var(--text-body)" x-text="it.sceneName"></span></div>
+                  </template>
+                  <template x-if="it.relativePath">
+                    <div style="display:flex;gap:8px;align-items:baseline"><span style="color:var(--text-muted-secondary);flex-shrink:0">relativePath:</span> <span style="white-space:nowrap;overflow-x:auto;flex:1;min-width:0;color:var(--text-body)" x-text="it.relativePath"></span></div>
+                  </template>
+                  <template x-if="it.importSourceTitle">
+                    <div style="display:flex;gap:8px;align-items:baseline"><span style="color:var(--text-muted-secondary);flex-shrink:0">import.sourceTitle:</span> <span style="color:var(--text-body);white-space:nowrap;overflow-x:auto;flex:1;min-width:0" x-text="it.importSourceTitle"></span></div>
+                  </template>
+                  <template x-if="it.importDate">
+                    <div style="display:flex;gap:8px;align-items:baseline"><span style="color:var(--text-muted-secondary);flex-shrink:0">import.date:</span> <span style="color:var(--text-body)" x-text="formatDate(it.importDate)"></span></div>
+                  </template>
+                  <template x-if="it.error">
+                    <div style="display:flex;gap:8px;align-items:baseline"><span style="color:var(--text-muted-secondary);flex-shrink:0">error:</span> <span style="color:var(--accent-red)" x-text="it.error"></span></div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+        </template>
+
+        <!-- Sonarr — grouped tree: Series → Season → Episodes -->
+        <template x-if="recoverResults.instance && recoverResults.instance.type === 'sonarr'">
+        <div x-show="filteredRecoverItems().length > 0" style="display:flex;flex-direction:column;gap:8px">
+          <template x-for="series in recoverSonarrGroupedItems()" :key="series.seriesId">
+            <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden;background:var(--bg-card)">
+              <!-- Series header -->
+              <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer" @click="toggleRecoverSeriesExpanded(series.seriesId)">
+                <span style="color:var(--text-secondary);font-size:11px;width:10px;display:inline-block" x-text="recoverSeriesExpanded[series.seriesId] ? '▼' : '▶'"></span>
+                <span style="font-weight:600;font-size:14px;color:var(--text-body)">
+                  <span x-text="series.seriesTitle"></span>
+                  <template x-if="series.year"><span style="color:var(--text-secondary);font-weight:400"> (<span x-text="series.year"></span>)</span></template>
+                </span>
+                <span style="font-size:12px;color:var(--text-secondary)">·
+                  <span x-text="series.total"></span>
+                  <span x-text="series.total === 1 ? 'episode' : 'episodes'"></span>
+                </span>
+                <div style="flex:1"></div>
+                <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
+                  <template x-for="key in ['would-fix','fixed','fix-failed','flagged','no-rls-group','no-history','failed-verify']" :key="key">
+                    <template x-if="series.statusCounts[key]">
+                      <span class="btn btn-sm" :class="recoverStatusBtnClass(key)" style="font-size:10px;padding:1px 7px;cursor:default;pointer-events:none" x-text="recoverStatusLabel(key) + ' ' + series.statusCounts[key]"></span>
+                    </template>
+                  </template>
+                </div>
+                <!-- Exclude whole series. Click stops propagation so
+                     it doesn't toggle the series collapse. -->
+                <button class="btn btn-sm" @click.stop="excludeSeries(series.seriesId, series.seriesTitle)" :disabled="isHistoricalForAction('recover')"
+                        :title="isHistoricalForAction('recover') ? 'Run a fresh Recover before excluding — this is a saved snapshot' : 'Skip this whole series in future scans. You can include it again from Show excluded below.'"
+                        style="font-size:11px;padding:2px 9px;flex-shrink:0">Exclude series</button>
+              </div>
+
+              <!-- Seasons (only when series expanded) -->
+              <template x-if="recoverSeriesExpanded[series.seriesId]">
+                <div style="border-top:1px solid var(--border-subtle)">
+                  <template x-for="season in series.seasons" :key="series.seriesId + '-' + season.seasonNumber">
+                    <div>
+                      <!-- Season header -->
+                      <div style="display:flex;align-items:center;gap:12px;padding:8px 16px 8px 32px;cursor:pointer;background:var(--bg-page);border-bottom:1px solid var(--bg-muted)" @click="toggleRecoverSeasonExpanded(series.seriesId, season.seasonNumber)">
+                        <span style="color:var(--text-secondary);font-size:11px;width:10px;display:inline-block" x-text="recoverSeasonExpandedKey(series.seriesId, season.seasonNumber) ? '▼' : '▶'"></span>
+                        <span style="font-weight:600;font-size:13px;color:var(--text-body)" x-text="season.seasonNumber === null ? 'Unknown season' : (season.seasonNumber === 0 ? 'Specials' : ('Season ' + season.seasonNumber))"></span>
+                        <span style="font-size:12px;color:var(--text-secondary)">·
+                          <span x-text="season.episodes.length"></span>
+                          <span x-text="season.episodes.length === 1 ? 'episode' : 'episodes'"></span>
+                        </span>
+                        <div style="flex:1"></div>
+                        <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">
+                          <template x-for="key in ['would-fix','fixed','fix-failed','flagged','no-rls-group','no-history','failed-verify']" :key="key">
+                            <template x-if="season.statusCounts[key]">
+                              <span class="btn btn-sm" :class="recoverStatusBtnClass(key)" style="font-size:10px;padding:1px 7px;cursor:default;pointer-events:none" x-text="recoverStatusLabel(key) + ' ' + season.statusCounts[key]"></span>
+                            </template>
+                          </template>
+                        </div>
+                        <!-- Exclude this season only. Hidden when season has no number
+                             (Unknown season — would have to exclude the whole series). -->
+                        <template x-if="season.seasonNumber !== null">
+                          <button class="btn btn-sm" @click.stop="excludeSeason(series.seriesId, season.seasonNumber, series.seriesTitle)" :disabled="isHistoricalForAction('recover')"
+                                  :title="isHistoricalForAction('recover') ? 'Run a fresh Recover before excluding — this is a saved snapshot' : 'Skip this season in future scans. You can include it again from Show excluded below.'"
+                                  style="font-size:11px;padding:2px 9px;flex-shrink:0">Exclude season</button>
+                        </template>
+                      </div>
+
+                      <!-- Episodes (only when season expanded) -->
+                      <template x-if="recoverSeasonExpandedKey(series.seriesId, season.seasonNumber)">
+                        <div>
+                          <template x-for="(it, idx) in season.episodes" :key="it.id">
+                            <div :style="idx % 2 === 0 ? 'background:var(--bg-page)' : 'background:var(--bg-card)'" style="border-bottom:1px solid var(--bg-muted)">
+                              <div style="display:flex;align-items:flex-start;gap:12px;padding:8px 16px 8px 48px">
+                                <template x-if="it.status === 'would-fix' || it.status === 'fixed' || it.status === 'fix-failed'">
+                                  <input type="checkbox"
+                                         :checked="it.status === 'fixed' || !!recoverApplySelected[it.id]"
+                                         @change="toggleRecoverApply(it.id)"
+                                         :disabled="it.status === 'fixed' || recoverApplying"
+                                         :title="it.status === 'fixed' ? 'Already fixed' : (it.status === 'fix-failed' ? 'Retry this fix' : 'Include this episode when applying')"
+                                         style="accent-color:var(--accent-blue);margin-top:5px">
+                                </template>
+                                <template x-if="it.status !== 'would-fix' && it.status !== 'fixed' && it.status !== 'fix-failed'">
+                                  <div style="width:14px;flex-shrink:0"></div>
+                                </template>
+                                <div style="flex:1;min-width:0;cursor:pointer;display:flex;align-items:center;gap:10px;flex-wrap:wrap" @click="toggleRecoverExpanded(it.id)" :title="recoverExpanded[it.id] ? 'Click to collapse' : 'Click to see details'">
+                                  <span style="color:var(--text-secondary);font-size:11px;width:10px;display:inline-block" x-text="recoverExpanded[it.id] ? '▼' : '▶'"></span>
+                                  <span style="font-weight:600;font-size:13px;color:var(--text-body);font-family:'SF Mono','Cascadia Mono',Consolas,monospace" x-text="episodeLabelFromItem(it)"></span>
+                                  <template x-if="it.recoveredGroup"><span style="font-size:12px;color:var(--text-secondary)">→ <code style="color:var(--accent-sky);background:var(--bg-page);padding:1px 6px;border-radius:3px" x-text="it.recoveredGroup"></code></span></template>
+                                  <template x-if="it.filenameGroup"><span style="font-size:12px;color:var(--text-secondary)">filename: <code style="color:var(--accent-orange);background:var(--bg-page);padding:1px 6px;border-radius:3px" x-text="it.filenameGroup"></code></span></template>
+                                  <template x-if="it.renameTriggered"><span style="font-size:11px;color:var(--accent-green)">+ rename</span></template>
+                                  <div style="flex:1"></div>
+                                  <span class="btn btn-sm" :class="recoverStatusBtnClass(it.status)" style="font-size:11px;padding:2px 9px;cursor:default;pointer-events:none" x-text="recoverStatusLabel(it.status)"></span>
+                                </div>
+                              </div>
+
+                              <template x-if="recoverExpanded[it.id]">
+                                <div style="padding:6px 16px 14px 76px;background:var(--bg-page);font-size:12px;color:var(--text-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;line-height:1.7">
+                                  <div style="display:flex;gap:14px;align-items:baseline;flex-wrap:wrap">
+                                    <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">currentGroup:</span> <span :style="it.currentGroup ? 'color:var(--accent-orange)' : 'color:var(--text-muted-secondary);font-style:italic'" x-text="it.currentGroup || '(empty)'"></span></span>
+                                    <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">seriesId:</span> <span style="color:var(--text-body)" x-text="it.seriesId"></span></span>
+                                    <template x-if="it.movieFileId">
+                                      <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">episodefileId:</span> <span style="color:var(--text-body)" x-text="it.movieFileId"></span></span>
+                                    </template>
+                                    <template x-if="it.tvdbId">
+                                      <span style="display:inline-flex;align-items:baseline;gap:6px;flex-shrink:0"><span style="color:var(--text-muted-secondary)">tvdbId:</span> <span style="color:var(--text-body)" x-text="it.tvdbId"></span></span>
+                                    </template>
+                                  </div>
+                                  <template x-if="it.sceneName">
+                                    <div style="display:flex;gap:8px;align-items:baseline"><span style="color:var(--text-muted-secondary);flex-shrink:0">sceneName:</span> <span style="white-space:nowrap;overflow-x:auto;flex:1;min-width:0;color:var(--text-body)" x-text="it.sceneName"></span></div>
+                                  </template>
+                                  <template x-if="it.relativePath">
+                                    <div style="display:flex;gap:8px;align-items:baseline"><span style="color:var(--text-muted-secondary);flex-shrink:0">relativePath:</span> <span style="white-space:nowrap;overflow-x:auto;flex:1;min-width:0;color:var(--text-body)" x-text="it.relativePath"></span></div>
+                                  </template>
+                                  <template x-if="it.importSourceTitle">
+                                    <div style="display:flex;gap:8px;align-items:baseline"><span style="color:var(--text-muted-secondary);flex-shrink:0">import.sourceTitle:</span> <span style="color:var(--text-body);white-space:nowrap;overflow-x:auto;flex:1;min-width:0" x-text="it.importSourceTitle"></span></div>
+                                  </template>
+                                  <template x-if="it.importDate">
+                                    <div style="display:flex;gap:8px;align-items:baseline"><span style="color:var(--text-muted-secondary);flex-shrink:0">import.date:</span> <span style="color:var(--text-body)" x-text="formatDate(it.importDate)"></span></div>
+                                  </template>
+                                  <template x-if="it.error">
+                                    <div style="display:flex;gap:8px;align-items:baseline"><span style="color:var(--text-muted-secondary);flex-shrink:0">error:</span> <span style="color:var(--accent-red)" x-text="it.error"></span></div>
+                                  </template>
+                                </div>
+                              </template>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+        </template>
+
+        <!-- Empty filter state. Filter==='excluded' has its own
+             empty-state copy below — keep this branch limited to the
+             regular status filters. -->
+        <template x-if="recoverFilter !== 'excluded' && recoverResults.totals.recoverAffected > 0 && filteredRecoverItems().length === 0">
+          <div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:13px;border:1px dashed var(--border-subtle);border-radius:8px">No items in this category.</div>
+        </template>
+
+        <!-- ===== Excluded chip render branch =====
+             Two sibling top-level templates instead of one outer
+             wrapper with two children — Alpine `<template x-if>`
+             requires exactly one root element, and the previous
+             nested form silently dropped the second branch (which
+             held the actual list) so clicking "Show excluded" with
+             N>0 items showed nothing. Each gate now combines the
+             chip-active check with the count check so they're
+             mutually exclusive at the top level.
+
+             Same series-card visual style as the regular Sonarr
+             branch — simpler bodies since excluded items aren't
+             tied to current scan data (no episode tree, no apply
+             checkbox). Movies render as flat single-line cards
+             mirroring the Radarr branch. Each row carries one
+             Include-again button. -->
+        <template x-if="recoverFilter === 'excluded' && recoverExcludedDisplay().length === 0">
+          <div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:13px;border:1px dashed var(--border-subtle);border-radius:8px">Nothing excluded yet — Exclude buttons on the regular result rows park items here.</div>
+        </template>
+        <template x-if="recoverFilter === 'excluded' && recoverExcludedDisplay().length > 0">
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <template x-for="(ex, idx) in recoverExcludedDisplay()" :key="ex.kind + '-' + ex.id">
+              <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden;background:var(--bg-card)">
+                <div style="display:flex;align-items:center;gap:12px;padding:12px 16px">
+                  <!-- Kind badge mirrors the status pill column on the
+                       regular cards so the visual rhythm of the list
+                       matches. -->
+                  <span class="btn btn-sm btn-warn" style="font-size:11px;padding:2px 9px;cursor:default;pointer-events:none;text-transform:capitalize" x-text="ex.kind"></span>
+                  <span style="font-weight:600;font-size:14px;color:var(--text-body)">
+                    <span x-text="ex.title"></span>
+                    <template x-if="ex.year"><span style="color:var(--text-secondary);font-weight:400"> (<span x-text="ex.year"></span>)</span></template>
+                  </span>
+                  <div style="flex:1"></div>
+                  <button class="btn btn-sm" style="font-size:11px;padding:2px 9px"
+                          x-show="ex.kind === 'movie'"
+                          @click="includeMovie(ex.id, ex.title)"
+                          :disabled="isHistoricalForAction('recover')"
+                          :title="isHistoricalForAction('recover') ? 'Run a fresh Recover before changing exclusions — this is a saved snapshot' : 'Bring this movie back into the next scan'">Include again</button>
+                  <button class="btn btn-sm" style="font-size:11px;padding:2px 9px"
+                          x-show="ex.kind === 'series'"
+                          @click="includeSeries(ex.seriesId, ex.title)"
+                          :disabled="isHistoricalForAction('recover')"
+                          :title="isHistoricalForAction('recover') ? 'Run a fresh Recover before changing exclusions — this is a saved snapshot' : 'Bring this whole series back into the next scan'">Include again</button>
+                  <button class="btn btn-sm" style="font-size:11px;padding:2px 9px"
+                          x-show="ex.kind === 'season'"
+                          @click="includeSeason(ex.seriesId, ex.seasonNumber, ex.seriesTitle)"
+                          :disabled="isHistoricalForAction('recover')"
+                          :title="isHistoricalForAction('recover') ? 'Run a fresh Recover before changing exclusions — this is a saved snapshot' : 'Bring this season back into the next scan'">Include again</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </template>

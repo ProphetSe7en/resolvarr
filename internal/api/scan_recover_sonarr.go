@@ -53,6 +53,14 @@ func (s *Server) runRecoverSonarr(ctx context.Context, inst *core.Instance, req 
 		return nil, newAPIError(502, "arr list series: "+err.Error())
 	}
 
+	// Per-instance exclusion list — user-flagged series + per-season
+	// skips. Whole-series exclusions skip the per-series epfile fetch
+	// entirely (saves an API call); per-season exclusions filter
+	// affected epfiles after the fetch. List mutates between scans via
+	// /api/recover/exclusions endpoints.
+	cfg := s.App.Config.Get()
+	excl := cfg.RecoverExclusions[inst.ID]
+
 	// itemFilter is series-ID scoped (matches the bash --series flag).
 	// applyFilter is episodefile-ID scoped (matches the per-row UI
 	// exclude — same field name as Radarr but different identity).
@@ -84,6 +92,13 @@ func (s *Server) runRecoverSonarr(ctx context.Context, inst *core.Instance, req 
 		if len(itemFilter) > 0 && !itemFilter[ser.ID] {
 			continue
 		}
+		// Whole-series exclusion: skip the API call too. Per-season
+		// exclusions still need the fetch (other seasons in the same
+		// series may be in scope), so they filter after the fetch
+		// inside the affected loop below.
+		if excl.IsSeriesFullyExcluded(ser.ID) {
+			continue
+		}
 		epfiles, lerr := client.ListEpisodefiles(ctx, ser.ID)
 		if lerr != nil {
 			// Series-level fetch failure → record one fix-failed row so
@@ -110,11 +125,18 @@ func (s *Server) runRecoverSonarr(ctx context.Context, inst *core.Instance, req 
 			continue
 		}
 
-		// Affected = epfiles whose releaseGroup is empty / "Unknown".
+		// Affected = epfiles whose releaseGroup is empty / "Unknown",
+		// minus any episodes in seasons the user has excluded.
+		// IsSeasonExcluded handles both whole-series and per-season
+		// exclusions — but the whole-series case was already short-
+		// circuited above, so this branch only filters per-season.
 		var affected []arr.EpisodeFile
 		for _, ef := range epfiles {
 			rg := strings.TrimSpace(ef.ReleaseGroup)
 			if rg != "" && rg != "Unknown" {
+				continue
+			}
+			if excl.IsSeasonExcluded(ser.ID, ef.SeasonNumber) {
 				continue
 			}
 			affected = append(affected, ef)

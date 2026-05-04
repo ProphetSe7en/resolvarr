@@ -1,0 +1,70 @@
+            <template x-if="cleanupResults">
+              <div>
+                <template x-if="historicalRunInfo && historicalRunInfo.kind === 'cleanup'">
+                  <div title="Page state is a snapshot — re-run a check for current data."
+                       style="margin-bottom:10px;padding:6px 12px;background:var(--alpha-blue-soft);border:1px solid var(--alpha-blue-border-strong);border-radius:6px;color:var(--accent-sky);font-size:12px;display:flex;align-items:center;gap:8px">
+                    <span style="background:var(--alpha-blue);padding:1px 8px;border-radius:8px;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.4px">Historical</span>
+                    <span x-text="historicalRunLabel()"></span>
+                  </div>
+                </template>
+                <!-- Totals strip -->
+                <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px">
+                  <div><span style="color:var(--text-secondary)">Library items checked:</span> <strong x-text="cleanupResults.totals.items"></strong></div>
+                  <div><span style="color:var(--accent-orange)">Unused managed tags:</span> <strong x-text="(cleanupResults.totals.tagsToDelete || []).length"></strong></div>
+                </div>
+
+                <template x-if="(cleanupResults.totals.tagsToDelete || []).length > 0">
+                  <div>
+                    <!-- Selection toolbar -->
+                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px">
+                      <button class="btn btn-sm" @click="selectAllCleanup()">Select all</button>
+                      <button class="btn btn-sm" @click="deselectAllCleanup()">Deselect all</button>
+                      <div style="flex:1"></div>
+                      <div style="font-size:12px;color:var(--text-secondary)">
+                        <strong x-text="cleanupSelectedCount()"></strong> of <span x-text="cleanupResults.totals.tagsToDelete.length"></span> selected
+                      </div>
+                    </div>
+
+                    <!-- Candidates list -->
+                    <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+                      <template x-for="(c, idx) in cleanupResults.totals.tagsToDelete" :key="c.label">
+                        <div :style="idx % 2 === 0 ? 'background:var(--bg-page)' : 'background:var(--bg-card)'" style="display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--bg-muted)">
+                          <input type="checkbox" :checked="!!cleanupSelected[c.label]" @change="toggleCleanupSelected(c.label)" style="cursor:pointer">
+                          <div style="flex:1;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                            <code style="color:var(--accent-blue);font-size:13px;font-weight:600" x-text="c.label"></code>
+                            <span style="font-size:11px;color:var(--text-secondary)">tag id: <span x-text="c.tagId"></span></span>
+                            <span style="font-size:11px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:2px 8px;border-radius:8px">0 movies</span>
+                          </div>
+                          <button class="btn btn-sm btn-danger"
+                                  @click="deleteOneCleanup(c.label)"
+                                  :disabled="cleanupDeleting || isHistoricalForAction('cleanup')"
+                                  :title="isHistoricalForAction('cleanup') ? 'Run a fresh Cleanup check before deleting — this is a saved snapshot, not live data.' : ''"
+                                  style="flex-shrink:0">Delete</button>
+                        </div>
+                      </template>
+                    </div>
+
+                    <!-- Delete-Selected footer -->
+                    <div style="margin-top:16px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;display:flex;align-items:center;gap:16px">
+                      <div style="flex:1;font-size:13px;color:var(--text-secondary)">
+                        <span x-show="cleanupSelectedCount() === 0">Pick the tags you want to delete from <strong x-text="cleanupResults.instance.name"></strong>. Each will be removed from Radarr's tag inventory.</span>
+                        <span x-show="cleanupSelectedCount() > 0">Will delete <strong style="color:var(--accent-red)" x-text="cleanupSelectedCount()"></strong> tag<span x-show="cleanupSelectedCount() !== 1">s</span> from <strong x-text="cleanupResults.instance.name"></strong>.</span>
+                      </div>
+                      <button class="btn btn-danger"
+                              @click="deleteSelectedCleanup()"
+                              :disabled="cleanupSelectedCount() === 0 || cleanupDeleting || isHistoricalForAction('cleanup')"
+                              :title="isHistoricalForAction('cleanup') ? 'Run a fresh Cleanup check before deleting — this is a saved snapshot, not live data.' : ''">
+                        <span x-show="!cleanupDeleting">Delete selected</span>
+                        <span x-show="cleanupDeleting">Deleting…</span>
+                      </button>
+                    </div>
+                  </div>
+                </template>
+
+                <template x-if="(cleanupResults.totals.tagsToDelete || []).length === 0">
+                  <div style="padding:20px;text-align:center;color:var(--accent-green);font-size:13px;border:1px dashed var(--accent-green-hover);border-radius:8px">
+                    All managed tags are in use — nothing to clean up.
+                  </div>
+                </template>
+              </div>
+            </template>

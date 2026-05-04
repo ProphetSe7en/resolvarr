@@ -35,6 +35,9 @@ import (
 
 // runAudioTags is the headless audiotags pipeline.
 func (s *Server) runAudioTags(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, req scanRunRequest) (*scanResponse, *apiError) {
+	if appType == "sonarr" {
+		return s.runAudioTagsSonarr(ctx, cfg, inst, req)
+	}
 	engineCfg := core.AudioTagsToEngine(cfg.AudioTags)
 	if !engineCfg.Audio.Enabled {
 		return nil, newAPIError(400, "Audio tags is disabled — enable the Audio bucket in Library scan → Audio tags")
@@ -59,6 +62,9 @@ func (s *Server) runAudioTags(ctx context.Context, cfg core.Config, inst *core.I
 
 // runVideoTags is the headless videotags pipeline.
 func (s *Server) runVideoTags(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, req scanRunRequest) (*scanResponse, *apiError) {
+	if appType == "sonarr" {
+		return s.runVideoTagsSonarr(ctx, cfg, inst, req)
+	}
 	engineCfg := core.VideoTagsToEngine(cfg.VideoTags)
 	if !engineCfg.Resolution.Enabled && !engineCfg.Codec.Enabled && !engineCfg.HDR.Enabled {
 		return nil, newAPIError(400, "no video buckets enabled — enable Resolution, Codec, or HDR in Library scan → Video tags")

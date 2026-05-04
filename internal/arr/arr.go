@@ -210,6 +210,18 @@ type Item struct {
 	TvdbID    int        `json:"tvdbId,omitempty"`  // Sonarr equivalent of TmdbID — same role for cross-Sonarr compares
 	Tags      []int      `json:"tags"`
 	MovieFile *MovieFile `json:"movieFile,omitempty"`
+	// Sonarr-only — series statistics. Used by M-Sonarr Audio/Video
+	// scan handlers to skip series with episodeFileCount==0 before
+	// firing the per-series /api/v3/episodefile call (saves N requests
+	// against an empty library). Nil on Radarr.
+	Statistics *SeriesStatistics `json:"statistics,omitempty"`
+}
+
+// SeriesStatistics is the subset of Sonarr's series.statistics we read.
+// Sonarr fills this in on every /api/v3/series response.
+type SeriesStatistics struct {
+	EpisodeFileCount int `json:"episodeFileCount,omitempty"`
+	EpisodeCount     int `json:"episodeCount,omitempty"`
 }
 
 // MovieFile is the subset of Radarr's movieFile we need to identify a
@@ -501,13 +513,27 @@ func (c *Client) UpdateMovieFileReleaseGroup(ctx context.Context, movieFileID in
 // releases like S01E05E06). Used to filter series-level history down
 // to events relevant to THIS specific file when recovering.
 type EpisodeFile struct {
-	ID            int           `json:"id"`
-	SeriesID      int           `json:"seriesId"`
-	SeasonNumber  int           `json:"seasonNumber"`
-	RelativePath  string        `json:"relativePath"`
-	SceneName     string        `json:"sceneName"`
-	ReleaseGroup  string        `json:"releaseGroup"`
-	Episodes      []EpisodeRef  `json:"episodes,omitempty"`
+	ID           int          `json:"id"`
+	SeriesID     int          `json:"seriesId"`
+	SeasonNumber int          `json:"seasonNumber"`
+	RelativePath string       `json:"relativePath"`
+	SceneName    string       `json:"sceneName"`
+	ReleaseGroup string       `json:"releaseGroup"`
+	Episodes     []EpisodeRef `json:"episodes,omitempty"`
+	// Path is the absolute container-side path Sonarr reports for this
+	// file. Mirrors MovieFile.Path; populated on every modern Sonarr.
+	Path string `json:"path,omitempty"`
+	// Size in bytes — same role as MovieFile.Size (cache-key candidate
+	// if DV-detail ever lands for Sonarr; harmless to carry today).
+	Size int64 `json:"size,omitempty"`
+	// MediaInfo + Quality drive the M-Sonarr Audio/Video tag pipeline.
+	// Same shape as MovieFile (Sonarr returns identical JSON keys); the
+	// engine reads codec / channels / resolution / HDR per-episode and
+	// AggregateForSeries collapses to series-level tags. Quality.Quality
+	// .Resolution is the legacy-import fallback when MediaInfo is absent
+	// — onedr0p's tag-resolution.sh uses it for the same reason.
+	MediaInfo *MediaInfo `json:"mediaInfo,omitempty"`
+	Quality   *Quality   `json:"quality,omitempty"`
 }
 
 // EpisodeRef is just the ID — that's all the Sonarr recover flow needs

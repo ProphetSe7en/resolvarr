@@ -317,6 +317,104 @@ func hdrBuckets(raw string) []string {
 	return out
 }
 
+// EpisodeInput pairs one episode's mediaInfo with the
+// quality.quality.resolution fallback so the Aggregate*ForSeries
+// helpers don't need to take parallel slices. Quality.Quality
+// .Resolution is more reliable than mediaInfo.Height on legacy Sonarr
+// imports (onedr0p's tag-resolution.sh ships this assumption); we keep
+// it as the explicit fallback path here.
+type EpisodeInput struct {
+	Info              MediaInfo
+	QualityResolution int
+}
+
+// MediaSummary surfaces the bucket-resolved values a single mediaInfo
+// blob would produce — used by the Sonarr scan handler's per-episode
+// drill-in card so the UI doesn't have to re-implement bucket logic.
+// Mirror of the values that drive AudioTagsForFile + VideoTagsForFile;
+// kept thin so the wire payload stays compact.
+type MediaSummary struct {
+	Resolution    string  // "1080p" / "" — resolutionBucket label
+	VideoCodec    string  // "h265" / "" — codecBucket label
+	HDR           string  // "sdr" / "hdr10" / "dv" / etc — first bucket from hdrBuckets
+	VideoBitDepth int     // raw int (8 / 10) — UI derives 10bit-tag visibility
+	AudioCodec    string  // audioCodecBucket label
+	AudioChannels string  // audioChannelsBucket label ("7-1" / "5-1" / etc)
+	HasAtmos      bool    // hasAtmos result (incl. filename-token fallback)
+}
+
+// SummariseMediaInfo collapses one MediaInfo + qualityResolution
+// fallback into the bucket strings the UI surfaces in drill-in views.
+// Pure function; no I/O. Calls the same bucket helpers the engine's
+// emit-side uses so the drill-in copy matches the tag emission.
+func SummariseMediaInfo(mi MediaInfo, qualityResolution int) MediaSummary {
+	hdr := ""
+	if buckets := hdrBuckets(mi.VideoDynamicRangeType); len(buckets) > 0 {
+		hdr = buckets[0]
+	}
+	return MediaSummary{
+		Resolution:    resolutionBucket(mi.Height, qualityResolution),
+		VideoCodec:    codecBucket(mi.VideoCodec),
+		HDR:           hdr,
+		VideoBitDepth: mi.VideoBitDepth,
+		AudioCodec:    audioCodecBucket(mi.AudioCodec),
+		AudioChannels: audioChannelsBucket(mi.AudioChannels),
+		HasAtmos:      hasAtmos(mi.AudioAdditionalFeatures, mi.RelativePath, mi.SceneName),
+	}
+}
+
+// AggregateAudioForSeries emits series-level audio tags from a list
+// of per-episode mediaInfo blobs. Audio config carries a SINGLE
+// SonarrAggregation strategy that applies across the codec / channels
+// / atmos sub-vocabularies (one bucket → one strategy). Caller should
+// skip when cfg.Audio.Enabled == false.
+//
+// Returns the deduped, aggregated tag-list — already prefix-applied.
+// Empty input → nil.
+func AggregateAudioForSeries(eps []EpisodeInput, cfg AudioTagsConfig) []string {
+	if !cfg.Audio.Enabled || len(eps) == 0 {
+		return nil
+	}
+	perEp := make([][]string, 0, len(eps))
+	for _, e := range eps {
+		perEp = append(perEp, AudioTagsForFile(e.Info, cfg))
+	}
+	return AggregateForSeries(perEp, cfg.Audio.SonarrAggregation)
+}
+
+// AggregateVideoForSeries emits series-level video tags. Each of the
+// three sub-buckets (Resolution / Codec / HDR) carries its own
+// SonarrAggregation, so we evaluate per-bucket and concat — a series
+// can end up with HDR-strict + Resolution-all-occurring at once. The
+// HDR-strict default means a series with mixed HDR/SDR episodes won't
+// claim "this series is HDR" unless every episode is.
+//
+// Single-bucket config-clones avoid emitting tags from disabled
+// buckets at the per-episode step — keeps the perEp lists clean before
+// they hit AggregateForSeries.
+func AggregateVideoForSeries(eps []EpisodeInput, cfg VideoTagsConfig) []string {
+	if len(eps) == 0 {
+		return nil
+	}
+	var out []string
+
+	bucketRun := func(b BucketConfig, only VideoTagsConfig) {
+		if !b.Enabled {
+			return
+		}
+		perEp := make([][]string, 0, len(eps))
+		for _, e := range eps {
+			perEp = append(perEp, VideoTagsForFile(e.Info, e.QualityResolution, only))
+		}
+		out = append(out, AggregateForSeries(perEp, b.SonarrAggregation)...)
+	}
+
+	bucketRun(cfg.Resolution, VideoTagsConfig{Resolution: cfg.Resolution})
+	bucketRun(cfg.Codec, VideoTagsConfig{Codec: cfg.Codec})
+	bucketRun(cfg.HDR, VideoTagsConfig{HDR: cfg.HDR})
+	return out
+}
+
 // AggregateForSeries collapses a per-episode tag set into a series-
 // level set per the chosen strategy. Used by the Sonarr scan path —
 // Radarr doesn't aggregate (per-file tagging) and calls *TagsForFile

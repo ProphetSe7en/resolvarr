@@ -156,10 +156,12 @@ func (s *Server) handleScanRun(w http.ResponseWriter, r *http.Request) {
 		// every action supported
 	case "sonarr":
 		switch req.Action {
-		case "recover":
-			// supported
+		case "recover", "audiotags", "videotags":
+			// supported — recover (M3c) + audio/video tags (M-Sonarr).
+			// Audio/video walk series → episodefiles, aggregate per-bucket
+			// using SonarrAggregation, apply at series level.
 		default:
-			writeError(w, 501, "Sonarr is supported for: recover. Other actions are coming as separate milestones.")
+			writeError(w, 501, "Sonarr is supported for: recover, audiotags, videotags. Other actions are coming as separate milestones.")
 			return
 		}
 	default:

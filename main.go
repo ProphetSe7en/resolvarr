@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -103,7 +104,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("static embed: %v", err)
 	}
-	mux.Handle("GET /", http.FileServer(http.FS(staticFS)))
+	// Process <!--#include "path"--> markers in index.html so duplicated
+	// markup blocks (e.g. the Recover result panel that's rendered on
+	// the Run mode + Release Groups sub-tabs) live in a single
+	// partials/ file. Substitution runs once at startup; the result is
+	// cached and served directly. partials/ stays under static/ so the
+	// /partials/<name>.html URLs are still reachable for debugging.
+	indexBytes, indexErr := readProcessedIndex(staticFS)
+	if indexErr != nil {
+		log.Fatalf("process index.html includes: %v", indexErr)
+	}
+	mux.Handle("GET /", indexHandler(indexBytes, http.FileServer(http.FS(staticFS))))
 
 	// Middleware chain, outermost first:
 	//   SecurityHeaders → CSRF → Auth → mux
@@ -115,11 +126,26 @@ func main() {
 	handler = authStore.CSRFMiddleware(handler)
 	handler = auth.SecurityHeadersMiddleware(handler)
 
+	// WriteTimeout intentionally disabled (0 = no timeout). DV detail
+	// scans on libraries with bypass-cache or freshly-cleared cache can
+	// take 30+ seconds (one ffmpeg+dovi_tool extraction per file × N
+	// files). A 30-second server WriteTimeout would close the
+	// connection mid-scan; the handler keeps running server-side
+	// (writes the dump + audit) but the browser sees the response
+	// fetch reject mid-flight, which triggers a second POST/api/scan/run
+	// from one of: chain-runner error-recovery, browser-level
+	// retry-on-network-error, or Alpine's reactive cascade catching
+	// the rejected promise. Per-handler context timeouts already cap
+	// runtime safely (scanTimeout=60s for tag/discover/audio/video,
+	// DvDetailScanTimeout=30min for DV). IdleTimeout still trims
+	// stale-keep-alive connections so this isn't a connection-leak
+	// vector. ReadTimeout caps how long we'll wait for the request
+	// body (request bodies are small JSON, 15s is plenty).
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: 0,
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -143,6 +169,55 @@ func main() {
 	if app != nil && app.RunLog != nil {
 		app.RunLog.Close()
 	}
+}
+
+// includeRE matches `<!--#include "path"-->` markers in index.html.
+// Path is relative to the static FS root (i.e. "partials/foo.html"
+// resolves to "ui/static/partials/foo.html" before fs.Sub stripped the
+// prefix). Whitespace inside the marker is tolerated so the source HTML
+// stays readable.
+var includeRE = regexp.MustCompile(`(?s)<!--\s*#include\s+"([^"]+)"\s*-->`)
+
+// readProcessedIndex reads ui/static/index.html, recursively substitutes
+// every <!--#include "path"--> marker with the contents of that path
+// from the same FS, and returns the processed bytes. Recursion is
+// shallow (one round-trip) — partials don't include other partials.
+// A missing partial logs and leaves the marker in place so the rest of
+// the page still renders.
+func readProcessedIndex(staticFS fs.FS) ([]byte, error) {
+	raw, err := fs.ReadFile(staticFS, "index.html")
+	if err != nil {
+		return nil, err
+	}
+	processed := includeRE.ReplaceAllFunc(raw, func(match []byte) []byte {
+		m := includeRE.FindSubmatch(match)
+		if m == nil {
+			return match
+		}
+		path := string(m[1])
+		partial, perr := fs.ReadFile(staticFS, path)
+		if perr != nil {
+			log.Printf("warning: include not found: %s (%v) — leaving marker in place", path, perr)
+			return match
+		}
+		return partial
+	})
+	return processed, nil
+}
+
+// indexHandler serves the processed index.html for "/" and "/index.html"
+// requests, and falls through to the file-server for everything else
+// (JS, CSS, images, partials/*).
+func indexHandler(indexBytes []byte, fileServer http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache")
+			_, _ = w.Write(indexBytes)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 // initAuth loads auth policy from the resolvarr.json config store, applies
