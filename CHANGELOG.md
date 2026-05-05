@@ -1,5 +1,87 @@
 # Changelog
 
+## v0.3.7-dev — Library scan restructure + wizards on Step 1 (2026-05-05)
+
+### What you get
+
+- **Library scan is simpler.** Tag library + Release Groups + Recover
+  folded into one **Tag Release Groups** sub-tab. The standalone Tag
+  library card is replaced by a guided 4-step **Tag release groups**
+  wizard (Choices → Filter → Active groups → Review) that walks you
+  through the picks. The Filters sub-tab is gone — filter config lives
+  inside the wizard now, where it matters. Audio / Video / DV detail
+  sub-tabs are renamed **Tag Audio** / **Tag Video** /
+  **Tag DV Details** for naming consistency.
+
+- **Pick the instance inside the wizard.** Click "Tag release groups"
+  without pre-selecting an instance — the wizard's first step has
+  the picker. Single-instance setups skip it (no choice to make).
+  Matches how Quick fix-all already worked.
+
+- **Run mode is on Step 1 in both wizards now, defaulting to
+  Preview.** Pick Preview / Apply up-front, then configure the
+  rest — no more digging for the run-mode radio after building
+  the chain. Promote a preview to apply via the result panel's
+  Apply now button.
+
+- **Tag inventory — Select unused.** New button picks every tag
+  with 0 movies/series AND no references in Lists, Custom Formats,
+  Notifications, etc. Pairs with Delete selected so you can sweep
+  orphans without hitting the per-tag block banner.
+
+- **Tag inventory — pre-delete reference check.** Deleting a tag
+  used by a List or Custom Format now warns you BEFORE you submit
+  ("Used by 2 Lists, 1 Custom Format on Radarr") instead of returning
+  a cryptic Arr error after the fact.
+
+- **Tag rename — per-app-type input rules.** Characters that the
+  target Arr won't accept get blocked as you type. Radarr is strict
+  (a-z, 0-9, hyphens only — uppercase auto-lowercased); Sonarr
+  accepts spaces / unicode / punctuation but lowercases on save.
+  No more silent rename failures from invalid characters.
+
+- **Result panel filter chips look like filters now.** The
+  Add / Remove / Keep buttons on the Tag / Audio / Video / DV
+  result panels were styled like action buttons but actually filter
+  the result list — pill-shaped now with a "Show movies where tag
+  will be:" prefix and ± / = symbols, so the function is obvious
+  at a glance.
+
+- **Recover (standalone) honest summary.** No more misleading
+  "419 movies needing recovery" when most of them are actually
+  unfixable; the summary now reads "Found X with empty or
+  Unknown release group" plus a breakdown of how many of those
+  are recoverable, flagged, or unfixable.
+
+### Bug fixes
+
+- Apply-mode Run scan no longer silently bails when there's no
+  prior preview — Apply runs against a fresh scan as it should.
+- Quick fix-all "no active groups" toast no longer fires when
+  Discover is enabled in the chain (Discover seeds the active list
+  at runtime, the gate now respects that).
+- Legacy testers persisting old sub-tab names (`tag` / `recover` /
+  `filters`) migrate forward to the new "Tag Release Groups" tab
+  instead of landing on a blank page after Force Update.
+- Tag rename now sends pre-lowercased to the Arr (matches what
+  Radarr/Sonarr store anyway and sidesteps a dedup race in
+  upstream code).
+- Several smaller fixes from a three-agent code review pass —
+  Alpine reactivity traps, wizard step deadlock when source
+  flipped, mixed-payload guards in the Recover-exclude API.
+
+### Coming next
+
+- **Apply now button on standalone Audio / Video / DV result
+  panels** (planned next batch). After a Preview scan you'll be
+  able to commit the changes with one click using the exact
+  settings that produced the preview.
+- **Import / webhook integration.** Bringing in the `tagarr_import`
+  flow so resolvarr can tag files automatically as they land in
+  Radarr/Sonarr, not just on library scan.
+
+---
+
 ## v0.3.6-dev — Sonarr support (2026-05-04)
 
 ### What you get

@@ -178,6 +178,28 @@
 .pill.purple { color: var(--accent-purple); background: var(--alpha-purple); }
 .pill-row { display: flex; gap: 6px; flex-wrap: wrap; }
 
+/* .filter-pill — clickable filter chip distinct from .btn so result-panel
+   filter rows ("Show: Add / Remove / Keep") don't read as action buttons.
+   Subtle border + transparent background in the resting state, blue-tint
+   fill when active. Hover lifts it slightly so it still feels actionable
+   without mimicking the heavier .btn style. .filter-label is the
+   "Show:" prefix that frames the row as filter UI. */
+.filter-row     { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.filter-label   { font-size: 11px; color: var(--text-muted-secondary); text-transform: uppercase; letter-spacing: 0.4px; margin-right: 4px; }
+.filter-pill    {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; font-size: 12px; line-height: 1.35;
+  border: 1px solid var(--border-subtle); border-radius: 12px;
+  background: transparent; color: var(--text-secondary); cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  font-family: inherit;
+}
+.filter-pill:hover           { background: var(--bg-muted); color: var(--text-body); }
+.filter-pill:disabled        { opacity: 0.45; cursor: not-allowed; }
+.filter-pill.is-active       { background: var(--alpha-blue); color: var(--accent-sky); border-color: var(--accent-blue-strong); font-weight: 600; }
+.filter-pill .filter-symbol  { font-weight: 600; opacity: 0.85; font-variant-numeric: tabular-nums; }
+.filter-pill .filter-count   { opacity: 0.7; font-variant-numeric: tabular-nums; }
+
 /* Key/value rendering inside .card-body — tiny uppercase label above the
    value. Used for "Last run" / "Next run" / "Match" / etc. */
 .kv { display: flex; flex-direction: column; gap: 2px; }
