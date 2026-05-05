@@ -31,7 +31,7 @@
     <div class="logo">Resolvarr</div>
     <div class="version" x-text="'v' + version"></div>
     <div class="tabs">
-      <div class="tab" :class="currentPage === 'scan' && 'active'" @click="setCurrentPage('scan'); initScan()">Library scan</div>
+      <div class="tab" :class="currentPage === 'scan' && 'active'" @click="setCurrentPage('scan'); initScan()">Tag Library</div>
       <div class="tab" :class="currentPage === 'tags' && 'active'" @click="setCurrentPage('tags'); if (!tagsInstanceId && instances.length > 0) { tagsInstanceId = instances[0].id; loadTags(); }">Tag inventory</div>
       <!-- Future-feature tabs — disabled placeholders so test users can see what's coming.
            Roadmap source: dev/analysis/post-M3d-roadmap.md.
@@ -470,8 +470,8 @@
        on the right. The sidebar is always visible while working in any sub-tab — no
        travel-to-top to switch. -->
   <div class="page" x-show="currentPage === 'scan'" x-cloak>
-    <div class="section-title">Library scan</div>
-    <div class="section-subtitle">Tag your library by release group, recover missing groups from grab history, and apply mediaInfo-based tags. Pick the app type and instance below; the sub-tabs adapt to what each app supports.</div>
+    <div class="section-title">Tag Library</div>
+    <div class="section-subtitle">Manage tags across your library. Each sub-tab covers one tagging surface — release-group tagging (with Discover + Recover actions), audio / video / Dolby Vision tags, plus the filters and history that drive them. Pick the app type and instance below; the sub-tabs adapt to what each app supports.</div>
 
     <!-- App-type pills — same pattern as Tag inventory. Picks Radarr or
          Sonarr at the page level; the instance dropdown filters to that
@@ -518,7 +518,7 @@
           <span>Pick an instance to enable Run scan, Quick fix-all, schedules, and per-tab settings.</span>
         </template>
         <template x-if="scanInstanceId && scanAppType === 'sonarr'">
-          <span style="color:var(--text-secondary)"><strong x-text="activeInstance() && activeInstance().name"></strong> — Sonarr supports Recover, Audio tags and Video tags (series-level aggregation). Tag library / Discover / DV detail land per future milestones.</span>
+          <span style="color:var(--text-secondary)"><strong x-text="activeInstance() && activeInstance().name"></strong> — Sonarr supports Recover, Tag Audio and Tag Video (series-level aggregation). Tag release groups (Discover + tag) and Tag DV Details land per future milestones.</span>
         </template>
         <template x-if="scanInstanceId && scanAppType === 'radarr'">
           <span>Configured: <strong x-text="activeInstance() && activeInstance().name"></strong>. Switching here updates every sub-tab.</span>
@@ -544,29 +544,27 @@
         <template x-if="scanSectionVisible('run')">
           <div class="settings-nav" :class="scanSection === 'run' && 'settings-nav-active'" @click="setScanSection('run')">Run mode</div>
         </template>
-        <template x-if="scanSectionVisible('tag')">
-          <div class="settings-nav" :class="scanSection === 'tag' && 'settings-nav-active'" @click="setScanSection('tag')" title="Library scan → Tag library (release-group tags)">Tag library</div>
-        </template>
         <template x-if="scanSectionVisible('groups')">
-          <div class="settings-nav" :class="scanSection === 'groups' && 'settings-nav-active'" @click="setScanSection('groups'); loadGroups()">
-            Release Groups
+          <div class="settings-nav" :class="scanSection === 'groups' && 'settings-nav-active'" @click="setScanSection('groups'); loadGroups()" title="Tag movies/series by release group — Active list + Discover + Recover + Tag run all live here.">
+            Tag Release Groups
             <template x-if="groups.length > 0"><span class="count" x-text="groups.filter(g => g.enabled).length"></span></template>
           </div>
         </template>
-        <template x-if="scanSectionVisible('filters')">
-          <div class="settings-nav" :class="scanSection === 'filters' && 'settings-nav-active'" @click="setScanSection('filters')">Filters</div>
-        </template>
-        <template x-if="scanSectionVisible('recover')">
-          <div class="settings-nav" :class="scanSection === 'recover' && 'settings-nav-active'" @click="setScanSection('recover')" title="Library scan → Recover missing release groups (walks Sonarr grab history)">Recover</div>
-        </template>
+        <!-- Filters sub-tab REMOVED 2026-05-05.
+             Filter persistence moved into the Tag release groups
+             wizard (each toggle calls saveFilters() on change) and
+             the standalone "Find unused tags" action moved under
+             Active groups. The standalone Filters page is no longer
+             reachable from the sidebar. -->
+
         <template x-if="scanSectionVisible('audio')">
-          <div class="settings-nav" :class="scanSection === 'audio' && 'settings-nav-active'" @click="setScanSection('audio')" title="Library scan → Audio tags (codec / channels / atmos)">Audio tags</div>
+          <div class="settings-nav" :class="scanSection === 'audio' && 'settings-nav-active'" @click="setScanSection('audio')" title="Tag Audio — codec / channels / atmos from mediaInfo">Tag Audio</div>
         </template>
         <template x-if="scanSectionVisible('video')">
-          <div class="settings-nav" :class="scanSection === 'video' && 'settings-nav-active'" @click="setScanSection('video')" title="Library scan → Video tags (resolution / codec / HDR)">Video tags</div>
+          <div class="settings-nav" :class="scanSection === 'video' && 'settings-nav-active'" @click="setScanSection('video')" title="Tag Video — resolution / codec / HDR from mediaInfo">Tag Video</div>
         </template>
         <template x-if="scanSectionVisible('dvdetail')">
-          <div class="settings-nav" :class="scanSection === 'dvdetail' && 'settings-nav-active'" @click="setScanSection('dvdetail')" title="Library scan → DV detail (Dolby Vision profile + CM tags). Requires ffmpeg + dovi_tool install.">DV detail</div>
+          <div class="settings-nav" :class="scanSection === 'dvdetail' && 'settings-nav-active'" @click="setScanSection('dvdetail')" title="Tag DV Details — Dolby Vision profile + CM-version tags via ffmpeg + dovi_tool">Tag DV Details</div>
         </template>
         <template x-if="scanSectionVisible('history')">
           <div class="settings-nav" :class="scanSection === 'history' && 'settings-nav-active'" @click="setScanSection('history')">History</div>
@@ -600,8 +598,8 @@
                   </ul>
                   <p>Standalone actions live on their own sub-tabs:</p>
                   <ul>
-                    <li><strong>Tag library</strong> — applies your release-group rules to every movie (own sub-tab in the sidebar).</li>
-                    <li><strong>Release Groups</strong> — find new groups (Discover) and recover missing ones (Recover). Both share the unified actions card at the top of that tab.</li>
+                    <li><strong>Tag Release Groups</strong> — find new groups (Discover), recover missing ones (Recover), and tag every movie that matches your Active Release Groups. The <em>Tag release groups</em> button there opens a short wizard that walks you through the choices.</li>
+                    <li><strong>Tag Audio / Tag Video / Tag DV Details</strong> — informative auto-tags from media-info (codec, channels, atmos, resolution, HDR, DV).</li>
                   </ul>
                   <p>Saved <strong>Rules</strong> live on the <strong>Run mode</strong> tab — that's where cron-fired rules + their history live. Adhoc scan results (saved automatically when you preview/apply) are on the <strong>History</strong> tab.</p>
                 </div>
@@ -611,13 +609,12 @@
                 </div>
                 <div class="help-section">
                   <h4>How it ties together</h4>
-                  <p>The actions on this tab read configuration from three sibling tabs:</p>
+                  <p>Configuration is shared across the actions on this tab:</p>
                   <ul>
-                    <li><strong>Release Groups</strong> — which groups to tag, how each behaves (filtered/simple), plus Discover scan to find new groups your filters approve.</li>
-                    <li><strong>Filters</strong> — quality + audio rules + the <strong>Cleanup unused tags</strong> action.</li>
-                    <li><strong>Extra tags</strong> — informative auto-tags from media-info (resolution, codec, audio, HDR).</li>
+                    <li><strong>Tag Release Groups</strong> — your Active list of groups + each one's mode (filtered / simple) + the Quality + Audio filters that gate filtered-mode tagging. The Cleanup-unused-tags option also lives there.</li>
+                    <li><strong>Tag Audio / Tag Video / Tag DV Details</strong> — per-bucket toggle, optional prefix, and per-value allow-list for each kind of informative tag.</li>
                   </ul>
-                  <p>All three are read live every time a scan or rule fires — change them and the next run picks up the new settings automatically.</p>
+                  <p>Settings are read live every time a scan or rule fires — change them and the next run picks up the new state automatically.</p>
                 </div>
               </div>
             </template>
@@ -632,7 +629,7 @@
                     <li><strong>Recover missing release groups</strong> — the standalone card below the launcher. Finds episode files whose release-group field is empty or "Unknown", looks up Sonarr's grab history for the parent series, and writes the recovered group back. Optionally triggers a rename so the on-disk filename reflects it.</li>
                     <li><strong>Audio tags / Video tags</strong> — sub-tabs in the sidebar. Walk every series → episode files, derive informative tags from each file's mediaInfo (codec / channels / atmos / resolution / HDR), aggregate per bucket using the configured strategy (default: all-occurring; HDR is strict by default — see Settings → Library scan → Audio/Video tags). Tags apply at SERIES level — Sonarr's tag model only supports series.tags, not season.tags or episode.tags. The drill-in result modal expands each series into its seasons and per-episode mediaInfo so you can see exactly which episodes contributed which tags to the aggregate.</li>
                   </ul>
-                  <p>Tag library, Discover and DV detail are still Radarr-only — they centre on filter-driven release-group tagging or per-file DV extraction that doesn't aggregate to series-level meaningfully. Those sub-tabs hide when Sonarr is the active app type.</p>
+                  <p>Tag Release Groups (Discover + tag) and Tag DV Details are still Radarr-only — they centre on filter-driven release-group tagging or per-file DV extraction that doesn't aggregate to series-level meaningfully. Those surfaces hide or stub when Sonarr is the active app type.</p>
                 </div>
                 <div class="help-section">
                   <h4>Preview vs Apply</h4>
@@ -971,7 +968,27 @@
              Radarr's Recover lives on Release Groups. Same backend
              (runRecoverCheck) and same recoverResults state — clicking
              Run Recover pops the unified Recover detail modal. -->
-        <div x-show="scanSection === 'recover'" x-cloak>
+        <!-- Sonarr Recover lives inside the unified Tag Release Groups
+             tab (scanSection === 'groups') after the 2026-05-05
+             restructure. Standalone 'recover' scanSection is no longer
+             reachable from the sidebar but kept in the gate so legacy
+             localStorage values still resolve. Implicit Sonarr-only:
+             scanSectionVisible returns false for 'groups' on Radarr's
+             Tag Release Groups context, so this block won't accidentally
+             render Sonarr-flavoured copy on a Radarr instance. -->
+        <div x-show="(scanSection === 'recover' || scanSection === 'groups') && scanAppType === 'sonarr'" x-cloak>
+          <!-- Sonarr-only orientation banner: explains what works today
+               on this tab vs what's coming with M-Sonarr. Same naming
+               (Tag Release Groups) on both Arr types so users moving
+               between them see consistent structure; this banner
+               clarifies the Sonarr-side gaps. -->
+          <div style="margin-bottom:14px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;font-size:13px;color:var(--text-secondary);line-height:1.5">
+            <strong style="color:var(--text-body)">Sonarr Tag Release Groups — what's available:</strong>
+            <ul style="margin:6px 0 0 18px;padding:0">
+              <li><strong style="color:var(--text-body)">Recover</strong> — works today (card below). Walks Sonarr's grab history per series, finds episode files with empty <code>releaseGroup</code>, and writes the recovered group back.</li>
+              <li><span style="color:var(--text-muted-secondary)">Tag release groups (Discover + tag) — <span style="color:var(--accent-orange)">coming with M-Sonarr</span>. Sonarr's per-episode-file model needs different aggregation than Radarr's per-movie walk; lands as a future milestone.</span></li>
+            </ul>
+          </div>
           <button class="help-toggle" :class="helpOpen.sonarrRecover && 'is-open'" @click="helpOpen.sonarrRecover = !helpOpen.sonarrRecover">
             <span class="help-icon">i</span>
             <span x-text="helpOpen.sonarrRecover ? 'Hide help' : 'How it works'"></span>
@@ -1006,7 +1023,9 @@
               <div style="flex:1;min-width:280px">
                 <div style="font-size:15px;font-weight:600;color:var(--text-primary)">Recover missing release groups</div>
                 <div style="font-size:13px;color:var(--text-secondary);margin-top:6px;line-height:1.5">
-                  Finds episode files in Sonarr whose release-group field is empty or <em>Unknown</em>, looks up the matching grab from Sonarr's history, and writes the group back. Tick <em>Trigger rename after fix</em> in the result panel before applying if you also want Sonarr to re-rename the files on disk so the filenames reflect the recovered group.
+                  Walks every episode file in Sonarr whose release-group field is empty or <em>Unknown</em>, looks up the matching grab in Sonarr's history, and works out which release group the file came from.
+                  <br><br>
+                  <strong style="color:var(--text-body)">Run Recover is read-only — nothing is written.</strong> It opens a result panel showing what could be fixed and why; in there you tick the rows you want, optionally tick <em>Trigger rename after fix</em>, and click <strong>Apply selected fixes</strong> to commit the changes. Apply is the only step that touches Sonarr.
                 </div>
               </div>
               <button class="btn btn-primary" @click="runRecoverCheck()" :disabled="!scanInstanceId || recoverLoading" style="white-space:nowrap;flex-shrink:0">
@@ -1028,83 +1047,45 @@
              Own sub-tab as of post-Pulje restructure. Help panel,
              setup-readiness banner, scan card, and Tag results panel
              all live here so the action is self-contained. -->
-        <div x-show="scanSection === 'tag'" x-cloak>
+        <!-- Tag library run-card lives inside the unified Tag Release
+             Groups tab (scanSection === 'groups') after the 2026-05-05
+             restructure. Radarr-only because the underlying Tag
+             pipeline is Radarr-only today. Standalone 'tag' scanSection
+             is no longer reachable from the sidebar but kept in the
+             gate for legacy localStorage values. -->
+        <div x-show="(scanSection === 'tag' || scanSection === 'groups') && scanAppType !== 'sonarr'" x-cloak>
 
-          <!-- Help toggle. -->
-          <button class="help-toggle" :class="helpOpen.tag && 'is-open'" @click="helpOpen.tag = !helpOpen.tag">
-            <span class="help-icon">i</span>
-            <span x-text="helpOpen.tag ? 'Hide help' : 'How it works'"></span>
-          </button>
-          <div class="help-panel" x-show="helpOpen.tag" x-cloak>
-            <div class="help-section">
-              <h4>What this does</h4>
-              <p>Goes through every movie in your Radarr library and tags it with its release-group name — the team named at the end of the filename (FLUX, SiC, TheFarm, etc.). The tag stays on the movie record so you can use it later in Custom Format scoring, Quality Profile filters, Plex categorization, or quick searches.</p>
-            </div>
-            <div class="help-section">
-              <h4>Configure these first</h4>
-              <ul>
-                <li><strong>Release Groups</strong> — the list of groups you want to track. Either add manually with <strong>+ Add</strong> or click <strong>Run Discover</strong> on that tab to surface groups in your library that pass your filters.</li>
-                <li><strong>Filters</strong> — quality / audio rules that gate which releases earn a tag for groups in <em>filtered</em> mode. Groups in <em>simple</em> mode skip the filter check and tag every release.</li>
-              </ul>
-              <p>The setup-readiness banner just below this help panel warns you when no release groups are active for the current instance.</p>
-            </div>
-            <div class="help-section">
-              <h4>Preview vs Apply</h4>
-              <p><strong>Preview</strong> reads your library and shows exactly which movies would gain or lose tags — nothing is written to Radarr. <strong>Apply</strong> commits the changes. Run Preview first if you're not sure; the result panel's <strong>Apply now</strong> button promotes the preview to apply without re-running the scan.</p>
-            </div>
-            <div class="help-section">
-              <h4>Multi-instance sync</h4>
-              <p>If you have a secondary Radarr (e.g. a 4K instance), check <strong>Also mirror decisions to</strong> in the card below. Resolvarr matches movies by TMDb ID and applies the same tag decisions to the secondary. Orphan cleanup runs automatically when sync is on, keeping the secondary aligned with the primary.</p>
-            </div>
-          </div>
+          <!-- Help-toggle for the 'tag' page-section was REMOVED
+               2026-05-05. The unified Tag Release Groups tab now has
+               only one "How it works" panel — the 'groups' section's
+               (line ~1175 below). Preview-vs-Apply + Multi-instance
+               sync content was merged into that panel. Kept the
+               x-show'd container div empty (rather than dropping it)
+               so the parent x-show gate keeps working without re-
+               structuring the markup tree. -->
 
-    <!-- ===== Setup-readiness banner =====
-         Surfaces config gaps BEFORE the user clicks Run scan and gets
-         a no-op result. Two checks: (1) at least one enabled Release
-         Group for this instance's type, (2) advisory note that
-         Filters defaults to all-strict (a fresh user with no Filter
-         tweak will get filtered-mode rules — explained inline). -->
-    <template x-if="scanAppType === 'radarr' && scanInstanceId && groupsFilteredByInstanceType().filter(g => g.enabled).length === 0">
-      <div style="background:var(--accent-orange-bg);border:1px solid var(--accent-orange);border-radius:8px;padding:14px 18px;margin-bottom:12px;color:var(--text-body);font-size:13px;line-height:1.5">
-        <div style="font-weight:600;margin-bottom:4px;color:var(--accent-orange)">⚠ No active release groups for this instance</div>
-        <div>Tag library has nothing to tag. Add at least one release group on the <strong>Release Groups</strong> tab — either manually with <strong>+ Add</strong> or by clicking <strong>Run Discover</strong> to scan your library for groups that pass your <strong>Filters</strong>.</div>
-      </div>
-    </template>
-    <template x-if="scanAppType === 'radarr' && scanInstanceId && groupsFilteredByInstanceType().filter(g => g.enabled).length > 0">
-      <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:10px 16px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-        <span style="color:var(--text-body);font-weight:500">Tag library uses settings from:</span>
-        <span><strong style="color:var(--accent-green)" x-text="groupsFilteredByInstanceType().filter(g => g.enabled).length"></strong> active <strong>Release Group<span x-show="groupsFilteredByInstanceType().filter(g => g.enabled).length !== 1">s</span></strong></span>
-        <span style="color:var(--text-muted-secondary)">·</span>
-        <span><strong>Filters</strong> running in
-          <span class="mode-chip" :class="(filters.quality || filters.audio) ? 'mode-filtered' : 'mode-simple'" style="vertical-align:baseline;font-size:11px;padding:1px 8px" x-text="(filters.quality || filters.audio) ? 'filtered' : 'simple'"></span>
-          mode
-        </span>
-        <span style="margin-left:auto;color:var(--text-muted-secondary)">change either on its tab</span>
-      </div>
-    </template>
+
+    <!-- Setup-readiness + status banners removed 2026-05-05.
+         Their copy referenced "Release Groups tab" + "Tag library tab"
+         as separate surfaces — both folded into Tag Release Groups
+         after the restructure. The 0-active-groups failguard moved
+         into the mini-wizard's step 1 (where it's actionable: switch
+         to Use Discover) instead of a top-of-page banner the user
+         can't easily act on. -->
+
 
     <!-- ===== Tag library card =====
-         Card-level options always visible (no toggle gate). Run scan button
-         implies tag mode — there's no other mode this card runs. Discover
-         lives on Release Groups → Find new groups, Recover has its own card,
-         and Quick fix-all chains them per its own toggles below.
-         Wrapped in radarr-only guard since Sonarr Tag library hasn't
-         been ported yet (per-episodefile aggregation is its own milestone). -->
-    <template x-if="scanAppType === 'radarr'">
-    <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;margin-bottom:12px">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
-        <div style="flex:1;min-width:240px">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <div style="font-size:15px;font-weight:600;color:var(--text-primary)">Tag library</div>
-            <span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;background:var(--alpha-orange);color:var(--accent-orange)">Requires Release Groups + Filters configured first</span>
-          </div>
-          <div style="font-size:13px;color:var(--text-secondary);margin-top:6px;line-height:1.5">Goes through every movie in your library and tags it based on which release group made the file — that's the team named at the end of the filename (FLUX, SiC, TheFarm, etc.). Uses your list under <strong>Release Groups</strong> to know which groups to tag, and the rules under <strong>Filters</strong> to gate the "filtered" groups (only premium-quality releases get tagged).<br><br><strong style="color:var(--accent-orange)">Configure those two tabs first</strong> — without at least one enabled Release Group this scan has nothing to tag, and the Filters decide which releases qualify. Once they're set, run this whenever you add a group, change filter rules, or just want to refresh tags across the whole library. <strong style="color:var(--text-body)">Preview</strong> shows what would change without saving; <strong style="color:var(--text-body)">Apply</strong> writes the tags to Radarr.</div>
-        </div>
-        <button class="btn btn-primary" @click="runLibraryScan()" :disabled="!scanInstanceId || scanLoading || groupsFilteredByInstanceType().filter(g => g.enabled).length === 0" style="white-space:nowrap;flex-shrink:0" :title="groupsFilteredByInstanceType().filter(g => g.enabled).length === 0 ? 'Add a release group first' : ''">
-          <span x-show="!scanLoading">Run scan</span>
-          <span x-show="scanLoading">Running…</span>
-        </button>
-      </div>
+         REMOVED 2026-05-05 — replaced by the "Tag release groups"
+         button in the three-button actions row below + the new
+         mini-wizard (openTagRgWizard) that walks the user through
+         Use active vs Use Discover + filter + active list. The
+         legacy Run scan button + scan-mode radio + sync + cleanup
+         options all live in the wizard now. State (scanMode,
+         scanSyncToSecondary, scanCleanupUnusedTags) is preserved so
+         the wizard can hydrate from / persist to the same Alpine
+         fields the legacy runLibraryScan reads. -->
+    <template x-if="false">
+    <div>
 
       <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">
         <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
@@ -1168,7 +1149,13 @@
         </div>
 
         <!-- ===== Release Groups (Active only — Discovered returns later with real data) ===== -->
-        <div x-show="scanSection === 'groups'" x-cloak>
+        <!-- Active groups list + Discover + Radarr Recover. Radarr-only
+             because release-group tagging needs the per-movieFile
+             walk Sonarr doesn't expose yet. Sonarr's "Tag Release
+             Groups" tab renders just the Sonarr Recover card (gated
+             above) — the Active list / Discover / Tag run blocks
+             stub-out on Sonarr. -->
+        <div x-show="scanSection === 'groups' && scanAppType !== 'sonarr'" x-cloak>
 
           <!-- Help toggle. -->
           <button class="help-toggle" :class="helpOpen.groups && 'is-open'" @click="helpOpen.groups = !helpOpen.groups">
@@ -1179,37 +1166,47 @@
             <div class="help-section">
               <h4>What is a release group?</h4>
               <p>The team that encoded or captured a release — names like <strong>FLUX</strong>, <strong>FraMeSToR</strong>, <strong>BHDStudio</strong>, <strong>SiC</strong>, <strong>TheFarm</strong>. They appear at the end of a filename after a hyphen: <code>Movie.2024.WEB-DL-FLUX</code>.</p>
-              <p>Different groups have different reputations. Some only release premium quality (lossless audio, studio-master sources). Others mix premium and standard. Resolvarr lets you tag the ones you want to track in Radarr.</p>
+              <p>Different groups have different reputations. Some only release premium quality (lossless audio, studio-master sources). Others mix premium and standard. Resolvarr lets you tag the ones you want to track.</p>
             </div>
+
             <div class="help-section">
-              <h4>Active groups list</h4>
-              <p>Each row is a group you want to track. When <strong>Tag library</strong> scans your library, every movie released by one of these groups gets the matching tag in Radarr. The mode column controls when the tag is applied:</p>
+              <h4>The three actions on this page</h4>
+              <ul>
+                <li><strong>Run Discover</strong> — walks your library and surfaces release groups that pass your <strong>Filters</strong> but aren't on the Active list yet. Result pops in a modal — review candidates, tick the ones you want, click <em>Add Selected</em>. Tick <em>Include configured</em> in the actions card for an audit-style view that also shows groups already on Active. <em>Radarr only today.</em></li>
+                <li><strong>Run Recover</strong> — finds movies whose release-group field is empty or <em>Unknown</em>, looks up the matching grab from history, and works out which group the file came from. Read-only — opens a result panel with would-fix / flagged / no-history / etc. buckets and per-row checkboxes; click <em>Apply selected fixes</em> to commit. Per-row Exclude lets you skip rows you can't fix in future scans.</li>
+                <li><strong>Tag release groups</strong> — opens a short wizard that walks you through Use active vs Use Discover, filter (mandatory), and Preview vs Apply. Then tags every movie that qualifies. The wizard replaces the legacy stand-alone Tag library card.</li>
+              </ul>
+            </div>
+
+            <div class="help-section">
+              <h4>Active groups list (below)</h4>
+              <p>Each row is a group you want to track. When the Tag run goes through your library, every movie released by an enabled group on this list gets the matching tag. The mode column controls when the tag is applied:</p>
               <ul>
                 <li><span class="mode-chip mode-filtered">filtered</span> — only tag releases that also pass your <strong>Filters</strong> rules. Use this for groups that release both premium and standard quality.</li>
                 <li><span class="mode-chip mode-simple">simple</span> — tag every release from the group, no quality check. Use this for groups where everything they release is premium (e.g. remux groups).</li>
               </ul>
             </div>
+
             <div class="help-section">
               <h4>Why tag by release group?</h4>
-              <p>You can use the resulting Radarr tags in:</p>
+              <p>You can use the resulting tags in:</p>
               <ul>
                 <li><strong>Quality Profiles</strong> — different upgrade rules per tag</li>
                 <li><strong>Custom Formats</strong> — score movies higher/lower based on tag</li>
-                <li><strong>Plex/Jellyfin collections</strong> — via Kometa or DAPS</li>
+                <li><strong>Plex / Jellyfin collections</strong> — via Kometa or DAPS</li>
                 <li><strong>Tag-driven cleanup tools</strong> — auto-remove movies based on tag (third-party)</li>
               </ul>
-              <p>A common pattern is a shared <code>premium</code> tag across several groups (FLUX + SiC + TheFarm) so all your downstream automation just checks one tag.</p>
+              <p>A common pattern is a shared <code>premium</code> tag across several groups (FLUX + SiC + TheFarm) so downstream automation just checks one tag.</p>
             </div>
+
             <div class="help-section">
-              <h4>Find new groups (Run Discover)</h4>
-              <p>The <strong>Run Discover</strong> button in the Library scan actions card at the top walks your library and surfaces groups that aren't on Active yet but consistently meet your <strong>Filters</strong> rules. Result pops in a modal so the Active list doesn't scroll off-screen — review candidates, tick the ones you want, click <em>Add Selected</em>. Tick <em>Include configured</em> for an audit-style view that also shows groups already on Active (useful for verifying your filter rules behave as expected). <em>Radarr only — Sonarr Discover lands with the per-episode-file walk milestone.</em></p>
+              <h4>Preview vs Apply</h4>
+              <p>The Tag release groups wizard's last step (Review) gives you the choice. <strong>Preview</strong> reads your library and shows exactly which movies would gain or lose tags — nothing is written. <strong>Apply</strong> commits. Run Preview first if you're not sure; the result panel has an <strong>Apply now</strong> button to promote the preview to apply without re-running the wizard.</p>
             </div>
+
             <div class="help-section">
-              <h4>Recover missing release groups (Run Recover)</h4>
-              <p>Some movies arrive with no release group on file — usually because the indexer didn't put it in the filename. That breaks Custom Format scoring and can make Radarr re-grab the same release in an upgrade loop. <strong>Run Recover</strong> finds those movies and recovers the missing group from grab history, then writes it back.</p>
-              <p>Results appear in a modal split into clear buckets (would-fix, fixed, fix-failed, flagged, no-RlsGroup, no-history, failed-verify) with per-row checkboxes so you can deselect any movies you don't want to apply. Optionally tick "Trigger Radarr rename after fix" to re-run the on-disk rename so filenames reflect the recovered group.</p>
-              <p><strong>Exclude</strong>: each row has an Exclude button. Some movies just can't be fixed — the indexer dropped the group and the grab history doesn't help. Click Exclude to skip them in future scans entirely. Excluded movies live in a <em>Show excluded</em> panel at the bottom of the result; click <em>Include again</em> on any row to bring it back.</p>
-              <p><em>Sonarr Recover lives on its own Recover sub-tab when a Sonarr instance is selected — Sonarr doesn't see this Release Groups tab.</em></p>
+              <h4>Mirror decisions to a secondary instance</h4>
+              <p>If you have a secondary Radarr (e.g. a 4K instance), tick <strong>Mirror tag decisions to secondary</strong> on step 1 of the wizard. Resolvarr matches movies by TMDb ID and applies the same tag decisions to the secondary. Orphan cleanup runs automatically when sync is on, so the secondary stays aligned with the primary.</p>
             </div>
           </div>
 
@@ -1231,25 +1228,26 @@
             </div>
           </div>
 
-          <!-- ===== Library scan actions =====
-               Unified Discover + Recover entry point. Both walk the
-               library; Discover surfaces new groups passing Filters,
-               Recover writes back missing release-groups from grab
-               history. Both stay accessible after either runs.
-               Recover moved here from Run mode 2026-05-03 — its
-               results panel renders below this card. Discover keeps
-               its modal-based result UI (see DiscoverResultsModal). -->
+          <!-- ===== Tag Release Groups actions =====
+               Three actions live here: Run Discover (find new groups),
+               Run Recover (fix missing release-group fields), and
+               Tag release groups (open the mini-wizard that walks
+               filter + active list / use-discover + sync + cleanup).
+               The wizard replaces the legacy stand-alone Tag library
+               card — same backend (runLibraryScan) but now gated
+               through user-confirmed wizard choices. -->
           <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;margin-bottom:16px">
             <div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap">
               <div style="flex:1;min-width:280px">
-                <div style="font-size:15px;font-weight:600;color:var(--text-primary)">Library scan actions</div>
+                <div style="font-size:15px;font-weight:600;color:var(--text-primary)">Tag Release Groups actions</div>
                 <div style="font-size:13px;color:var(--text-secondary);margin-top:6px;line-height:1.5">
-                  Walk your library to find or fix release-group data.
-                  <strong style="color:var(--text-body)">Discover</strong> surfaces groups passing your <strong>Filters</strong> that aren't on the Active list yet — review candidates in a modal and add the ones you want.
-                  <strong style="color:var(--text-body)">Recover</strong> finds movies (or episode files for Sonarr) whose release-group field is empty or "Unknown" and writes the missing group back from grab history. Both stay accessible after either runs.
+                  Three things you can do against your library here.
+                  <strong style="color:var(--text-body)">Run Discover</strong> surfaces release groups passing your <strong>Filters</strong> that aren't on the Active list yet — review candidates in a modal and add the ones you want.
+                  <strong style="color:var(--text-body)">Run Recover</strong> finds movies (or episode files for Sonarr) whose release-group field is empty or <em>Unknown</em> and writes the missing group back from grab history.
+                  <strong style="color:var(--text-body)">Tag release groups</strong> opens a short wizard that walks you through the filter + active-list choices, then tags every movie that qualifies.
                 </div>
               </div>
-              <div style="display:flex;flex-direction:column;gap:8px;min-width:220px">
+              <div style="display:flex;flex-direction:column;gap:8px;min-width:240px">
                 <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-body)" title="Default off — Discover only shows groups not already in Active. Turn on to audit your full filter-pass inventory (slower).">
                   <input type="checkbox" x-model="scanIncludeKnown">
                   <span>Include configured <span style="color:var(--text-secondary)">(Discover audit mode)</span></span>
@@ -1264,6 +1262,10 @@
                     <span x-show="recoverLoading">…</span>
                   </button>
                 </div>
+                <button class="btn btn-sm btn-primary" style="font-size:12px;padding:4px 12px;white-space:nowrap" @click="openTagRgWizard()" :disabled="scanAvailableInstances().length === 0 || scanLoading"
+                        :title="scanAvailableInstances().length === 0 ? 'Add a ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance in Settings → Instances first' : 'Walks you through Use active vs Use Discover, filter, and Preview vs Apply — pick the target instance inside the wizard'">
+                  Tag release groups
+                </button>
               </div>
             </div>
           </div>
@@ -1285,7 +1287,7 @@
               <div style="flex:1;min-width:280px">
                 <div class="settings-section-title">Active groups</div>
                 <div class="settings-section-desc">
-                  Each row is a release group you want to track. When <strong>Tag library</strong> scans your library, every movie released by one of these groups gets the matching tag. Use mode <strong>filtered</strong> for groups that mix premium + standard releases (only premium gets tagged — must pass <strong>Filters</strong>). Use <strong>simple</strong> for groups where everything is premium (every release tagged regardless of filters).
+                  Each row is a release group you want to track. When you run <strong>Tag release groups</strong>, every movie released by one of these groups gets the matching tag. Use mode <strong>filtered</strong> for groups that mix premium + standard releases (only premium gets tagged — must pass the Quality + Audio filters). Use <strong>simple</strong> for groups where everything is premium (every release tagged regardless of filters).
                 </div>
               </div>
               <button class="btn btn-sm" style="font-size:12px;padding:6px 14px;white-space:nowrap" @click="openGroupModal()" title="Manually add a release group">+ Add</button>
@@ -1397,6 +1399,44 @@
 
           <!-- Discover candidate panel renders in the top-level Discover
                detail modal once scanResults.discover is set. -->
+
+          <!-- ===== Cleanup unused tags =====
+               Moved here 2026-05-05 from the dropped Filters sub-tab.
+               Lives under Active groups because cleanup operates on
+               the Active list (only iterates labels from groups in
+               that list — never touches quality-profile / custom-
+               format / manually-created Radarr tags).
+               Safety invariant: only managed labels (Active list)
+               get checked for orphan-deletion. -->
+          <div style="margin-top:32px;padding-top:24px;border-top:1px solid var(--border-subtle)">
+            <div style="margin-bottom:12px">
+              <div class="settings-section-title">Cleanup unused tags</div>
+              <div class="settings-section-desc">Some of your release-group tags in Radarr may end up with 0 movies attached — usually because you removed a group from the Active list, tightened your filters, or every release got rejected. This finds those empty tags so you can delete them. Only touches tags from your Active groups list — quality-profile tags, custom-format tags, and anything you created manually in Radarr are never touched.</div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;padding:10px 12px;background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:6px;line-height:1.5">
+                <strong style="color:var(--text-body)">Safety:</strong> only touches tags whose label appears in your Active groups list. Quality-profile tags, custom-format tags, and manually-created Radarr tags are never iterated — even when their usage count is 0.
+              </div>
+            </div>
+
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:14px 16px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:16px">
+              <div style="flex:1;font-size:12px;color:var(--text-secondary)">
+                <template x-if="!scanInstanceId">
+                  <span>Pick an instance in the picker above to enable the cleanup check.</span>
+                </template>
+                <template x-if="scanInstanceId">
+                  <span>Will check <strong x-text="activeInstance() && activeInstance().name"></strong> for managed tags with 0 movies.</span>
+                </template>
+              </div>
+              <button class="btn btn-primary" @click="runCleanupCheck()" :disabled="!scanInstanceId || cleanupLoading" style="white-space:nowrap">
+                <span x-show="!cleanupLoading">Find unused tags</span>
+                <span x-show="cleanupLoading">Checking…</span>
+              </button>
+            </div>
+
+            <template x-if="cleanupError">
+              <div style="padding:10px 14px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;color:var(--accent-red);font-size:13px;margin-bottom:16px" x-text="cleanupError"></div>
+            </template>
+            <!-- Cleanup results render in the top-level Cleanup detail modal once cleanupResults is set. -->
+          </div>
 
   <!-- ===== Discover results modal =====
        Auto-pops when scanResults.discover is set (Run Discover, History
@@ -1714,19 +1754,25 @@
                  active-tag-filter pill on the right shows when a
                  breakdown row narrowed the list further; click × to
                  clear and return to the action-chip view. -->
-            <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px">
-              <span style="font-size:11px;color:var(--text-muted-secondary);text-transform:uppercase;letter-spacing:0.4px;margin-right:4px">Movies affected</span>
-              <button class="btn btn-sm" :class="qfaDetailAutoFilter === 'add' ? 'btn-primary' : ''" @click="qfaDetailAutoFilter = 'add'; clearAutoTagFilter()">
+            <div class="filter-row" style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px">
+              <span class="filter-label">Show movies where tags will be:</span>
+              <button class="filter-pill" :class="{ 'is-active': qfaDetailAutoFilter === 'add' }" @click="qfaDetailAutoFilter = 'add'; clearAutoTagFilter()"
+                      :title="qfaDetailAutoActive().mode === 'apply' ? 'Movies that just had tags added' : 'Movies that will get tags added on Apply'">
+                <span class="filter-symbol" style="color:var(--accent-green)">+</span>
                 <span x-text="qfaDetailAutoActive().mode === 'apply' ? 'Added' : 'Add'"></span>
-                <span style="margin-left:4px;opacity:0.7" x-text="'(' + qfaDetailAutoFilterCounts().add + ')'"></span>
+                <span class="filter-count" x-text="'(' + qfaDetailAutoFilterCounts().add + ')'"></span>
               </button>
-              <button class="btn btn-sm" :class="qfaDetailAutoFilter === 'remove' ? 'btn-primary' : ''" @click="qfaDetailAutoFilter = 'remove'; clearAutoTagFilter()">
+              <button class="filter-pill" :class="{ 'is-active': qfaDetailAutoFilter === 'remove' }" @click="qfaDetailAutoFilter = 'remove'; clearAutoTagFilter()"
+                      :title="qfaDetailAutoActive().mode === 'apply' ? 'Movies that just had tags removed' : 'Movies that will have tags removed on Apply'">
+                <span class="filter-symbol" style="color:var(--accent-red)">−</span>
                 <span x-text="qfaDetailAutoActive().mode === 'apply' ? 'Removed' : 'Remove'"></span>
-                <span style="margin-left:4px;opacity:0.7" x-text="'(' + qfaDetailAutoFilterCounts().remove + ')'"></span>
+                <span class="filter-count" x-text="'(' + qfaDetailAutoFilterCounts().remove + ')'"></span>
               </button>
-              <button class="btn btn-sm" :class="qfaDetailAutoFilter === 'keep' ? 'btn-primary' : ''" @click="qfaDetailAutoFilter = 'keep'; clearAutoTagFilter()">
+              <button class="filter-pill" :class="{ 'is-active': qfaDetailAutoFilter === 'keep' }" @click="qfaDetailAutoFilter = 'keep'; clearAutoTagFilter()"
+                      :title="'Movies whose tags already match — no changes needed'">
+                <span class="filter-symbol" style="color:var(--text-muted-secondary)">=</span>
                 <span x-text="qfaDetailAutoActive().mode === 'apply' ? 'Kept' : 'Keep'"></span>
-                <span style="margin-left:4px;opacity:0.7" x-text="'(' + qfaDetailAutoFilterCounts().keep + ')'"></span>
+                <span class="filter-count" x-text="'(' + qfaDetailAutoFilterCounts().keep + ')'"></span>
               </button>
               <template x-if="qfaDetailAutoTagFilter">
                 <span style="margin-left:8px;font-size:12px;display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:8px;background:var(--alpha-blue);color:var(--accent-sky)">
@@ -2024,19 +2070,25 @@
                  surfaces when a breakdown row narrowed the list to a
                  specific tag; click × to clear and return to the
                  action-chip view. -->
-            <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px">
-              <span style="font-size:11px;color:var(--text-muted-secondary);text-transform:uppercase;letter-spacing:0.4px;margin-right:4px">Movies affected</span>
-              <button class="btn btn-sm" :class="qfaDetailDvFilter === 'add' ? 'btn-primary' : ''" @click="qfaDetailDvFilter = 'add'; clearDvTagFilter()">
+            <div class="filter-row" style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px">
+              <span class="filter-label">Show movies where tags will be:</span>
+              <button class="filter-pill" :class="{ 'is-active': qfaDetailDvFilter === 'add' }" @click="qfaDetailDvFilter = 'add'; clearDvTagFilter()"
+                      :title="qfaDetailDv.mode === 'apply' ? 'Movies that just had DV tags added' : 'Movies that will get DV tags added on Apply'">
+                <span class="filter-symbol" style="color:var(--accent-green)">+</span>
                 <span x-text="qfaDetailDv.mode === 'apply' ? 'Added' : 'Add'"></span>
-                <span style="margin-left:4px;opacity:0.7" x-text="'(' + qfaDetailDvFilterCounts().add + ')'"></span>
+                <span class="filter-count" x-text="'(' + qfaDetailDvFilterCounts().add + ')'"></span>
               </button>
-              <button class="btn btn-sm" :class="qfaDetailDvFilter === 'remove' ? 'btn-primary' : ''" @click="qfaDetailDvFilter = 'remove'; clearDvTagFilter()">
+              <button class="filter-pill" :class="{ 'is-active': qfaDetailDvFilter === 'remove' }" @click="qfaDetailDvFilter = 'remove'; clearDvTagFilter()"
+                      :title="qfaDetailDv.mode === 'apply' ? 'Movies that just had DV tags removed' : 'Movies that will have DV tags removed on Apply'">
+                <span class="filter-symbol" style="color:var(--accent-red)">−</span>
                 <span x-text="qfaDetailDv.mode === 'apply' ? 'Removed' : 'Remove'"></span>
-                <span style="margin-left:4px;opacity:0.7" x-text="'(' + qfaDetailDvFilterCounts().remove + ')'"></span>
+                <span class="filter-count" x-text="'(' + qfaDetailDvFilterCounts().remove + ')'"></span>
               </button>
-              <button class="btn btn-sm" :class="qfaDetailDvFilter === 'keep' ? 'btn-primary' : ''" @click="qfaDetailDvFilter = 'keep'; clearDvTagFilter()">
+              <button class="filter-pill" :class="{ 'is-active': qfaDetailDvFilter === 'keep' }" @click="qfaDetailDvFilter = 'keep'; clearDvTagFilter()"
+                      :title="'Movies whose DV tags already match — no changes needed'">
+                <span class="filter-symbol" style="color:var(--text-muted-secondary)">=</span>
                 <span x-text="qfaDetailDv.mode === 'apply' ? 'Kept' : 'Keep'"></span>
-                <span style="margin-left:4px;opacity:0.7" x-text="'(' + qfaDetailDvFilterCounts().keep + ')'"></span>
+                <span class="filter-count" x-text="'(' + qfaDetailDvFilterCounts().keep + ')'"></span>
               </button>
               <template x-if="qfaDetailDvTagFilter">
                 <span style="margin-left:8px;font-size:12px;display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:8px;background:var(--alpha-blue);color:var(--accent-sky)">
@@ -2190,9 +2242,9 @@
   <div class="modal-overlay" x-show="scanResults.tag" x-cloak @click.self="dismissTagResults()" @keydown.escape.window="if (scanResults.tag) dismissTagResults()">
     <div class="modal" style="width:1200px;max-width:96vw;height:min(820px, 92vh);display:flex;flex-direction:column;padding:0">
       <div style="flex:0 0 auto;padding:14px 22px;border-bottom:1px solid var(--border-subtle);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <span style="font-size:11px;font-weight:500;background:var(--alpha-blue);color:var(--accent-sky);padding:2px 10px;border-radius:8px;text-transform:uppercase;letter-spacing:0.4px">Tag library</span>
+        <span style="font-size:11px;font-weight:500;background:var(--alpha-blue);color:var(--accent-sky);padding:2px 10px;border-radius:8px;text-transform:uppercase;letter-spacing:0.4px">Tag release groups</span>
         <div class="modal-title" style="margin:0">
-          <span x-text="scanResults.tag && scanResults.tag.instance ? scanResults.tag.instance.name : 'Tag library — detail'"></span>
+          <span x-text="scanResults.tag && scanResults.tag.instance ? scanResults.tag.instance.name : 'Tag release groups — detail'"></span>
         </div>
         <div style="flex:1"></div>
         <button class="btn btn-sm" @click="dismissTagResults()">Close</button>
@@ -2223,8 +2275,16 @@
     </div>
   </div>
 
-        <!-- ===== Filters ===== -->
-        <div x-show="scanSection === 'filters'" x-cloak>
+        <!-- ===== Filters page section =====
+             DROPPED from sidebar 2026-05-05. Filter persistence moved
+             into the Tag release groups wizard (saveFilters() called
+             on each toggle change there too) and the standalone
+             Cleanup action moved under Active groups on the Tag
+             Release Groups tab. The page section is gated to false
+             so its markup stays in tree for diff reference but is
+             never rendered. Can be removed in a polish pass once
+             the new structure is verified. -->
+        <div x-show="scanSection === 'filters' && false" x-cloak>
     <div style="max-width:820px">
 
           <!-- Help toggle. -->
@@ -2875,7 +2935,7 @@
           <div class="help-panel" x-show="helpOpen.history" x-cloak>
             <div class="help-section">
               <h4>What you do here</h4>
-              <p>This is the scan-history view. Every scan you run by hand — from Tag library, Release Groups (Discover / Recover), Filters (Cleanup), Audio tags, Video tags, DV detail, or Quick fix-all — saves a JSON dump under <code>/config/logs/scan-*.json</code>. Click any row to replay that result in its native panel without re-running the scan.</p>
+              <p>This is the scan-history view. Every scan you run by hand — from Tag Release Groups (Discover / Recover / tag / cleanup), Tag Audio, Tag Video, Tag DV Details, or Quick fix-all — saves a JSON dump under <code>/config/logs/scan-*.json</code>. Click any row to replay that result in its native panel without re-running the scan.</p>
               <p>Filter chips above the list narrow by action type. Retention follows the <strong>Settings → Logging</strong> Keep-days setting (default 14). The list is scoped to the currently-selected instance type — switch the instance picker at the top to flip the view.</p>
               <p><strong>Saved rules + their per-run history live on the Run mode tab</strong>, where they're created. This tab is purely for adhoc scan replays.</p>
             </div>
@@ -3012,12 +3072,326 @@
     </div>
   </template>
 
+  <!-- ============ TAG RELEASE GROUPS MINI-WIZARD ============
+       Replaces the legacy Tag library run-card. Four steps:
+         1) Choices  — Use active vs Use Discover + sync + cleanup
+         2) Filter   — gate: at least one Quality/Audio master must
+                       be on (mandatory by design — filter-less
+                       runs were the bloat-Active-list source).
+         3) Active groups — toggle Enabled per row. Skipped on
+                            "Use Discover" (the wizard banner notes
+                            Discover will augment this list at run-
+                            time per the Discover add-behavior).
+         4) Review   — Preview vs Apply + Run.
+       Backend: hands off to runLibraryScan once choices land in
+       the standard scanModes / scanMode / scanSyncToSecondary /
+       scanCleanupUnusedTags state. No new endpoint. -->
+  <div class="modal-overlay" x-show="tagRgWizard.open" x-cloak @click.self="closeTagRgWizard()" @keydown.escape.window="if (tagRgWizard.open) closeTagRgWizard()">
+    <div class="modal" style="width:680px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0">
+      <!-- Header — pinned. -->
+      <div style="flex:0 0 auto;padding:18px 22px 0">
+        <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px">
+          <div class="modal-title" style="margin:0">Tag release groups</div>
+          <div style="font-size:12px;color:var(--text-secondary)">
+            Step <span x-text="tagRgWizard.step + 1"></span> of <span x-text="tagRgWizardVisibleSteps().length"></span>
+          </div>
+        </div>
+        <!-- Step indicator strip -->
+        <div style="display:flex;gap:4px;font-size:11px;color:var(--text-muted-secondary);margin-top:4px">
+          <template x-for="(s, idx) in tagRgWizardVisibleSteps()" :key="s">
+            <span :style="idx === tagRgWizard.step ? 'color:var(--accent-blue);font-weight:600' : ''" x-text="s"></span>
+          </template>
+        </div>
+      </div>
+
+      <!-- Body — scrollable. -->
+      <div style="flex:1 1 auto;overflow-y:auto;padding:18px 22px">
+
+        <!-- ===== Step 1 — Choices ===== -->
+        <template x-if="tagRgWizardVisibleSteps()[tagRgWizard.step] === 'Choices'">
+          <div>
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:8px">
+              Tag every movie whose release-group passes the filter. Pick where the list of release-groups comes from, plus optional sync + cleanup.
+            </div>
+
+            <!-- Instance picker — visible when 2+ instances of the
+                 current Arr-type exist. Single-instance setups skip
+                 the picker (no choice to make); the wizard auto-
+                 seeded scanInstanceId on open. Binds directly to
+                 scanInstanceId so the page-level picker stays in
+                 sync — same behaviour as the QFA wizard. -->
+            <template x-if="scanAvailableInstances().length > 1">
+              <div class="form-group">
+                <label class="label" x-text="'Target ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance'"></label>
+                <select class="input" x-model="scanInstanceId" style="max-width:340px">
+                  <template x-for="inst in scanAvailableInstances()" :key="inst.id">
+                    <option :value="inst.id" x-text="inst.name"></option>
+                  </template>
+                </select>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:6px;line-height:1.5">The Active groups list, secondary-mirror target, and tag-state preview below all read from this instance.</div>
+              </div>
+            </template>
+            <!-- Single-instance: show a small "Targeting X" hint so
+                 the user can confirm what's about to run without a
+                 dropdown they can't change. -->
+            <template x-if="scanAvailableInstances().length === 1 && activeInstance()">
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;padding:8px 12px;background:var(--bg-page);border:1px dashed var(--border-subtle);border-radius:6px">
+                Targeting <strong x-text="activeInstance().name"></strong> — your only configured <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> instance.
+              </div>
+            </template>
+
+            <!-- Run mode — Preview / Apply. Lives on Step 1 so the
+                 user picks safety mode before configuring details,
+                 matching the QFA wizard's Basics layout. Default
+                 is Preview; the action button on Review reflects
+                 the choice ("Run preview" vs "Apply"). -->
+            <div class="form-group">
+              <label class="label">Run mode</label>
+              <div style="display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+                  <input type="radio" name="tagrg-mode" value="preview" x-model="tagRgWizard.runMode" style="accent-color:var(--accent-blue)">
+                  <span><strong>Preview</strong> <span style="color:var(--text-secondary)">— show what would change, write nothing. Recommended for first run.</span></span>
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+                  <input type="radio" name="tagrg-mode" value="apply" x-model="tagRgWizard.runMode" style="accent-color:var(--accent-blue)">
+                  <span><strong>Apply</strong> <span style="color:var(--text-secondary)" x-text="'— write tags to ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' immediately.'"></span></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="label">Source of release groups</label>
+              <div style="display:flex;flex-direction:column;gap:10px;padding:12px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                  <input type="radio" name="tagrg-source" value="active" x-model="tagRgWizard.source" @change="tagRgWizardClampStep()" style="accent-color:var(--accent-blue);margin-top:3px">
+                  <span>
+                    <strong>Use active groups</strong>
+                    <span style="color:var(--text-secondary)">— tag movies whose release group is on the Active list (you'll review the list in a later step).</span>
+                  </span>
+                </label>
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                  <input type="radio" name="tagrg-source" value="discover" x-model="tagRgWizard.source" @change="tagRgWizardClampStep()" style="accent-color:var(--accent-blue);margin-top:3px">
+                  <span>
+                    <strong>Use Discover</strong>
+                    <span style="color:var(--text-secondary)">— run Discover first to find every release group passing the filter, add them to the Active list, then tag. Augments the curated list before the tag pass.</span>
+                  </span>
+                </label>
+              </div>
+
+              <!-- Failguard: source==='active' AND no active groups
+                   exist for this instance type. The wizard can't
+                   proceed because the tag pass would be a no-op.
+                   Suggest switching to Use Discover with a one-click
+                   button — that's the actionable resolution. The
+                   Next-button gate further down also disables in
+                   this state. -->
+              <template x-if="tagRgWizard.source === 'active' && groupsFilteredByInstanceType().length === 0">
+                <div style="margin-top:10px;padding:10px 14px;background:var(--accent-orange-bg);border:1px solid var(--accent-orange);border-radius:6px;font-size:13px;color:var(--text-body);line-height:1.5">
+                  <div style="color:var(--accent-orange);font-weight:600;margin-bottom:4px">⚠ No active release groups configured</div>
+                  This instance has no release groups on the Active list yet, so <strong>Use active groups</strong> would tag nothing. Switch to <strong>Use Discover</strong> below to auto-find filter-passing groups, or close this wizard and add some manually with <strong>+ Add</strong> on the Active groups list before retrying.
+                  <div style="margin-top:8px">
+                    <button class="btn btn-sm btn-primary" @click="tagRgWizard.source = 'discover'; tagRgWizardClampStep()">Switch to Use Discover</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <!-- Sub-options when Use Discover picked: add behavior. -->
+            <template x-if="tagRgWizard.source === 'discover'">
+              <div class="form-group">
+                <label class="label">When Discover finds a new release group</label>
+                <div style="display:flex;flex-direction:column;gap:10px;padding:12px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
+                  <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                    <input type="radio" name="tagrg-discover-add" value="disabled" x-model="tagRgWizard.discoverAdd" style="accent-color:var(--accent-blue);margin-top:3px">
+                    <span>
+                      <strong>Add to Active list — leave disabled</strong>
+                      <span style="color:var(--text-secondary)">— new groups land on the Active list with Enabled off. Tag pass skips them until you turn them on. Safer first run.</span>
+                    </span>
+                  </label>
+                  <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                    <input type="radio" name="tagrg-discover-add" value="enabled" x-model="tagRgWizard.discoverAdd" style="accent-color:var(--accent-blue);margin-top:3px">
+                    <span>
+                      <strong>Add to Active list and enable</strong>
+                      <span style="color:var(--text-secondary)">— new groups land active. Tag pass right after will tag movies in those groups in this same run.</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </template>
+
+            <div class="form-group" x-show="tagRgWizardSecondaryAvailable()">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px">
+                <input type="checkbox" x-model="tagRgWizard.syncToSecondary" style="accent-color:var(--accent-blue)">
+                <span>Mirror tag decisions to secondary <span style="color:var(--text-secondary)" x-text="'(' + (tagRgWizardSecondaryName() || 'secondary') + ')'"></span></span>
+              </label>
+              <div style="font-size:12px;color:var(--text-secondary);margin:4px 0 0 26px;line-height:1.5">For every tag added or removed on this instance, the same change is applied to a movie with matching TmdbID on the secondary instance. Orphan cleanup on secondary runs as part of mirror so primary + secondary stay aligned.</div>
+            </div>
+
+            <div class="form-group" x-show="tagRgWizard.source === 'active'">
+              <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:14px">
+                <input type="checkbox" x-model="tagRgWizard.cleanupUnusedTags" style="accent-color:var(--accent-blue);margin-top:3px">
+                <span>
+                  Remove release-group tags that no longer match any movie
+                  <span style="color:var(--accent-red);font-weight:600">— destructive</span>
+                  <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;line-height:1.5">After the tag pass, any label from the Active list whose final usage drops to 0 gets deleted from <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>'s tag list. Only touches tags from the Active list — never manual / custom-format / quality-profile tags.</div>
+                </span>
+              </label>
+            </div>
+            <div class="form-group" x-show="tagRgWizard.source === 'discover'">
+              <div style="font-size:12px;color:var(--text-muted-secondary);padding:10px 14px;background:var(--bg-page);border:1px dashed var(--border-subtle);border-radius:6px;line-height:1.5">
+                Cleanup is only available with <strong>Use active groups</strong>. With Discover the Active list is being augmented this run — there's no curated boundary to scope cleanup against safely.
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- ===== Step 2 — Filter ===== -->
+        <template x-if="tagRgWizardVisibleSteps()[tagRgWizard.step] === 'Filter'">
+          <div>
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:8px">
+              At least one filter must be enabled to continue. Filters gate which releases earn a tag — only releases passing Quality + Audio rules qualify. The toggles below are the live filter config; changes save on each click and stay set as your defaults for next run.
+            </div>
+
+            <!-- All filter checkboxes call saveFilters() on change so
+                 changes persist immediately to backend (matches the
+                 dropped Filters sub-tab's behaviour). The wizard
+                 hydrates from this same global state on open, so a
+                 user changing filter here keeps it as their default
+                 for next open. -->
+            <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px;margin-bottom:10px">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text-primary);font-weight:500">
+                <input type="checkbox" x-model="filters.quality" @change="saveFilters()" style="accent-color:var(--accent-blue)">
+                Require a trusted WEB-DL source
+              </label>
+              <div style="color:var(--text-secondary);font-size:12px;margin:4px 0 10px 26px">Only releases from one of the enabled sources pass.</div>
+              <div style="margin-left:26px;display:flex;flex-direction:column;gap:5px">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.quality && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.maWebDL" @change="saveFilters()" style="accent-color:var(--accent-blue)"> MA (Movies Anywhere)
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.quality && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.playWebDL" @change="saveFilters()" style="accent-color:var(--accent-blue)"> Play (Google Play)
+                </label>
+              </div>
+            </div>
+
+            <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text-primary);font-weight:500">
+                <input type="checkbox" x-model="filters.audio" @change="saveFilters()" style="accent-color:var(--accent-blue)">
+                Require lossless audio
+              </label>
+              <div style="color:var(--text-secondary);font-size:12px;margin:4px 0 10px 26px">Lossy codecs always fail. Upmixed/transcoded audio rejected even with a lossless codec.</div>
+              <div style="margin-left:26px;display:flex;flex-direction:column;gap:5px">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.audio && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.trueHD" @change="saveFilters()" style="accent-color:var(--accent-blue)"> TrueHD
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.audio && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.trueHDAtmos" @change="saveFilters()" style="accent-color:var(--accent-blue)"> TrueHD Atmos
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.audio && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.dtsX" @change="saveFilters()" style="accent-color:var(--accent-blue)"> DTS:X
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.audio && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.dtsHDMA" @change="saveFilters()" style="accent-color:var(--accent-blue)"> DTS-HD Master Audio
+                </label>
+              </div>
+            </div>
+
+            <template x-if="!filters.quality && !filters.audio">
+              <div style="margin-top:10px;padding:8px 12px;background:var(--accent-orange-bg);border:1px solid var(--accent-orange);border-radius:6px;font-size:12px;color:var(--accent-orange)">
+                ⚠ At least one of Quality or Audio must be enabled to continue.
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- ===== Step 3 — Active groups (only when source === 'active') ===== -->
+        <template x-if="tagRgWizardVisibleSteps()[tagRgWizard.step] === 'Active groups'">
+          <div>
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:8px">
+              Toggle <strong>Enabled</strong> per row to control which groups participate in this run. Disabled groups stay on the list for later — they just won't tag anything this round.
+            </div>
+
+            <template x-if="groupsFilteredByInstanceType().length === 0">
+              <div style="padding:20px;text-align:center;color:var(--accent-orange);font-size:13px;border:1px dashed var(--accent-orange);border-radius:8px">
+                No release groups configured for this instance type. Add some via <strong>+ Add</strong> on the Active groups list, or pick <strong>Use Discover</strong> on step 1 to auto-find them.
+              </div>
+            </template>
+
+            <template x-if="groupsFilteredByInstanceType().length > 0">
+              <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden;background:var(--bg-card)">
+                <template x-for="(g, idx) in groupsFilteredByInstanceType()" :key="g.id">
+                  <div :style="{ background: idx % 2 === 0 ? 'var(--bg-page)' : 'var(--bg-card)' }" style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--bg-muted);font-size:13px">
+                    <input type="checkbox" :checked="g.enabled" @change="g.enabled = !g.enabled; saveGroup(g)" style="accent-color:var(--accent-blue)">
+                    <span style="font-weight:500;color:var(--text-body)" x-text="g.display"></span>
+                    <span style="color:var(--text-muted-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:12px" x-text="g.tag"></span>
+                    <div style="flex:1"></div>
+                    <span class="mode-chip" :class="g.mode === 'simple' ? 'mode-simple' : 'mode-filtered'" style="font-size:10px;padding:1px 8px" x-text="g.mode"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- ===== Step 4 — Review + Run ===== -->
+        <template x-if="tagRgWizardVisibleSteps()[tagRgWizard.step] === 'Review'">
+          <div>
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px">
+              Review your choices below. The Run-mode pick on Step 1 controls whether this scan writes — the action button bottom-right will say <strong>Run preview</strong> or <strong>Apply</strong> depending on that choice.
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:8px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:12px 14px;font-size:13px;color:var(--text-body);margin-bottom:14px">
+              <div x-show="activeInstance()"><strong>Target:</strong> <span x-text="activeInstance() ? activeInstance().name : ''"></span> <span style="color:var(--text-secondary)" x-text="'(' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ')'"></span></div>
+              <div><strong>Run mode:</strong>
+                <span :style="tagRgWizard.runMode === 'apply' ? 'color:var(--accent-green);font-weight:600' : 'color:var(--accent-sky);font-weight:600'"
+                      x-text="tagRgWizard.runMode === 'apply' ? 'Apply (writes changes)' : 'Preview (no writes)'"></span>
+              </div>
+              <div><strong>Source:</strong> <span x-text="tagRgWizard.source === 'discover' ? ('Discover (' + tagRgWizard.discoverAdd + ')') : 'Use active groups'"></span></div>
+              <div><strong>Filter:</strong> <span x-text="(filters.quality ? 'Quality on' : '') + (filters.quality && filters.audio ? ' · ' : '') + (filters.audio ? 'Audio on' : '')"></span></div>
+              <div x-show="tagRgWizard.source === 'active'"><strong>Active groups:</strong> <span x-text="groupsFilteredByInstanceType().filter(g => g.enabled).length"></span> of <span x-text="groupsFilteredByInstanceType().length"></span> enabled</div>
+              <div x-show="tagRgWizard.syncToSecondary"><strong>Sync:</strong> mirror to <span x-text="tagRgWizardSecondaryName()"></span></div>
+              <div x-show="tagRgWizard.cleanupUnusedTags"><strong>Cleanup:</strong> remove tags that no longer match</div>
+            </div>
+          </div>
+        </template>
+
+      </div>
+
+      <!-- Footer — pinned. -->
+      <div style="flex:0 0 auto;padding:14px 22px;border-top:1px solid var(--border-subtle);display:flex;align-items:center;gap:8px">
+        <button class="btn" @click="closeTagRgWizard()" :disabled="tagRgWizard.busy">Cancel</button>
+        <div style="flex:1"></div>
+        <button class="btn" @click="tagRgWizardPrev()" :disabled="tagRgWizard.step === 0 || tagRgWizard.busy">← Back</button>
+        <template x-if="tagRgWizard.step < tagRgWizardVisibleSteps().length - 1">
+          <button class="btn btn-primary" @click="tagRgWizardNext()" :disabled="!tagRgWizardCanAdvance() || tagRgWizard.busy">Next →</button>
+        </template>
+        <template x-if="tagRgWizard.step === tagRgWizardVisibleSteps().length - 1">
+          <button class="btn btn-primary" @click="runTagRgWizard()" :disabled="tagRgWizard.busy">
+            <span x-show="!tagRgWizard.busy" x-text="tagRgWizard.runMode === 'apply' ? 'Apply' : 'Run preview'"></span>
+            <span x-show="tagRgWizard.busy">Running…</span>
+          </button>
+        </template>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ AUDIO TAGS APPLY CONFIRM MODAL ============ -->
   <div class="modal-overlay" x-show="showAudioTagsApplyConfirm" x-cloak @click.self="showAudioTagsApplyConfirm = false" @keydown.escape.window="showAudioTagsApplyConfirm = false">
     <div class="modal" style="width:480px">
       <div class="modal-title">Apply Audio tags?</div>
+      <!-- Two-shape body: when a Preview run has already happened the
+           count is non-zero and we promise the exact write. When the
+           user picked Apply without Preview, count is 0 and we promise
+           the scan-then-write in one step. Sonarr instances see
+           "Sonarr"; Radarr (or unknown / direct-apply against a
+           Radarr-context tab) sees "Radarr". -->
       <div style="font-size:13px;color:var(--text-body);line-height:1.5;margin-bottom:16px">
-        This will write <strong x-text="audioTagsPendingChangeCount()"></strong> tag change<span x-show="audioTagsPendingChangeCount() !== 1">s</span> to Radarr based on the Preview above. New tags will be created automatically.
+        <template x-if="audioTagsPendingChangeCount() > 0">
+          <span>This will write <strong x-text="audioTagsPendingChangeCount()"></strong> tag change<span x-show="audioTagsPendingChangeCount() !== 1">s</span> to <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> based on the Preview above. New tags will be created automatically.</span>
+        </template>
+        <template x-if="audioTagsPendingChangeCount() === 0">
+          <span>This will scan your library and write Audio tags to <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> in one step (no Preview to compare against — pick Preview first if you'd rather see the changes before they land). New tags will be created automatically.</span>
+        </template>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn" @click="showAudioTagsApplyConfirm = false">Cancel</button>
@@ -3030,8 +3404,14 @@
   <div class="modal-overlay" x-show="showVideoTagsApplyConfirm" x-cloak @click.self="showVideoTagsApplyConfirm = false" @keydown.escape.window="showVideoTagsApplyConfirm = false">
     <div class="modal" style="width:480px">
       <div class="modal-title">Apply Video tags?</div>
+      <!-- Same two-shape body as Audio: pre-Preview vs no-Preview path. -->
       <div style="font-size:13px;color:var(--text-body);line-height:1.5;margin-bottom:16px">
-        This will write <strong x-text="videoTagsPendingChangeCount()"></strong> tag change<span x-show="videoTagsPendingChangeCount() !== 1">s</span> to Radarr based on the Preview above. New tags will be created automatically.
+        <template x-if="videoTagsPendingChangeCount() > 0">
+          <span>This will write <strong x-text="videoTagsPendingChangeCount()"></strong> tag change<span x-show="videoTagsPendingChangeCount() !== 1">s</span> to <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> based on the Preview above. New tags will be created automatically.</span>
+        </template>
+        <template x-if="videoTagsPendingChangeCount() === 0">
+          <span>This will scan your library and write Video tags to <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> in one step (no Preview to compare against — pick Preview first if you'd rather see the changes before they land). New tags will be created automatically.</span>
+        </template>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn" @click="showVideoTagsApplyConfirm = false">Cancel</button>
@@ -3239,22 +3619,36 @@
     </div>
   </div>
 
-  <!-- Delete release-group confirm modal (replaces native confirm()) -->
+  <!-- Delete release-group confirm modal (replaces native confirm()).
+       Copy answers the question testers actually ask: "what happens to
+       the movies that already have this tag?" Old wording said "the
+       tag stays in Radarr/Sonarr" without clarifying whether the
+       movies stay tagged or end up tagless / with an empty tag.
+       Spelled out below: nothing changes on the Arr side, this is
+       purely an unmanage. -->
   <div x-show="deleteGroupTarget" x-cloak class="modal-overlay" @click.self="deleteGroupTarget = null">
-    <div class="modal" style="width:460px">
+    <div class="modal" style="width:520px">
       <div class="modal-title">Remove release group?</div>
       <div style="font-size:13px;color:var(--text-body);line-height:1.55;margin-bottom:14px">
         <template x-if="deleteGroupTarget">
           <div>
-            About to remove <strong style="color:var(--text-primary)" x-text="deleteGroupTarget.display"></strong> (tag <code style="color:var(--text-secondary)" x-text="deleteGroupTarget.tag"></code>).
-            <div style="margin-top:8px;color:var(--text-secondary);font-size:12px">This only removes the entry from Resolvarr — the tag itself stays in Radarr/Sonarr until you delete it via the Tags page.</div>
+            About to remove <strong style="color:var(--text-primary)" x-text="deleteGroupTarget.display"></strong> (tag <code style="color:var(--text-secondary)" x-text="deleteGroupTarget.tag"></code>) from your Active list.
+            <div style="margin-top:10px;font-size:12px;color:var(--text-secondary);line-height:1.6">
+              <strong style="color:var(--text-body)">Nothing changes in Radarr / Sonarr right now:</strong>
+              <ul style="margin:4px 0 0 18px;padding:0">
+                <li>Movies / series that already have this tag <strong>keep it</strong>.</li>
+                <li>The tag itself <strong>stays in Radarr / Sonarr's tag list</strong>.</li>
+                <li>Resolvarr just stops managing it — future scans won't add or remove this tag.</li>
+              </ul>
+              <div style="margin-top:8px">If you want to also strip the tag from movies / series and delete it entirely, do that yourself in <strong>Radarr / Sonarr → Settings → Tags</strong> — deleting a tag there auto-removes it from every item that had it.</div>
+            </div>
           </div>
         </template>
       </div>
       <div class="modal-actions">
         <button class="btn" @click="deleteGroupTarget = null" :disabled="deleteGroupBusy">Cancel</button>
         <button class="btn btn-danger" @click="confirmDeleteGroup()" :disabled="deleteGroupBusy">
-          <span x-show="!deleteGroupBusy">Remove</span>
+          <span x-show="!deleteGroupBusy">Remove from Resolvarr</span>
           <span x-show="deleteGroupBusy">…</span>
         </button>
       </div>
@@ -3526,6 +3920,18 @@
                    style="accent-color:var(--accent-blue)">
             Select all
           </label>
+          <!-- Select unused — picks every tag with 0 movies AND no
+               non-item references (Lists / CFs / Notifications / etc.).
+               Pairs with Delete selected so the user can clean up
+               orphaned tags without hitting the per-tag blocker
+               banner inside the delete confirm. Disabled when the
+               result set is empty. -->
+          <button class="btn btn-sm"
+                  @click="selectUnusedTags()"
+                  :disabled="unusedSafelyDeletableCount() === 0"
+                  :title="unusedSafelyDeletableCount() === 0 ? 'No tags qualify — every tag either has movies attached OR is referenced elsewhere' : 'Select tags that have 0 movies and aren\'t used in any List, Custom Format, Notification, etc.'">
+            <span x-text="'Select unused (' + unusedSafelyDeletableCount() + ')'"></span>
+          </button>
           <div style="font-size:13px;color:var(--text-secondary)" x-text="tagsSelected.size + ' of ' + tags.length + ' selected'"></div>
           <div style="flex:1"></div>
           <!-- Cross-instance compare picker. Empty value → same-instance flow
@@ -4019,7 +4425,25 @@
       </div>
       <div class="form-group">
         <label>New label</label>
-        <input class="input" x-model="renameNewLabel" placeholder="new tag name" autocomplete="off" @keydown.enter="submitRename()">
+        <!-- :value + @input is the single-writer pattern. Pairing
+             x-model with an @input handler that mutates the same
+             field would race the cursor: x-model writes the raw
+             value, then @input writes the sanitised value, and
+             Alpine's value-sync pushes the cursor to end on every
+             keystroke — fine for tail-typing, ugly for paste/edit
+             in the middle. The input is fully controlled here. -->
+        <input class="input" :value="renameNewLabel" placeholder="new tag name" autocomplete="off" @keydown.enter="submitRename()"
+               @input="renameNewLabel = sanitizeTagInput($event.target.value, currentInstanceType())">
+        <template x-if="currentInstanceType() === 'radarr'">
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;line-height:1.5">
+            Radarr accepts <code style="background:var(--bg-muted);padding:1px 4px;border-radius:3px">a-z 0-9 -</code> only. Uppercase, spaces, and other characters are stripped as you type.
+          </div>
+        </template>
+        <template x-if="currentInstanceType() === 'sonarr'">
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;line-height:1.5">
+            Sonarr accepts any characters (spaces, periods, unicode all OK). Uppercase is lowercased as you type, matching how Sonarr stores it.
+          </div>
+        </template>
       </div>
 
       <!-- Merge indicator -->
@@ -4097,19 +4521,32 @@
                 @click="batchRenameMode = 'replace'">Find &amp; replace</button>
       </div>
 
-      <!-- Mode-specific inputs -->
+      <!-- Mode-specific inputs.
+           Prefix / Suffix / Replace go through sanitizeTagInput so the
+           TYPED value can't introduce illegal characters — Radarr-strict,
+           Sonarr-permissive (just lowercased). Find is a search pattern,
+           not a label, so it stays unfiltered — the user might genuinely
+           want to match a legacy uppercase or punctuated label. -->
       <template x-if="batchRenameMode === 'prefix'">
         <div class="form-group">
           <label>Prefix to add</label>
-          <input class="input" x-model="batchRenamePrefix" placeholder="e.g. old-" autocomplete="off">
-          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Prepended to every selected tag. Lowercase letters, digits and hyphens only.</div>
+          <input class="input" :value="batchRenamePrefix" placeholder="e.g. old-" autocomplete="off"
+                 @input="batchRenamePrefix = sanitizeTagInput($event.target.value, currentInstanceType())">
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px"
+               x-text="currentInstanceType() === 'radarr'
+                       ? 'Prepended to every selected tag. Radarr accepts a-z, 0-9 and hyphens only — other characters are stripped as you type.'
+                       : 'Prepended to every selected tag. Sonarr accepts any characters; uppercase is lowercased as you type.'"></div>
         </div>
       </template>
       <template x-if="batchRenameMode === 'suffix'">
         <div class="form-group">
           <label>Suffix to add</label>
-          <input class="input" x-model="batchRenameSuffix" placeholder="e.g. -old" autocomplete="off">
-          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">Appended to every selected tag. Lowercase letters, digits and hyphens only.</div>
+          <input class="input" :value="batchRenameSuffix" placeholder="e.g. -old" autocomplete="off"
+                 @input="batchRenameSuffix = sanitizeTagInput($event.target.value, currentInstanceType())">
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px"
+               x-text="currentInstanceType() === 'radarr'
+                       ? 'Appended to every selected tag. Radarr accepts a-z, 0-9 and hyphens only — other characters are stripped as you type.'
+                       : 'Appended to every selected tag. Sonarr accepts any characters; uppercase is lowercased as you type.'"></div>
         </div>
       </template>
       <template x-if="batchRenameMode === 'replace'">
@@ -4117,10 +4554,16 @@
           <div class="form-group" style="margin-bottom:0">
             <label>Find</label>
             <input class="input" x-model="batchRenameFind" placeholder="text to find" autocomplete="off">
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;line-height:1.5">Search pattern — case-sensitive substring against existing tag labels. Any character is allowed here.</div>
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label>Replace with</label>
-            <input class="input" x-model="batchRenameReplace" placeholder="replacement (leave blank to remove)" autocomplete="off">
+            <input class="input" :value="batchRenameReplace" placeholder="replacement (leave blank to remove)" autocomplete="off"
+                   @input="batchRenameReplace = sanitizeTagInput($event.target.value, currentInstanceType())">
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;line-height:1.5"
+                 x-text="currentInstanceType() === 'radarr'
+                         ? 'Radarr-safe characters only — invalid characters are stripped as you type.'
+                         : 'Any characters allowed; uppercase is lowercased as you type.'"></div>
           </div>
         </div>
       </template>
@@ -4197,6 +4640,29 @@
         </template>
       </div>
 
+      <!-- Pre-delete blocker banner. Radarr/Sonarr refuse to delete
+           a tag that's in use by Lists, Custom Formats, Notifications,
+           Quality Profiles, etc. — without a pre-check the user gets
+           a long cryptic 400 from the Arr API. Surfaces non-item
+           references explicitly so the user can fix them in
+           Radarr/Sonarr first. Delete button gates on this. -->
+      <template x-if="deleteBlockedTargets().length > 0">
+        <div style="margin-bottom:14px;padding:10px 14px;background:var(--accent-orange-bg);border:1px solid var(--accent-orange);border-radius:6px;font-size:13px;color:var(--text-body);line-height:1.5">
+          <div style="color:var(--accent-orange);font-weight:600;margin-bottom:6px">
+            ⚠ <span x-text="deleteBlockedTargets().length === 1 ? 'This tag is also used elsewhere' : deleteBlockedTargets().length + ' of these tags are also used elsewhere'"></span>
+          </div>
+          <div style="margin-bottom:8px"><span x-text="(currentInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr')"></span> won't delete a tag that's referenced by Lists, Custom Formats, Notifications, Quality Profiles, etc. Remove the references in <span x-text="(currentInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr')"></span> first, then come back here.</div>
+          <ul style="margin:0;padding-left:18px;font-size:12px;color:var(--text-secondary)">
+            <template x-for="t in deleteBlockedTargets()" :key="t.id">
+              <li>
+                <code style="color:var(--text-body);background:var(--bg-page);padding:1px 5px;border-radius:3px" x-text="t.label"></code>
+                <span x-text="' — used in: ' + deleteBlockedSummary(t)"></span>
+              </li>
+            </template>
+          </ul>
+        </div>
+      </template>
+
       <!-- Preview table -->
       <div style="font-size:12px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:6px">Preview</div>
       <template x-if="deletePreviewLoading">
@@ -4235,7 +4701,9 @@
       <div class="modal-actions">
         <div style="flex:1"></div>
         <button class="btn" @click="showDeleteModal = false" :disabled="deleteBusy">Cancel</button>
-        <button class="btn btn-danger" @click="submitDelete()" :disabled="deleteBusy">
+        <button class="btn btn-danger" @click="submitDelete()"
+                :disabled="deleteBusy || deleteBlockedTargets().length > 0"
+                :title="deleteBlockedTargets().length > 0 ? 'Resolve the references in Radarr/Sonarr first — see the warning above' : ''">
           <span x-show="!deleteBusy">Delete</span><span x-show="deleteBusy">Working…</span>
         </button>
       </div>
@@ -4400,19 +4868,26 @@
               <div>
                 <div class="help-section">
                   <h4>What is a rule?</h4>
-                  <p>A rule is a saved set of steps you want to run on your library. Tick the steps you want below; they always run in this order: <strong>Discover → Recover → Tag → Audio → Video → DV detail</strong>. You can pick one step or several — both work.</p>
+                  <p>A rule is a saved set of steps you want to run on your library. Tick the steps you want below; they always run in this order: <strong>Discover → Recover → Tag release groups → Tag Audio → Tag Video → Tag DV Details</strong>. You can pick one step or several — both work.</p>
                 </div>
                 <div class="help-section">
                   <h4>What each step does</h4>
                   <ul>
-                    <li><strong>Tag library</strong> — Goes through every movie and adds (or removes) the release-group tags you set up under Release Groups. This is what most people use to keep their library tagged with who released each file.</li>
-                    <li><strong>Discover new release-groups</strong> — Looks through your library for release groups you don't have on your list yet. Useful for finding new groups to add. On the next step you can choose to add them automatically or just preview them.</li>
+                    <li><strong>Discover new release-groups</strong> — Looks through your library for release groups not on your Active list yet. New groups get added on the Release Groups step (Add + leave disabled / Add + enable). Useful for first-time setup or just keeping the list current.</li>
                     <li><strong>Recover missing release groups</strong> — Some movies end up with a blank or "Unknown" release-group field. This step looks at the grab history to find what the original group was, then writes it back. Common after manual imports.</li>
-                    <li><strong>Audio tags</strong> — Adds tags showing what kind of audio the file has (TrueHD, Atmos, 5.1, 7.1, etc). Useful for spotting movies missing Atmos and for grouping in Plex/Jellyfin.</li>
-                    <li><strong>Video tags</strong> — Adds tags showing what kind of video the file has (1080p, 4K, h265, HDR10, Dolby Vision). Same idea — easy upgrade triage and Plex shelving.</li>
-                    <li><strong>DV detail</strong> <em>(opt-in)</em> — Reads inside Dolby Vision files to figure out which kind of DV they are (profile 5 / 7 / 8, FEL / MEL, CM2 / CM4). The first run is slower because it has to read each file; later runs are fast.</li>
-                    <li><strong>Delete tags that no longer match any movie</strong> — Cleanup pass after Tag. If a release-group tag ends up on zero movies, this removes it from Radarr's tag list so the list doesn't grow stale. Only touches release-group tags — never your manual or custom-format tags.</li>
-                    <li><strong>Mirror release-group tags to secondary</strong> — If you have a second Radarr (e.g. a 4K/remux instance), this copies the release-group tag decisions from the primary over so both stay in sync. Audio/Video/DV tags are NOT mirrored — instead you can set them to run on the secondary as their own scan in the next step.</li>
+                    <li><strong>Tag release groups</strong> — Goes through every movie and tags those whose release group passes your filter and is in the Active list. Filter is mandatory — at least one of Quality / Audio must be on. Pair with Discover to auto-find groups, or curate the Active list manually with + Add.</li>
+                    <li><strong>Tag Audio</strong> — Adds tags showing what kind of audio the file has (TrueHD, Atmos, 5.1, 7.1, etc). Useful for spotting movies missing Atmos and for grouping in Plex/Jellyfin.</li>
+                    <li><strong>Tag Video</strong> — Adds tags showing what kind of video the file has (1080p, 4K, h265, HDR10, Dolby Vision). Same idea — easy upgrade triage and Plex shelving.</li>
+                    <li><strong>Tag DV Details</strong> <em>(opt-in)</em> — Reads inside Dolby Vision files to figure out which kind of DV they are (profile 5 / 7 / 8, FEL / MEL, CM2 / CM4). The first run is slower because it has to read each file; later runs are fast.</li>
+                    <li><strong>Delete tags that no longer match any movie</strong> — Cleanup pass after Tag release groups. If a tag ends up on zero movies, this removes it from Radarr's tag list. Only touches tags from your Active list — never manual / custom-format / quality-profile tags.</li>
+                    <li><strong>Mirror release-group tags to secondary</strong> — If you have a second Radarr (e.g. a 4K/remux instance), this copies the Tag release groups decisions from primary over so both stay in sync. Audio/Video/DV tags aren't mirrored — set them to run on the secondary as their own scan in the next step.</li>
+                  </ul>
+                </div>
+                <div class="help-section">
+                  <h4>Tag release groups requirements</h4>
+                  <ul>
+                    <li><strong>Filter is mandatory</strong> — at least one of Quality (trusted WEB-DL source) or Audio (lossless codec) must be on. The Filter step blocks Next until you tick one.</li>
+                    <li><strong>Need release groups too</strong> — either pre-existing entries on your Active list, OR enable Discover above so this run finds them. The Basics step blocks Next if you have neither.</li>
                   </ul>
                 </div>
                 <div class="help-section">
@@ -4427,19 +4902,19 @@
               <div>
                 <div class="help-section">
                   <h4>What is a rule?</h4>
-                  <p>A rule is a saved set of steps you want to run on your library. Tick the steps you want below; they always run in this order: <strong>Recover → Audio → Video</strong>. You can pick one step or several — both work.</p>
+                  <p>A rule is a saved set of steps you want to run on your library. Tick the steps you want below; they always run in this order: <strong>Recover → Tag Audio → Tag Video</strong>. You can pick one step or several — both work.</p>
                 </div>
                 <div class="help-section">
                   <h4>What each step does</h4>
                   <ul>
                     <li><strong>Recover missing release groups</strong> — Some episode files end up with a blank or "Unknown" release-group field. This step looks at Sonarr's grab history per series to find what the original group was, then writes it back. Common after manual imports or when an indexer leaves the group out of the filename.</li>
-                    <li><strong>Audio tags</strong> — Adds tags to each series showing what kind of audio its episodes have (TrueHD, Atmos, 5.1, 7.1, etc). Useful for spotting series that need an audio upgrade and for Plex/Jellyfin grouping.</li>
-                    <li><strong>Video tags</strong> — Adds tags to each series showing what kind of video its episodes have (1080p, 4K, h265, HDR10, Dolby Vision). Same idea — easy upgrade triage and Plex shelving.</li>
+                    <li><strong>Tag Audio</strong> — Adds tags to each series showing what kind of audio its episodes have (TrueHD, Atmos, 5.1, 7.1, etc). Useful for spotting series that need an audio upgrade and for Plex/Jellyfin grouping.</li>
+                    <li><strong>Tag Video</strong> — Adds tags to each series showing what kind of video its episodes have (1080p, 4K, h265, HDR10, Dolby Vision). Same idea — easy upgrade triage and Plex shelving.</li>
                   </ul>
                 </div>
                 <div class="help-section">
                   <h4>How tags work on Sonarr</h4>
-                  <p>Sonarr only allows tags on the series itself, not per episode. So if your episodes have different audio or video, the tags get combined into one set on the series. By default, every value that shows up in at least one episode gets tagged. You can change this in Settings under Library scan → Audio tags / Video tags if you'd rather only tag values every episode shares, or only the highest-quality one.</p>
+                  <p>Sonarr only allows tags on the series itself, not per episode. So if your episodes have different audio or video, the tags get combined into one set on the series. By default, every value that shows up in at least one episode gets tagged. You can change this in Settings under Tag Audio / Tag Video if you'd rather only tag values every episode shares, or only the highest-quality one.</p>
                 </div>
                 <div class="help-section">
                   <h4>Preview vs Apply</h4>
@@ -4447,7 +4922,7 @@
                 </div>
                 <div class="help-section">
                   <h4>What about other steps?</h4>
-                  <p>Tag library, Discover and DV detail aren't supported on Sonarr — those land in future updates. For now Sonarr rules cover Recover, Audio tags and Video tags.</p>
+                  <p>Tag release groups, Discover and Tag DV Details aren't supported on Sonarr — those land in future updates. For now Sonarr rules cover Recover, Tag Audio and Tag Video.</p>
                 </div>
               </div>
             </template>
@@ -4501,12 +4976,12 @@
               <label class="label">Run mode</label>
               <div style="display:flex;gap:16px">
                 <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                  <input type="radio" name="rule-runmode" value="apply" x-model="editingRule.options.runMode">
-                  Apply (write changes)
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
                   <input type="radio" name="rule-runmode" value="preview" x-model="editingRule.options.runMode">
                   Preview only
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                  <input type="radio" name="rule-runmode" value="apply" x-model="editingRule.options.runMode">
+                  Apply (write changes)
                 </label>
               </div>
             </div>
@@ -4656,7 +5131,7 @@
                          style="accent-color:var(--accent-blue);margin-top:3px">
                   <span>
                     <strong>Add to config — leave disabled</strong>
-                    <span style="color:var(--text-secondary)">— new groups land in Release Groups with Enabled off. Tag library skips them until you review and turn them on.</span>
+                    <span style="color:var(--text-secondary)">— new groups land in the Active list with Enabled off. The tag pass skips them until you review and turn them on.</span>
                   </span>
                 </label>
                 <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">

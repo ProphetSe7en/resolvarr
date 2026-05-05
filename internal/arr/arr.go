@@ -51,10 +51,25 @@ type Tag struct {
 // TagDetail is /api/v3/tag/detail — a tag plus the IDs of items that use it.
 // Radarr populates MovieIDs; Sonarr populates SeriesIDs.
 type TagDetail struct {
-	ID        int   `json:"id"`
+	ID        int    `json:"id"`
 	Label     string `json:"label"`
-	MovieIDs  []int `json:"movieIds,omitempty"`
-	SeriesIDs []int `json:"seriesIds,omitempty"`
+	MovieIDs  []int  `json:"movieIds,omitempty"`
+	SeriesIDs []int  `json:"seriesIds,omitempty"`
+	// Non-item references — populated by Radarr/Sonarr's
+	// /api/v3/tag/detail. Radarr/Sonarr refuse to delete a tag that
+	// has any of these set; surfacing them lets the frontend warn
+	// the user BEFORE they hit Delete and get a cryptic API error.
+	// Different Arr types expose different subsets — we just
+	// deserialize whatever's present and ignore the rest.
+	NotificationIDs    []int `json:"notificationIds,omitempty"`
+	RestrictionIDs     []int `json:"restrictionIds,omitempty"`
+	IndexerIDs         []int `json:"indexerIds,omitempty"`
+	ImportListIDs      []int `json:"importListIds,omitempty"`
+	DownloadClientIDs  []int `json:"downloadClientIds,omitempty"`
+	AutoTaggingIDs     []int `json:"autoTagIds,omitempty"`
+	ReleaseProfileIDs  []int `json:"releaseProfileIds,omitempty"`
+	DelayProfileIDs    []int `json:"delayProfileIds,omitempty"`
+	RootFolderIDs      []int `json:"rootFolderIds,omitempty"` // Radarr only
 }
 
 // UsageCount returns the number of items (movies or series) that use the tag.
@@ -63,6 +78,59 @@ func (d TagDetail) UsageCount() int {
 		return len(d.MovieIDs)
 	}
 	return len(d.SeriesIDs)
+}
+
+// NonItemUsage returns a label → count map for every non-item
+// reference the tag carries (Lists, Custom Formats, Notifications,
+// etc.). Empty map means the tag is only attached to items and is
+// safe to delete. Tags with non-item references would otherwise
+// cause Radarr/Sonarr's DELETE /tag/{id} call to fail with a
+// cryptic error — this helper lets the UI warn the user first.
+func (d TagDetail) NonItemUsage() map[string]int {
+	out := make(map[string]int)
+	if n := len(d.NotificationIDs); n > 0 {
+		out["Notifications"] = n
+	}
+	if n := len(d.RestrictionIDs); n > 0 {
+		out["Restrictions"] = n
+	}
+	if n := len(d.IndexerIDs); n > 0 {
+		out["Indexers"] = n
+	}
+	if n := len(d.ImportListIDs); n > 0 {
+		out["Lists"] = n
+	}
+	if n := len(d.DownloadClientIDs); n > 0 {
+		out["Download Clients"] = n
+	}
+	if n := len(d.AutoTaggingIDs); n > 0 {
+		out["Auto-Tagging rules"] = n
+	}
+	if n := len(d.ReleaseProfileIDs); n > 0 {
+		out["Release Profiles"] = n
+	}
+	if n := len(d.DelayProfileIDs); n > 0 {
+		out["Delay Profiles"] = n
+	}
+	if n := len(d.RootFolderIDs); n > 0 {
+		out["Root Folders"] = n
+	}
+	return out
+}
+
+// HasNonItemReferences reports whether deleting this tag will fail
+// because Radarr/Sonarr considers it in-use somewhere outside the
+// item list (Lists, CFs, etc.).
+func (d TagDetail) HasNonItemReferences() bool {
+	return len(d.NotificationIDs) > 0 ||
+		len(d.RestrictionIDs) > 0 ||
+		len(d.IndexerIDs) > 0 ||
+		len(d.ImportListIDs) > 0 ||
+		len(d.DownloadClientIDs) > 0 ||
+		len(d.AutoTaggingIDs) > 0 ||
+		len(d.ReleaseProfileIDs) > 0 ||
+		len(d.DelayProfileIDs) > 0 ||
+		len(d.RootFolderIDs) > 0
 }
 
 // UsageIDs returns the item IDs (movies or series) that use the tag, whichever is non-empty.

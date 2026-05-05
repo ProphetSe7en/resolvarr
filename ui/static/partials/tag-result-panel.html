@@ -79,31 +79,45 @@
                  set by pickDefaultScanFilter() so the user never lands on an
                  empty filter (was a problem with apply runs returning 0/0). -->
             <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px">
-              <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-                <span style="font-size:11px;color:var(--text-muted-secondary);text-transform:uppercase;letter-spacing:0.4px;margin-right:4px">Status</span>
-                <button class="btn btn-sm" :class="scanFilter === 'add' ? 'btn-primary' : ''" @click="scanFilter = 'add'" :title="scanResults.tag.mode === 'apply' ? 'Movies the engine added a tag to in this run' : 'Movies the engine matched that don\'t yet have the tag — these will be added on Apply'">
-                  <span x-text="scanResults.tag.mode === 'apply' ? 'Added' : 'Match'"></span> <span style="margin-left:4px;opacity:0.7" x-text="'(' + scanFilterCounts().add + ')'"></span>
+              <div class="filter-row">
+                <span class="filter-label">Show movies where tag will be:</span>
+                <button class="filter-pill" :class="{ 'is-active': scanFilter === 'add' }" @click="scanFilter = 'add'"
+                        :title="scanResults.tag.mode === 'apply' ? 'Movies the engine added a tag to in this run' : 'Movies the engine matched that don\'t yet have the tag — these will be added on Apply'">
+                  <span class="filter-symbol" style="color:var(--accent-green)">+</span>
+                  <span x-text="scanResults.tag.mode === 'apply' ? 'Added' : 'Add'"></span>
+                  <span class="filter-count" x-text="'(' + scanFilterCounts().add + ')'"></span>
                 </button>
-                <button class="btn btn-sm" :class="scanFilter === 'remove' ? 'btn-primary' : ''" @click="scanFilter = 'remove'" :title="scanResults.tag.mode === 'apply' ? 'Movies the engine removed a tag from in this run' : 'Movies that have the tag but the engine no longer matches them — these will be removed on Apply'">
-                  <span x-text="scanResults.tag.mode === 'apply' ? 'Removed' : 'Remove'"></span> <span style="margin-left:4px;opacity:0.7" x-text="'(' + scanFilterCounts().remove + ')'"></span>
+                <button class="filter-pill" :class="{ 'is-active': scanFilter === 'remove' }" @click="scanFilter = 'remove'"
+                        :title="scanResults.tag.mode === 'apply' ? 'Movies the engine removed a tag from in this run' : 'Movies that have the tag but the engine no longer matches them — these will be removed on Apply'">
+                  <span class="filter-symbol" style="color:var(--accent-red)">−</span>
+                  <span x-text="scanResults.tag.mode === 'apply' ? 'Removed' : 'Remove'"></span>
+                  <span class="filter-count" x-text="'(' + scanFilterCounts().remove + ')'"></span>
                 </button>
-                <button class="btn btn-sm" :class="scanFilter === 'keep' ? 'btn-primary' : ''" @click="scanFilter = 'keep'" title="Movies already correctly tagged — no changes needed, surfaced for verification">
-                  <span x-text="scanResults.tag.mode === 'apply' ? 'Kept' : 'Keep'"></span> <span style="margin-left:4px;opacity:0.7" x-text="'(' + scanFilterCounts().keep + ')'"></span>
+                <button class="filter-pill" :class="{ 'is-active': scanFilter === 'keep' }" @click="scanFilter = 'keep'"
+                        title="Movies already correctly tagged — no changes needed, surfaced for verification">
+                  <span class="filter-symbol" style="color:var(--text-muted-secondary)">=</span>
+                  <span x-text="scanResults.tag.mode === 'apply' ? 'Kept' : 'Keep'"></span>
+                  <span class="filter-count" x-text="'(' + scanFilterCounts().keep + ')'"></span>
                 </button>
-                <button x-show="scanInstanceFilter !== 'secondary'" class="btn btn-sm" :class="scanFilter === 'nofile' ? 'btn-primary' : ''" @click="scanFilter = 'nofile'" title="Movies with no imported file in Radarr — engine has nothing to evaluate, decision skipped">
-                  No file <span style="margin-left:4px;opacity:0.7" x-text="'(' + scanFilterCounts().nofile + ')'"></span>
+                <button x-show="scanInstanceFilter !== 'secondary'" class="filter-pill" :class="{ 'is-active': scanFilter === 'nofile' }" @click="scanFilter = 'nofile'"
+                        title="Movies with no imported file in Radarr — engine has nothing to evaluate, decision skipped">
+                  <span class="filter-symbol" style="color:var(--text-muted-secondary)">⊘</span>
+                  No file
+                  <span class="filter-count" x-text="'(' + scanFilterCounts().nofile + ')'"></span>
                 </button>
-                <button x-show="scanInstanceFilter !== 'primary' && (scanResults.tag.totals.secondaryMissing || 0) > 0" class="btn btn-sm" :class="scanFilter === 'missing' ? 'btn-primary' : ''" @click="scanFilter = 'missing'">
-                  Not in <span x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'secondary'"></span> <span style="margin-left:4px;opacity:0.7" x-text="'(' + (scanResults.tag.totals.secondaryMissing || 0) + ')'"></span>
+                <button x-show="scanInstanceFilter !== 'primary' && (scanResults.tag.totals.secondaryMissing || 0) > 0" class="filter-pill" :class="{ 'is-active': scanFilter === 'missing' }" @click="scanFilter = 'missing'">
+                  <span class="filter-symbol" style="color:var(--accent-orange)">∅</span>
+                  Not in <span x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'secondary'"></span>
+                  <span class="filter-count" x-text="'(' + (scanResults.tag.totals.secondaryMissing || 0) + ')'"></span>
                 </button>
               </div>
               <!-- Instance group — only when sync was enabled, shown right-aligned -->
               <template x-if="scanResults.tag.totals.secondaryToAdd || scanResults.tag.totals.secondaryToRemove || scanResults.tag.totals.secondaryToKeep || scanResults.tag.totals.secondaryMissing">
-                <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-left:auto">
-                  <span style="font-size:11px;color:var(--text-muted-secondary);text-transform:uppercase;letter-spacing:0.4px;margin-right:4px">Instance</span>
-                  <button class="btn btn-sm" :class="scanInstanceFilter === 'both' ? 'btn-primary' : ''" @click="setScanInstanceFilter('both')">All</button>
-                  <button class="btn btn-sm" :class="scanInstanceFilter === 'primary' ? 'btn-primary' : ''" @click="setScanInstanceFilter('primary')" x-text="scanResults.tag.instance.name"></button>
-                  <button class="btn btn-sm" :class="scanInstanceFilter === 'secondary' ? 'btn-primary' : ''" @click="setScanInstanceFilter('secondary')" x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'Secondary'"></button>
+                <div class="filter-row" style="margin-left:auto">
+                  <span class="filter-label">Instance:</span>
+                  <button class="filter-pill" :class="{ 'is-active': scanInstanceFilter === 'both' }" @click="setScanInstanceFilter('both')">All</button>
+                  <button class="filter-pill" :class="{ 'is-active': scanInstanceFilter === 'primary' }" @click="setScanInstanceFilter('primary')" x-text="scanResults.tag.instance.name"></button>
+                  <button class="filter-pill" :class="{ 'is-active': scanInstanceFilter === 'secondary' }" @click="setScanInstanceFilter('secondary')" x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'Secondary'"></button>
                 </div>
               </template>
             </div>

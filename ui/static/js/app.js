@@ -77,6 +77,23 @@ function app() {
     // destructive, opt-in. Affects primary + secondary symmetrically
     // when sync is on (per scan_tag.go:520-543).
     scanCleanupUnusedTags: false,
+    // Mini-wizard state for the new "Tag release groups" launcher on
+    // the Tag Release Groups sub-tab. 4 steps:
+    //   Choices → Filter → Active groups → Review.
+    // The wizard is a thin orchestrator — final Run hands off to the
+    // existing runLibraryScan path after copying picks into the
+    // standard scanModes / scanMode / scanSync* state. No new
+    // backend endpoint; just a guided front-end for the same scan.
+    tagRgWizard: {
+      open: false,
+      step: 0,
+      source: 'active',           // 'active' | 'discover'
+      discoverAdd: 'enabled',     // 'disabled' | 'enabled' (only when source==='discover')
+      syncToSecondary: false,
+      cleanupUnusedTags: false,
+      runMode: 'preview',         // 'preview' | 'apply'
+      busy: false,
+    },
     scanDiscoverSelected: {},     // discover-mode: { [search]: true } for "Add Selected" (search is keyed in original case from response)
     scanDiscoverExpanded: {},     // discover-mode: { [search]: true } for which group rows are expanded to show samples
     // Per-sample row expand inside a group's drill-in. Composite key
@@ -302,13 +319,13 @@ function app() {
     scanHistoryLoading: false,
     scanHistoryFilter: 'all',
     scanHistoryTypes: [
-      { action: 'tag',       label: 'Tag library' },
+      { action: 'tag',       label: 'Tag release groups' },
       { action: 'discover',  label: 'Discover' },
       { action: 'recover',   label: 'Recover' },
       { action: 'cleanup',   label: 'Cleanup' },
-      { action: 'audiotags', label: 'Audio tags' },
-      { action: 'videotags', label: 'Video tags' },
-      { action: 'dvdetail',  label: 'DV detail' },
+      { action: 'audiotags', label: 'Tag Audio' },
+      { action: 'videotags', label: 'Tag Video' },
+      { action: 'dvdetail',  label: 'Tag DV Details' },
     ],
     // Apply-now confirmation modal flag for DV detail.
     showDvDetailApplyConfirm: false,
@@ -724,16 +741,24 @@ function app() {
         // lands them on the renamed (same) tab.
         this.scanSection = 'history';
         localStorage.setItem('resolvarr-scan-section', 'history');
-      } else if (['run','groups','filters','audio','video','dvdetail','history'].includes(savedScanSection)) {
+      } else if (savedScanSection === 'tag' || savedScanSection === 'recover' || savedScanSection === 'filters') {
+        // 2026-05-05 restructure folded standalone Tag library / Recover /
+        // Filters sub-tabs into one 'groups' (Tag Release Groups) tab.
+        // Testers persisting any of those stale ids would land on a
+        // hidden section with no nav back. Migrate forward.
+        this.scanSection = 'groups';
+        localStorage.setItem('resolvarr-scan-section', 'groups');
+      } else if (['run','groups','audio','video','dvdetail','history'].includes(savedScanSection)) {
         this.scanSection = savedScanSection;
       }
       const savedGroupsSection = localStorage.getItem('resolvarr-groups-section');
-      // 'filters' is no longer a groups-sidebar item — it's a top-level Scan sub-tab now.
-      // Migrate stale 'filters' → scanSection='filters' + groups inner stays on 'active'.
+      // 'filters' was briefly persisted as a groups-sidebar item before
+      // the 2026-05-05 fold. Same forward-migration target as above —
+      // route legacy testers to 'groups' so the page renders.
       if (savedGroupsSection === 'filters') {
-        this.scanSection = 'filters';
+        this.scanSection = 'groups';
         this.groupsSection = 'active';
-        localStorage.setItem('resolvarr-scan-section', 'filters');
+        localStorage.setItem('resolvarr-scan-section', 'groups');
         localStorage.setItem('resolvarr-groups-section', 'active');
       } else if (['active','discovered'].includes(savedGroupsSection)) {
         this.groupsSection = savedGroupsSection;
@@ -879,6 +904,13 @@ function app() {
     },
 
     setScanSection(section) {
+      // Migrate legacy section IDs that were folded into 'groups'
+      // during the 2026-05-05 restructure (Tag library + Release
+      // Groups + Sonarr Recover all live on one tab now). Old
+      // localStorage values + any code path that still passes 'tag'
+      // / 'recover' lands cleanly on the unified tab instead of a
+      // dead sub-tab.
+      if (section === 'tag' || section === 'recover') section = 'groups';
       this.scanSection = section;
       localStorage.setItem('resolvarr-scan-section', section);
       // Schedules feed the Run mode rules grid AND the History tab — keep
@@ -1435,6 +1467,206 @@ function app() {
       }
     },
 
+    // ===== Tag release groups mini-wizard =====
+    //
+    // Replaces the legacy Tag library run-card with a guided flow
+    // that walks the user through Use-active-vs-Use-Discover, filter
+    // (mandatory), active-list review, and Preview-vs-Apply. Final
+    // Run hands off to the existing runLibraryScan after copying
+    // wizard picks into the matching Alpine state — same scan, same
+    // backend, just better UX.
+
+    openTagRgWizard() {
+      // Wizard is openable without a pre-picked instance — the user
+      // can pick (or change) the target inside the Choices step,
+      // matching the QFA flow. We just need at least one instance
+      // of the current app-type to exist; the launcher button
+      // already gates on that, so this is defence in depth for
+      // programmatic callers.
+      const pool = this.scanAvailableInstances();
+      if (pool.length === 0) {
+        const t = this.scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr';
+        this.showToast('Add a ' + t + ' instance in Settings → Instances first', 'error');
+        return;
+      }
+      // Auto-seed scanInstanceId when missing so the wizard's
+      // dependent helpers (groupsFilteredByInstanceType, secondary
+      // pickers, sync gates) all read consistent state from open.
+      // User can still change via the picker on Choices.
+      if (!this.scanInstanceId || !pool.some(i => i.id === this.scanInstanceId)) {
+        this.scanInstanceId = pool[0].id;
+      }
+      // Hydrate from current global state so a user who's already
+      // tweaked filters / sync / cleanup on the standalone surfaces
+      // sees their picks reflected in the wizard. They can still
+      // change anything per-run.
+      this.tagRgWizard = {
+        open: true,
+        step: 0,
+        source: 'active',
+        discoverAdd: 'enabled',
+        syncToSecondary: !!this.scanSyncToSecondary,
+        cleanupUnusedTags: !!this.scanCleanupUnusedTags,
+        runMode: 'preview',
+        busy: false,
+      };
+    },
+
+    closeTagRgWizard() {
+      if (this.tagRgWizard.busy) return;
+      this.tagRgWizard.open = false;
+      // Clear the wizard-only Discover-enable-on-add override so the
+      // next standalone "+ Add" / "Add Selected" click on the
+      // Discover sub-tab doesn't inherit our prior pick. Without this
+      // reset a user who ran the wizard with "Add + leave disabled"
+      // would silently get enabled:false on every subsequent
+      // standalone Discover add. addDiscoveredSearches treats
+      // undefined as "use the legacy explicit-pick = enabled
+      // contract" — exactly what we want.
+      delete this._tagRgDiscoverEnableOnAdd;
+    },
+
+    // Steps the wizard renders. Active-groups step skipped on Use
+    // Discover (the list will be augmented by Discover at run-time).
+    tagRgWizardVisibleSteps() {
+      const steps = ['Choices', 'Filter'];
+      if (this.tagRgWizard.source === 'active') steps.push('Active groups');
+      steps.push('Review');
+      return steps;
+    },
+
+    // Clamp the current step to the new visibleSteps length. Called
+    // from any state mutation that could shrink the list (today only
+    // the source radios on Step 1 — Active mode adds the Active
+    // groups step, Discover removes it). Without this, switching
+    // source while past the affected step lands the wizard on an
+    // index with no template match: every Step body keys off
+    // tagRgWizardVisibleSteps()[step], so undefined → no render and
+    // the footer's Next/Run buttons mis-key against a stale length.
+    tagRgWizardClampStep() {
+      const max = this.tagRgWizardVisibleSteps().length - 1;
+      if (this.tagRgWizard.step > max) this.tagRgWizard.step = max;
+    },
+
+    tagRgWizardCanAdvance() {
+      const cur = this.tagRgWizardVisibleSteps()[this.tagRgWizard.step];
+      if (cur === 'Choices') {
+        // Hard gate: must have a target instance picked. Auto-seeded
+        // on open, but defending against an instance being deleted
+        // mid-wizard or a programmatic clear.
+        if (!this.scanInstanceId) return false;
+        // Hard gate: source==='active' with 0 active groups would
+        // produce a no-op scan — refuse advance until user switches
+        // to Use Discover or closes wizard to add groups manually.
+        // The inline orange banner explains the state + offers a
+        // one-click switch.
+        if (this.tagRgWizard.source === 'active' && this.groupsFilteredByInstanceType().length === 0) {
+          return false;
+        }
+        return true;
+      }
+      if (cur === 'Filter') {
+        // Gate: at least one master must be on. The whole
+        // restructure assumes filter is mandatory — this is the
+        // enforcement.
+        return !!(this.filters && (this.filters.quality || this.filters.audio));
+      }
+      if (cur === 'Active groups') {
+        // Soft gate: warn if 0 enabled but allow continue (user might
+        // want to see the Review step anyway). Run-button on Review
+        // catches the empty case with a toast.
+        return true;
+      }
+      return true;
+    },
+
+    tagRgWizardNext() {
+      if (!this.tagRgWizardCanAdvance()) return;
+      const max = this.tagRgWizardVisibleSteps().length - 1;
+      if (this.tagRgWizard.step < max) this.tagRgWizard.step++;
+    },
+
+    tagRgWizardPrev() {
+      if (this.tagRgWizard.step > 0) this.tagRgWizard.step--;
+    },
+
+    // Helpers for the secondary-instance picker. Reuses existing
+    // single-secondary-auto-pick semantics from the standalone Tag
+    // library card.
+    tagRgWizardSecondaryAvailable() {
+      const t = this.scanAppType === 'sonarr' ? 'sonarr' : 'radarr';
+      return (this.instances || []).filter(i => i.type === t && i.id !== this.scanInstanceId).length > 0;
+    },
+    tagRgWizardSecondaryName() {
+      const t = this.scanAppType === 'sonarr' ? 'sonarr' : 'radarr';
+      const sec = (this.instances || []).find(i => i.type === t && i.id !== this.scanInstanceId);
+      return sec ? sec.name : '';
+    },
+
+    // Run hands off to runLibraryScan after seeding state from
+    // wizard picks. Same underlying chain — Discover-then-Tag (when
+    // source==='discover') or Tag-only (when source==='active').
+    async runTagRgWizard() {
+      if (!this.scanInstanceId) {
+        this.tagRgWizard.busy = false;
+        this.showToast('Pick an instance first', 'error');
+        return;
+      }
+      // Active-list emptiness check — for Use active mode only.
+      if (this.tagRgWizard.source === 'active') {
+        const enabled = this.groupsFilteredByInstanceType().filter(g => g.enabled).length;
+        if (enabled === 0) {
+          this.showToast('No active release groups enabled. Pick at least one or switch to Use Discover.', 'error');
+          return;
+        }
+      }
+      // Filter gate — defense in depth. The wizard already blocks
+      // advance from the Filter step, but a programmatic call could
+      // bypass that.
+      if (!this.filters || !(this.filters.quality || this.filters.audio)) {
+        this.showToast('Enable at least one filter before tagging.', 'error');
+        return;
+      }
+
+      // Seed the standard scan state from wizard picks. runLibraryScan
+      // reads these.
+      this.scanModes = {
+        tag: true,
+        discover: this.tagRgWizard.source === 'discover',
+        recover: false,
+      };
+      this.scanMode = this.tagRgWizard.runMode;
+      this.scanSyncToSecondary = !!this.tagRgWizard.syncToSecondary;
+      // Cleanup is only valid with Use active per the safety rail.
+      this.scanCleanupUnusedTags = this.tagRgWizard.source === 'active'
+        ? !!this.tagRgWizard.cleanupUnusedTags
+        : false;
+      // Discover add-behavior (only meaningful when source==='discover').
+      // runLibraryScan reads scanMode + scanModes; the discover-add
+      // semantics are applied via the existing addDiscoveredSearches
+      // path which auto-adds + enables. The "leave disabled" branch
+      // requires the addDiscoveredSearches helper to honour an
+      // explicit Enabled flag — it does, via cfg.ReleaseGroups
+      // append where Enabled is set per the request body. We stash
+      // the choice on a class-level flag the runner reads.
+      this._tagRgDiscoverEnableOnAdd = this.tagRgWizard.discoverAdd === 'enabled';
+
+      this.tagRgWizard.busy = true;
+      try {
+        await this.runLibraryScan();
+      } finally {
+        this.tagRgWizard.busy = false;
+        // Close wizard after run completes (whether success or error).
+        // Result modal pops via runLibraryScan's normal viewPhaseDetails
+        // route, so user lands on the result panel directly.
+        this.tagRgWizard.open = false;
+        // Drop the wizard-only override so subsequent standalone
+        // Discover adds don't inherit our pick. See closeTagRgWizard
+        // for the full rationale.
+        delete this._tagRgDiscoverEnableOnAdd;
+      }
+    },
+
     // Tag-mode internal — fires POST /api/scan/run with action=tag and
     // stores the result in scanResults.tag. No top-level loading flag
     // toggle (the orchestrator handles that). Sets scanError on failure.
@@ -1696,13 +1928,20 @@ function app() {
           // filtered (matches bash discovery default — discovered groups
           // are always filter-mode candidates).
           const tagLabel = search.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+          // enabled defaults true (legacy "Add Selected" semantics —
+          // user explicitly picked these). Mini-wizard's Use Discover
+          // mode passes _tagRgDiscoverEnableOnAdd to override; when
+          // false, new groups land on Active list with Enabled off so
+          // the Tag pass right after this call skips them. The wizard
+          // banner explains this trade-off.
+          const enabledOnAdd = (this._tagRgDiscoverEnableOnAdd === false) ? false : true;
           const payload = {
             search,
             tag: tagLabel,
             display: search,
             type: instType,
             mode: 'filtered',
-            enabled: true,
+            enabled: enabledOnAdd,
           };
           const resp = await this.apiFetch('/api/groups', {
             method: 'POST',
@@ -3095,25 +3334,31 @@ function app() {
     // Recover (lives on Run mode) + History. Tag library / Discover /
     // Sub-tab visibility per active app-type.
     //
-    // Sonarr coverage today: Run mode + Recover + Audio tags + Video
-    // tags + History. Recover lives on its own sub-tab between Run mode
-    // and Audio tags (it's the standalone action that doesn't fit the
-    // QFA chain narrative — drives users to it directly without
-    // hunting on Run mode). Release Groups, Tag library, Filters and
-    // DV detail remain Radarr-only — they centre on filter-driven
-    // release-group tagging or per-file DV extraction that doesn't
-    // aggregate to series-level meaningfully.
+    // Restructure 2026-05-05: Tag library + Release Groups + Recover
+    // (Sonarr) all merged into one "Tag Release Groups" sub-tab
+    // (internal id 'groups'). Standalone 'tag' and 'recover' sub-tabs
+    // are unreachable from sidebar — kept in markup as legacy x-show
+    // gates so any existing localStorage value or deep-linked state
+    // doesn't 404, but new clicks always route through 'groups'.
     //
-    // 'recover' is Sonarr-only — Radarr keeps Recover on the Release
-    // Groups sub-tab where its discovery + cleanup siblings live.
+    // Sonarr coverage today inside "Tag Release Groups": Recover
+    // works; Tag run + Discover are stubbed with M-Sonarr badges.
+    // Filters + DV detail remain Radarr-only.
     scanSectionVisible(section) {
+      // Standalone tag + recover + filters sub-tabs were folded into
+      // 'groups' / wizardent during the 2026-05-05 restructure. Hide
+      // their sidebar entries on every app type. Filter persistence
+      // moves to the wizard; Cleanup moves under Active groups.
+      if (section === 'tag' || section === 'recover' || section === 'filters') return false;
       if (this.scanAppType === 'sonarr') {
-        return section === 'run'   || section === 'recover' ||
-               section === 'audio' || section === 'video'   ||
+        // Sonarr's "Tag Release Groups" tab carries the Recover action
+        // + stubbed Tag/Discover for naming consistency with Radarr.
+        // Filters + DV detail are Radarr-only.
+        return section === 'run'    || section === 'groups' ||
+               section === 'audio'  || section === 'video'  ||
                section === 'history';
       }
-      // Radarr: every section except 'recover' (Recover lives on Release Groups).
-      if (section === 'recover') return false;
+      // Radarr: every visible section.
       return true;
     },
     setScanAppType(type) {
@@ -3633,7 +3878,11 @@ function app() {
       return (r.totals.toAdd || 0) + (r.totals.toRemove || 0);
     },
     openAudioTagsApplyConfirm() {
-      if (this.audioTagsPendingChangeCount() === 0) return;
+      // Don't gate on count — when the user picks Apply mode without
+      // running Preview first, the count is 0 (no scanResults yet)
+      // but they explicitly chose Apply: they want to scan + write in
+      // one step. Modal copy adapts via the count check. Same pattern
+      // openDvDetailApplyConfirm uses.
       this.showAudioTagsApplyConfirm = true;
     },
     async confirmAudioTagsApply() {
@@ -3800,7 +4049,8 @@ function app() {
       return (r.totals.toAdd || 0) + (r.totals.toRemove || 0);
     },
     openVideoTagsApplyConfirm() {
-      if (this.videoTagsPendingChangeCount() === 0) return;
+      // Don't gate on count — same reasoning as openAudioTagsApplyConfirm.
+      // Modal copy adapts to the no-preview case via the count check.
       this.showVideoTagsApplyConfirm = true;
     },
     async confirmVideoTagsApply() {
@@ -4023,12 +4273,12 @@ function app() {
       if (!this.editingRule) return '';
       const m = this.editingRule.mode;
       const map = {
-        tag: 'Tag library',
+        tag: 'Tag release groups',
         discover: 'Discover release groups',
         recover: 'Recover missing release groups',
-        audiotags: 'Audio tags',
-        videotags: 'Video tags',
-        dvdetail: 'DV detail',
+        audiotags: 'Tag Audio',
+        videotags: 'Tag Video',
+        dvdetail: 'Tag DV Details',
         combined: 'Combined chain',
       };
       const label = map[m] || m;
@@ -5300,6 +5550,36 @@ function app() {
       this.closeCompare();
     },
 
+    // Tags that are safe to delete without manual triage —
+    // 0 movies/series attached AND no non-item references
+    // (Lists, Custom Formats, Notifications, Indexers, etc.)
+    // Reuses `nonItemUsage` keyed off the API response for
+    // each tag, same data the delete-confirm pre-check uses.
+    _isUnusedSafelyDeletable(t) {
+      if (!t) return false;
+      if ((t.usageCount || 0) > 0) return false;
+      const u = t.nonItemUsage || {};
+      return Object.keys(u).length === 0;
+    },
+
+    unusedSafelyDeletableCount() {
+      return this.tags.reduce((n, t) => n + (this._isUnusedSafelyDeletable(t) ? 1 : 0), 0);
+    },
+
+    // Bulk-select every tag that meets the both-criteria gate
+    // above. Replaces the current selection rather than merging
+    // into it — the button's clear intent is "give me a clean
+    // selection of safe-to-delete orphans". Closes any open
+    // compare panel since selection changed.
+    selectUnusedTags() {
+      const next = new Set();
+      for (const t of this.tags) {
+        if (this._isUnusedSafelyDeletable(t)) next.add(t.id);
+      }
+      this.tagsSelected = next;
+      this.closeCompare();
+    },
+
     // Compare panel toggle. Dispatches to one of two flows based on the
     // selection + cross-instance picker state. Re-clicking when the panel
     // is already open closes it (toggle behaviour).
@@ -5444,6 +5724,94 @@ function app() {
       }
     },
 
+    // ===== Tag label validation (per-app-type) =====
+    //
+    // Source of truth for what each Arr's POST /api/v3/tag will accept:
+    //
+    // RADARR (TagController.cs in Radarr/Radarr):
+    //   .Matches("^[a-z0-9-]+$", RegexOptions.IgnoreCase)
+    //   .WithMessage("Allowed characters a-z, 0-9 and -")
+    // Then TagService.Add lowercases the label via ToLowerInvariant before
+    // insert. So uppercase is accepted by the validator but stored as
+    // lowercase. Periods, colons, underscores, spaces, unicode, emoji
+    // → 400. No length cap in source.
+    //
+    // SONARR (TagController.cs in Sonarr/Sonarr):
+    //   No validator at all. Accepts anything non-empty. TagService.Add
+    //   also lowercases via ToLowerInvariant before insert. Spaces,
+    //   periods, unicode, emoji all accepted; just stored lowercase.
+    //
+    // Implication for our preview: always lowercase before send (matches
+    // what the server will store + sidesteps a case-sensitive
+    // FindByLabel dedup race in both Arrs). Block Radarr-illegal chars
+    // up-front so the user sees the reason, not just a 400.
+
+    tagLabelNormalize(s) {
+      return (s || '').trim().toLowerCase();
+    },
+
+    // Live keystroke sanitiser bound to the rename inputs.
+    //   Radarr: validator is `^[a-z0-9-]+$` IgnoreCase + server-side
+    //     ToLowerInvariant. We strip anything outside that set as the
+    //     user types — uppercase, spaces, periods, colons, underscores,
+    //     unicode, emoji all refuse to land in the input.
+    //   Sonarr: validator accepts any non-empty string but TagService
+    //     still lowercases via ToLowerInvariant on insert. We lowercase
+    //     keystrokes too so the input shows what will actually be
+    //     stored — spaces, periods, accented chars all pass through.
+    // Both rules give a WYSIWYG preview without trailing "will be
+    // saved as X" warnings.
+    sanitizeTagInput(value, appType) {
+      const v = (value || '').toLowerCase();
+      if (appType === 'radarr') {
+        return v.replace(/[^a-z0-9-]/g, '');
+      }
+      return v;
+    },
+
+    // Returns { valid, reason, message, normalized } where reason is one
+    // of '' | 'empty' | 'radarr-chars' | 'too-long'. message is a
+    // user-facing string the modals display next to the input.
+    tagLabelValidate(s, appType) {
+      const normalized = this.tagLabelNormalize(s);
+      if (!normalized) {
+        return { valid: false, reason: 'empty', message: 'Tag name cannot be empty.', normalized };
+      }
+      // Defensive cap — neither Arr enforces one in source code, but
+      // SQLite's TEXT column has practical limits and a 200-char tag
+      // is not a real use case. Higher than the longest released
+      // group (~30) plus margin for prefixes / decorators.
+      if (normalized.length > 200) {
+        return { valid: false, reason: 'too-long', message: 'Tag name is too long (200-char cap).', normalized };
+      }
+      if (appType === 'radarr') {
+        if (!/^[a-z0-9-]+$/.test(normalized)) {
+          // Pull out the offending characters so the message is concrete.
+          const bad = [...new Set(normalized.replace(/[a-z0-9-]/g, '').split(''))]
+            .map(c => c === ' ' ? '"space"' : '"' + c + '"')
+            .join(', ');
+          return {
+            valid: false,
+            reason: 'radarr-chars',
+            message: 'Radarr only accepts a-z, 0-9 and hyphens. Remove: ' + bad + '.',
+            normalized,
+          };
+        }
+      }
+      // Sonarr — anything non-empty after lowercasing.
+      return { valid: true, reason: '', message: '', normalized };
+    },
+
+    // Single-rename helpers — return validation state for the current
+    // input + active instance. The modal binds these for the input
+    // hint, preview row, and submit-button gate.
+    renameValidation() {
+      return this.tagLabelValidate(this.renameNewLabel, this.currentInstanceType());
+    },
+    renameNormalized() {
+      return this.renameValidation().normalized;
+    },
+
     openRenameTag(t) {
       this.renameTarget = { id: t.id, label: t.label, usageCount: t.usageCount };
       this.renameNewLabel = t.label;
@@ -5471,16 +5839,25 @@ function app() {
     },
 
     // Returns the existing tag that the new label would merge into, or null.
+    // Comparison uses the normalized (trim+lowercase) form because that's
+    // what the server will store — "MyTag" submitted against existing
+    // "mytag" is a merge, not a fresh rename.
     renameMergeTarget() {
-      const newLabel = this.renameNewLabel.trim().toLowerCase();
+      const newLabel = this.renameNormalized();
       if (!newLabel || newLabel === this.renameTarget.label.toLowerCase()) return null;
       return this.tags.find(t => t.label.toLowerCase() === newLabel && t.id !== this.renameTarget.id) || null;
     },
 
     async submitRename() {
-      const newLabel = this.renameNewLabel.trim();
-      if (!newLabel) return;
-      if (newLabel === this.renameTarget.label) {
+      const v = this.renameValidation();
+      if (!v.valid) return;
+      // Send the normalized form. Both Arrs lowercase server-side before
+      // insert; sending pre-lowercased avoids a case-sensitive
+      // FindByLabel dedup race where "MyTag" submitted against existing
+      // DB row "mytag" hits an insert + UNIQUE-constraint failure
+      // instead of finding the merge candidate.
+      const newLabel = v.normalized;
+      if (newLabel === this.renameTarget.label.toLowerCase()) {
         this.showRenameModal = false;
         return;
       }
@@ -5557,39 +5934,49 @@ function app() {
     //   invalid           — new label fails the [a-z0-9-]+ rule or is empty
     batchRenamePreview() {
       const rows = [];
-      const tagRegex = /^[a-z0-9-]+$/;
+      const appType = this.currentInstanceType();
       const selectedIds = new Set(this.batchRenameTargets.map(t => t.id));
-      // Tally new labels within the batch to detect dupes. Key by lowercase
-      // so Sonarr (which accepts mixed case) doesn't slip a "Foo" / "foo"
-      // collision past the gate. Radarr enforces lowercase via the regex
-      // check below regardless.
+      // Tally new labels within the batch to detect dupes. Key by the
+      // normalized (lowercase) form because the server will lowercase
+      // on write — "Foo" + "foo" produced by the template both end up
+      // as "foo" and would collide.
       const newLabelCounts = new Map();
       for (const t of this.batchRenameTargets) {
-        const newLabel = this.batchRenameApplyTemplate(t.label);
-        const key = newLabel.toLowerCase();
-        newLabelCounts.set(key, (newLabelCounts.get(key) || 0) + 1);
+        const raw = this.batchRenameApplyTemplate(t.label);
+        const v = this.tagLabelValidate(raw, appType);
+        if (v.valid) {
+          newLabelCounts.set(v.normalized, (newLabelCounts.get(v.normalized) || 0) + 1);
+        }
       }
       for (const t of this.batchRenameTargets) {
-        const newLabel = this.batchRenameApplyTemplate(t.label);
+        const raw = this.batchRenameApplyTemplate(t.label);
+        const v = this.tagLabelValidate(raw, appType);
+        // Display column shows the normalized form (what server
+        // stores) — keeps preview honest. Falls back to the raw
+        // input for empty/invalid cases so the user sees what
+        // they actually typed alongside the error chip.
+        const newLabel = v.valid ? v.normalized : raw;
         let status = 'ok';
         let mergeTarget = null;
-        if (newLabel === t.label) {
-          status = 'unchanged';
-        } else if (!newLabel || !tagRegex.test(newLabel)) {
+        let invalidMessage = '';
+        if (!v.valid) {
           status = 'invalid';
-        } else if (newLabelCounts.get(newLabel.toLowerCase()) > 1) {
+          invalidMessage = v.message;
+        } else if (v.normalized === t.label.toLowerCase()) {
+          status = 'unchanged';
+        } else if (newLabelCounts.get(v.normalized) > 1) {
           status = 'merge-batch';
         } else {
           // Look for existing tag (outside the selection) that matches.
           const existing = this.tags.find(
-            x => x.label.toLowerCase() === newLabel.toLowerCase() && !selectedIds.has(x.id)
+            x => x.label.toLowerCase() === v.normalized && !selectedIds.has(x.id)
           );
           if (existing) {
             status = 'merge-existing';
             mergeTarget = existing;
           }
         }
-        rows.push({ id: t.id, oldLabel: t.label, newLabel, status, mergeTarget });
+        rows.push({ id: t.id, oldLabel: t.label, newLabel, status, mergeTarget, invalidMessage });
       }
       return rows;
     },
@@ -5663,7 +6050,7 @@ function app() {
     },
 
     openDeleteTag(t) {
-      this.deleteTargets = [{ id: t.id, label: t.label, usageCount: t.usageCount }];
+      this.deleteTargets = [{ id: t.id, label: t.label, usageCount: t.usageCount, nonItemUsage: t.nonItemUsage || {} }];
       this.deleteKeepDefinition = false;
       this.deleteError = '';
       this.deleteProgress = '';
@@ -5673,11 +6060,32 @@ function app() {
       this.loadDeletePreview();
     },
 
+    // deleteBlockedTargets returns the subset of deleteTargets that
+    // have non-item references (Lists, Custom Formats, Notifications,
+    // etc.). Radarr/Sonarr refuse to delete those tags — surfacing
+    // them in the modal lets the user fix before clicking Delete and
+    // getting a long cryptic API error.
+    deleteBlockedTargets() {
+      return (this.deleteTargets || []).filter(t => {
+        const u = t.nonItemUsage || {};
+        return Object.keys(u).length > 0;
+      });
+    },
+    // Pretty label for the modal: "2 Lists, 1 Custom Format" etc.
+    deleteBlockedSummary(target) {
+      const u = (target && target.nonItemUsage) || {};
+      const parts = [];
+      for (const k of Object.keys(u)) {
+        parts.push(u[k] + ' ' + k);
+      }
+      return parts.join(', ');
+    },
+
     openBulkDelete() {
       if (this.tagsSelected.size === 0) return;
       this.deleteTargets = this.tags
         .filter(t => this.tagsSelected.has(t.id))
-        .map(t => ({ id: t.id, label: t.label, usageCount: t.usageCount }));
+        .map(t => ({ id: t.id, label: t.label, usageCount: t.usageCount, nonItemUsage: t.nonItemUsage || {} }));
       this.deleteKeepDefinition = false;
       this.deleteError = '';
       this.deleteProgress = '';
@@ -6009,13 +6417,13 @@ function app() {
         return;
       }
       const inst = seedInst.id;
-      // Pre-fill runMode from the Run mode radio on Run mode (this.scanMode).
-      // If the user has Preview selected for the standalone Tag library
-      // run-card, opening Quick fix-all should default to Preview too.
-      // Avoids the gotcha where a user picks Preview on the radio and
-      // assumes the wizard inherits it — wizard defaulted to Apply
-      // before, which silently mismatched user intent.
-      const seedRunMode = this.scanMode === 'preview' ? 'preview' : 'apply';
+      // Default to Preview for safety — the wizard is interactive
+      // and one-shot, so a Preview-then-Apply flow is the right
+      // pattern. The result panel's "Apply now" button promotes
+      // a clean preview to apply without re-walking the wizard,
+      // so committing to Apply up-front is rarely the user's
+      // intent. Keeps QFA + Tag-release-groups mini-wizard
+      // consistent (both default to preview).
       this.editingRule = {
         id: '',
         // Auto-name lets the chain-summary header read as something
@@ -6033,7 +6441,7 @@ function app() {
         cron: '0 3 * * *',
         enabled: true,
         options: {
-          runMode: seedRunMode,
+          runMode: 'preview',
           cleanupUnusedTags: false,
           syncToSecondary: false,
           syncToInstanceId: '',
@@ -6774,12 +7182,12 @@ function app() {
     // users on a Sonarr instance never see Radarr-only options that
     // would 501 at scan time.
     ruleModeCatalog: [
-      { value: 'tag',       label: 'Tag library — apply your release-group rules to every movie',                  appliesTo: ['radarr'] },
+      { value: 'tag',       label: 'Tag release groups — tag movies whose release group passes your filters',      appliesTo: ['radarr'] },
       { value: 'discover',  label: 'Discover — find new release-groups in your library',                            appliesTo: ['radarr'] },
       { value: 'recover',   label: 'Recover — fill missing release-group fields from grab history',                 appliesTo: ['radarr', 'sonarr'] },
-      { value: 'audiotags', label: 'Audio tags — informative tags from audio mediaInfo (codec / channels / atmos)', appliesTo: ['radarr', 'sonarr'] },
-      { value: 'videotags', label: 'Video tags — informative tags from video mediaInfo (resolution / codec / HDR)', appliesTo: ['radarr', 'sonarr'] },
-      { value: 'dvdetail',  label: 'DV detail — Dolby Vision profile / CM tags (requires ffmpeg + dovi_tool)',      appliesTo: ['radarr'] },
+      { value: 'audiotags', label: 'Tag Audio — informative tags from audio mediaInfo (codec / channels / atmos)',  appliesTo: ['radarr', 'sonarr'] },
+      { value: 'videotags', label: 'Tag Video — informative tags from video mediaInfo (resolution / codec / HDR)',  appliesTo: ['radarr', 'sonarr'] },
+      { value: 'dvdetail',  label: 'Tag DV Details — Dolby Vision profile / CM tags (requires ffmpeg + dovi_tool)', appliesTo: ['radarr'] },
       { value: 'combined',  label: 'Combined — chain several of the above in one run',                              appliesTo: ['radarr', 'sonarr'] },
     ],
     // ruleCombinedSubstepCatalog drives the chain-step checkboxes on
@@ -6798,10 +7206,10 @@ function app() {
     ruleCombinedSubstepCatalog: [
       { value: 'discover',  label: 'Discover new release-groups',         appliesTo: ['radarr'] },
       { value: 'recover',   label: 'Recover missing release-groups',      appliesTo: ['radarr', 'sonarr'] },
-      { value: 'tag',       label: 'Tag library',                         appliesTo: ['radarr'] },
-      { value: 'audiotags', label: 'Apply Audio tags',                    appliesTo: ['radarr', 'sonarr'] },
-      { value: 'videotags', label: 'Apply Video tags',                    appliesTo: ['radarr', 'sonarr'] },
-      { value: 'dvdetail',  label: 'Apply DV detail',                     appliesTo: ['radarr'], optIn: true },
+      { value: 'tag',       label: 'Tag release groups',                  appliesTo: ['radarr'] },
+      { value: 'audiotags', label: 'Tag Audio',                           appliesTo: ['radarr', 'sonarr'] },
+      { value: 'videotags', label: 'Tag Video',                           appliesTo: ['radarr', 'sonarr'] },
+      { value: 'dvdetail',  label: 'Tag DV Details',                      appliesTo: ['radarr'], optIn: true },
     ],
     ruleEditorInstanceType() {
       // Locked at open-time on ruleEditor.appType (Create/QFA seed from
@@ -6853,9 +7261,18 @@ function app() {
     //     flow — must not be blocked at the wizard.
     tagPhaseNeedsGroups() {
       if (!this.ruleAffectsTag()) return false;
-      const r = this.editingRule;
-      const o = (r && r.options) || {};
-      if (this.ruleAffectsDiscover() && o.discoverWriteBack && o.autoActivateDiscovered) return false;
+      // Discover-in-chain bypasses the requirement entirely.
+      // Rationale (2026-05-05): if user picks "Add + leave disabled"
+      // Discover still augments the Active list (just with Enabled
+      // off). Tag phase then runs against whatever's currently
+      // enabled; if that's empty, the result is a no-op (0 movies
+      // tagged), not an error. The user explicitly chose Discover —
+      // we trust their intent rather than blocking the run because
+      // autoActivate is off. Previously this check required BOTH
+      // discoverWriteBack AND autoActivateDiscovered, which produced
+      // a misleading "enable Discover with Add + enable" error even
+      // when Discover was already enabled with Add + disabled.
+      if (this.ruleAffectsDiscover()) return false;
       return true;
     },
     ruleAffectsRecover()   { const r = this.editingRule; if (!r) return false; return r.mode === 'recover' || (r.mode === 'combined' && (r.options.combinedModes || []).includes('recover')); },
@@ -6962,6 +7379,26 @@ function app() {
         // both the Next button (UI) and ruleEditorNext (keyboard).
         if (!this.ruleEditor.isQuickFix && !(r.name || '').trim()) {
           return 'Pick a name for the rule before continuing.';
+        }
+        // Tag release groups requires either Discover (which adds
+        // groups at run-time) OR pre-existing active groups. Without
+        // either, the Tag pass would be a no-op. Same logic as the
+        // mini-wizard's failguard. Discover-only / Recover-only /
+        // Audio/Video/DV runs aren't affected.
+        if (this.ruleAffectsTag() && !this.ruleAffectsDiscover()) {
+          if (this.groupsFilteredByInstanceType().length === 0) {
+            return 'No active release groups for this instance — enable Discover above so the chain auto-finds groups, or close the wizard and add some via + Add on the Active groups list.';
+          }
+        }
+      }
+      if (step === 'filters' && this.ruleAffectsTag()) {
+        // Filter is mandatory for Tag release groups runs after the
+        // 2026-05-05 restructure. At least one master (Quality or
+        // Audio) must be on. Per-group filtered/simple flag still
+        // exists as override but globally we require a filter.
+        const f = r.filters || {};
+        if (!f.Quality && !f.Audio) {
+          return 'Tag release groups requires at least one filter — enable Quality or Audio above to continue.';
         }
       }
       if (step === 'audio' && this.ruleAffectsAudio()) {

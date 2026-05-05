@@ -289,6 +289,24 @@ func validateExclusionBody(instType string, body recoverExclusionRequestBody) *a
 			return newAPIError(400, "seriesId must be positive and seasonNumber non-negative (0 = Specials)")
 		}
 	}
+	// Reject "exclude whole series 7" + "exclude season 3 of series 7" in
+	// the same payload — the AddSeries-then-AddSeason ordering in
+	// handleAddRecoverExclusions would silently drop the per-season
+	// entry (whole-series wins because AddSeason early-returns when the
+	// series's seasons slice is empty/whole). Rather than make the
+	// drop visible (still ambiguous user intent), refuse the mixed
+	// payload and let the client decide which they want.
+	if len(body.Series) > 0 && len(body.Seasons) > 0 {
+		seriesSet := make(map[int]struct{}, len(body.Series))
+		for _, sid := range body.Series {
+			seriesSet[sid] = struct{}{}
+		}
+		for _, ss := range body.Seasons {
+			if _, ok := seriesSet[ss.SeriesID]; ok {
+				return newAPIError(400, "cannot exclude both a whole series and one of its seasons in the same request — pick one")
+			}
+		}
+	}
 	return nil
 }
 

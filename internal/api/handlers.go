@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +18,36 @@ import (
 	"resolvarr/internal/core"
 	"resolvarr/internal/netsec"
 )
+
+// reRadarrTagLabel mirrors Radarr's TagController.cs validator
+// (`^[a-z0-9-]+$` with RegexOptions.IgnoreCase). We additionally
+// pre-lowercase the label before checking + sending to the Arr,
+// matching what TagService.Add does server-side via
+// ToLowerInvariant. Sonarr's TagController has no validator, so
+// non-empty is the only constraint. Both Arrs use a case-sensitive
+// FindByLabel-then-lowercase dedup path, so sending pre-lowercased
+// avoids a UNIQUE-constraint trip when an existing tag already
+// matches case-insensitively.
+var reRadarrTagLabel = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// normalizeTagLabel returns the trimmed + lowercased form of label
+// (what both Arrs will store). Empty is preserved as empty.
+func normalizeTagLabel(label string) string {
+	return strings.ToLower(strings.TrimSpace(label))
+}
+
+// validateTagLabel enforces the per-Arr rule against the already-
+// normalized label. Returns "" on success, an end-user-facing
+// reason string otherwise.
+func validateTagLabel(label, instType string) string {
+	if label == "" {
+		return "tag label cannot be empty"
+	}
+	if instType == "radarr" && !reRadarrTagLabel.MatchString(label) {
+		return "Radarr only accepts a-z, 0-9 and hyphens"
+	}
+	return ""
+}
 
 // handleVersion exposes container metadata the frontend needs to render
 // times in the user's host context: the version string plus the
@@ -709,13 +740,22 @@ func (s *Server) handleListTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type tagOut struct {
-		ID         int    `json:"id"`
-		Label      string `json:"label"`
-		UsageCount int    `json:"usageCount"`
+		ID         int            `json:"id"`
+		Label      string         `json:"label"`
+		UsageCount int            `json:"usageCount"`
+		// NonItemUsage maps surface-name → count for every non-movie /
+		// non-series reference the tag carries (Lists, Custom Formats,
+		// Notifications, etc.). Empty when the tag is only attached to
+		// items and is safe to delete. Frontend uses this to warn the
+		// user BEFORE they hit Delete and get a cryptic Arr API error.
+		NonItemUsage map[string]int `json:"nonItemUsage,omitempty"`
 	}
 	out := make([]tagOut, 0, len(details))
 	for _, d := range details {
-		out = append(out, tagOut{ID: d.ID, Label: d.Label, UsageCount: d.UsageCount()})
+		out = append(out, tagOut{
+			ID: d.ID, Label: d.Label, UsageCount: d.UsageCount(),
+			NonItemUsage: d.NonItemUsage(),
+		})
 	}
 	writeJSON(w, out)
 }
@@ -945,9 +985,18 @@ func (s *Server) handleRenameTag(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid body")
 		return
 	}
-	req.NewLabel = strings.TrimSpace(req.NewLabel)
-	if req.OldID == 0 || req.NewLabel == "" {
-		writeError(w, 400, "oldId and newLabel are required")
+	if req.OldID == 0 {
+		writeError(w, 400, "oldId is required")
+		return
+	}
+	// Normalize + per-app-type validate. Sends pre-lowercased to the
+	// Arr so the case-sensitive FindByLabel race upstream code has
+	// can't trip on "MyTag" vs DB row "mytag". Frontend sanitises
+	// keystrokes, but a curl client could still post mixed case or
+	// disallowed chars — defence-in-depth.
+	req.NewLabel = normalizeTagLabel(req.NewLabel)
+	if reason := validateTagLabel(req.NewLabel, inst.Type); reason != "" {
+		writeError(w, 400, reason)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)

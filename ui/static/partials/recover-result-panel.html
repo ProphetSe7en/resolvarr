@@ -8,10 +8,23 @@
           </div>
         </template>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+          <!-- Summary line. recoverAffected = total rows with empty/Unknown
+               releaseGroup, regardless of whether they can actually be
+               fixed. Saying "needing recovery" was misleading when all
+               rows landed in unfixable buckets (no-history / failed-
+               verify / no-rls-group / flagged). New copy is honest about
+               what was found; the chip strip below shows the breakdown
+               of which can vs can't be recovered. -->
           <div style="font-size:13px;color:var(--text-secondary)">
             Found <strong style="color:var(--text-body)" x-text="recoverResults.totals.recoverAffected || 0"></strong>
             <span x-text="(recoverResults.instance && recoverResults.instance.type === 'sonarr') ? ('episode file' + ((recoverResults.totals.recoverAffected || 0) !== 1 ? 's' : '')) : ('movie' + ((recoverResults.totals.recoverAffected || 0) !== 1 ? 's' : ''))"></span>
-            needing recovery.
+            with empty or <em>Unknown</em> release group.
+            <template x-if="(recoverResults.totals.recoverWouldFix || 0) > 0">
+              <span><strong style="color:var(--accent-blue)" x-text="recoverResults.totals.recoverWouldFix"></strong> can be recovered automatically — see the chips below.</span>
+            </template>
+            <template x-if="(recoverResults.totals.recoverWouldFix || 0) === 0 && (recoverResults.totals.recoverAffected || 0) > 0">
+              <span style="color:var(--accent-orange)">None can be recovered automatically — every row landed in a bucket that needs manual review or has no usable history. Click the chips below to see why.</span>
+            </template>
           </div>
           <button class="icon-btn" @click="dismissRecoverResults()" title="Dismiss results — won't undo anything; just hides the card">
             <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10 M13 3L3 13"/></svg>
