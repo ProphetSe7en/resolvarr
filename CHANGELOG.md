@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.3.8-dev — Run Discover gets its own wizard (2026-05-06)
+
+### What you get
+
+- **Run Discover now opens a short wizard** instead of firing
+  immediately. Three steps:
+  1. **Choices** — pick run mode (Preview vs Apply), the
+     add-behavior for new groups (enabled or disabled), and
+     whether to include groups already on your Active list
+     (audit mode).
+  2. **Filter** — same Quality + Audio toggles as the Tag wizard,
+     with the same one-must-be-on gate. Saves on each click.
+  3. **Review** — confirm and run.
+
+- **Preview vs Apply** for Discover, mirroring the Tag wizard:
+  - **Preview** (default) — show every candidate in the result
+    modal so you tick which to add. Same flow you had before.
+  - **Apply** — auto-add every candidate with the chosen
+    add-behavior. No manual review. Use when you trust your
+    filter and just want every match in.
+
+The audit-mode toggle that used to sit on the actions card moved
+into the wizard's Choices step — tidies up the page and keeps
+all Discover options in one place.
+
+### Why this changed
+
+Filters sub-tab was dropped in v0.3.7-dev (folded into the Tag
+wizard). That left the standalone Run Discover button with no
+visible filter UI on the Tag Release Groups page — clicking it
+would silently use whatever filter state happened to be saved.
+The wizard fixes that by walking you through filter selection
+before the scan fires.
+
+---
+
 ## v0.3.7-dev — Library scan restructure + wizards on Step 1 (2026-05-05)
 
 ### What you get

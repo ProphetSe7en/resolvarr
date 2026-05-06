@@ -1248,12 +1248,9 @@
                 </div>
               </div>
               <div style="display:flex;flex-direction:column;gap:8px;min-width:240px">
-                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-body)" title="Default off — Discover only shows groups not already in Active. Turn on to audit your full filter-pass inventory (slower).">
-                  <input type="checkbox" x-model="scanIncludeKnown">
-                  <span>Include configured <span style="color:var(--text-secondary)">(Discover audit mode)</span></span>
-                </label>
                 <div style="display:flex;gap:8px">
-                  <button class="btn btn-sm btn-primary" style="font-size:12px;padding:4px 12px;white-space:nowrap;flex:1" @click="runDiscover()" :disabled="!scanInstanceId || scanLoading">
+                  <button class="btn btn-sm btn-primary" style="font-size:12px;padding:4px 12px;white-space:nowrap;flex:1" @click="openDiscoverWizard()" :disabled="scanAvailableInstances().length === 0 || scanLoading"
+                          :title="scanAvailableInstances().length === 0 ? 'Add an instance in Settings → Instances first' : 'Walks you through filter + add-behavior choices, then runs Discover'">
                     <span x-show="!scanLoading">Run Discover</span>
                     <span x-show="scanLoading">…</span>
                   </button>
@@ -3369,6 +3366,205 @@
           <button class="btn btn-primary" @click="runTagRgWizard()" :disabled="tagRgWizard.busy">
             <span x-show="!tagRgWizard.busy" x-text="tagRgWizard.runMode === 'apply' ? 'Apply' : 'Run preview'"></span>
             <span x-show="tagRgWizard.busy">Running…</span>
+          </button>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Discover-only mini-wizard =====
+       Opened by the Run Discover button on the Tag Release Groups
+       actions card. 3 steps: Choices (audit mode + add behavior),
+       Filter (same UI as Tag wizard), Review + Run. On Run it
+       seeds scanIncludeKnown + _tagRgDiscoverEnableOnAdd, then
+       calls runDiscover(). Result modal pops automatically when
+       scanResults.discover lands. -->
+  <div class="modal-overlay" x-show="discoverWizard.open" x-cloak @click.self="closeDiscoverWizard()" @keydown.escape.window="if (discoverWizard.open) closeDiscoverWizard()">
+    <div class="modal" style="width:680px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0">
+      <div style="flex:0 0 auto;padding:18px 22px 0">
+        <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px">
+          <div class="modal-title" style="margin:0">Run Discover</div>
+          <div style="font-size:12px;color:var(--text-secondary)">
+            Step <span x-text="discoverWizard.step + 1"></span> of <span x-text="discoverWizardVisibleSteps().length"></span>
+          </div>
+        </div>
+        <div style="display:flex;gap:4px;font-size:11px;color:var(--text-muted-secondary);margin-top:4px">
+          <template x-for="(s, idx) in discoverWizardVisibleSteps()" :key="s">
+            <span :style="idx === discoverWizard.step ? 'color:var(--accent-blue);font-weight:600' : ''" x-text="s"></span>
+          </template>
+        </div>
+      </div>
+
+      <div style="flex:1 1 auto;overflow-y:auto;padding:18px 22px">
+
+        <!-- ===== Step 1 — Choices ===== -->
+        <template x-if="discoverWizardVisibleSteps()[discoverWizard.step] === 'Choices'">
+          <div>
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:8px">
+              Discover walks your library and surfaces release groups that pass your filter but aren't on the Active list yet. After the scan you'll see a list of candidates — tick the ones you want and click <strong>Add Selected</strong> to add them.
+            </div>
+
+            <!-- Instance picker (when 2+ of current Arr type). -->
+            <template x-if="scanAvailableInstances().length > 1">
+              <div class="form-group">
+                <label class="label" x-text="'Target ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance'"></label>
+                <select class="input" x-model="scanInstanceId" style="max-width:340px">
+                  <template x-for="inst in scanAvailableInstances()" :key="inst.id">
+                    <option :value="inst.id" x-text="inst.name"></option>
+                  </template>
+                </select>
+              </div>
+            </template>
+            <template x-if="scanAvailableInstances().length === 1 && activeInstance()">
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;padding:8px 12px;background:var(--bg-page);border:1px dashed var(--border-subtle);border-radius:6px">
+                Targeting <strong x-text="activeInstance().name"></strong> — your only configured <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> instance.
+              </div>
+            </template>
+
+            <!-- Run mode — Preview (manual review via Add Selected)
+                 vs Apply (auto-add all discovered candidates). Same
+                 placement as the Tag wizard's Run mode pick. -->
+            <div class="form-group">
+              <label class="label">Run mode</label>
+              <div style="display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+                  <input type="radio" name="discover-wiz-mode" value="preview" x-model="discoverWizard.runMode" style="accent-color:var(--accent-blue)">
+                  <span><strong>Preview</strong> <span style="color:var(--text-secondary)">— show every candidate in a modal so I can tick which to add. Recommended for first run.</span></span>
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+                  <input type="radio" name="discover-wiz-mode" value="apply" x-model="discoverWizard.runMode" style="accent-color:var(--accent-blue)">
+                  <span><strong>Apply</strong> <span style="color:var(--text-secondary)">— auto-add every candidate with the add-behavior below. No manual review. Use when you trust your filter.</span></span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Add-behavior radio. Label adapts to run-mode so
+                 Preview-mode reads as "what happens after Add Selected"
+                 and Apply-mode reads as "what happens to every found
+                 candidate". -->
+            <div class="form-group">
+              <label class="label" x-text="discoverWizard.runMode === 'apply' ? 'When candidates land in the Active list' : 'When you click Add Selected after the scan'"></label>
+              <div style="display:flex;flex-direction:column;gap:10px;padding:12px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                  <input type="radio" name="discover-wiz-add" value="enabled" x-model="discoverWizard.addBehavior" style="accent-color:var(--accent-blue);margin-top:3px">
+                  <span>
+                    <strong>Add to Active list and enable</strong>
+                    <span style="color:var(--text-secondary)">— groups land active. Tag release groups will tag movies in those groups on the next run.</span>
+                  </span>
+                </label>
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                  <input type="radio" name="discover-wiz-add" value="disabled" x-model="discoverWizard.addBehavior" style="accent-color:var(--accent-blue);margin-top:3px">
+                  <span>
+                    <strong>Add to Active list — leave disabled</strong>
+                    <span style="color:var(--text-secondary)">— groups land with Enabled off. Tag release groups skips them until you turn them on. Safer first run.</span>
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Audit mode toggle. -->
+            <div class="form-group">
+              <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:14px">
+                <input type="checkbox" x-model="discoverWizard.includeKnown" style="accent-color:var(--accent-blue);margin-top:3px">
+                <span>
+                  Include groups already configured <span style="color:var(--text-secondary)">(audit mode)</span>
+                  <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;line-height:1.5">Off (default) — Discover only surfaces NEW groups. Turn on to also list groups already on the Active list, so you can verify your full filter-pass inventory. Slower.</div>
+                </span>
+              </label>
+            </div>
+          </div>
+        </template>
+
+        <!-- ===== Step 2 — Filter ===== -->
+        <template x-if="discoverWizardVisibleSteps()[discoverWizard.step] === 'Filter'">
+          <div>
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:8px">
+              At least one filter must be enabled to continue. Discover uses these to decide which release groups qualify — running with no filter would surface every group in the library. The toggles below are the live filter config; changes save on each click and stay set as your defaults.
+            </div>
+
+            <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px;margin-bottom:10px">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text-primary);font-weight:500">
+                <input type="checkbox" x-model="filters.quality" @change="saveFilters()" style="accent-color:var(--accent-blue)">
+                Require a trusted WEB-DL source
+              </label>
+              <div style="color:var(--text-secondary);font-size:12px;margin:4px 0 10px 26px">Only releases from one of the enabled sources pass.</div>
+              <div style="margin-left:26px;display:flex;flex-direction:column;gap:5px">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.quality && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.maWebDL" @change="saveFilters()" style="accent-color:var(--accent-blue)"> MA (Movies Anywhere)
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.quality && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.playWebDL" @change="saveFilters()" style="accent-color:var(--accent-blue)"> Play (Google Play)
+                </label>
+              </div>
+            </div>
+
+            <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:var(--text-primary);font-weight:500">
+                <input type="checkbox" x-model="filters.audio" @change="saveFilters()" style="accent-color:var(--accent-blue)">
+                Require lossless audio
+              </label>
+              <div style="color:var(--text-secondary);font-size:12px;margin:4px 0 10px 26px">Lossy codecs always fail. Upmixed/transcoded audio rejected even with a lossless codec.</div>
+              <div style="margin-left:26px;display:flex;flex-direction:column;gap:5px">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.audio && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.trueHD" @change="saveFilters()" style="accent-color:var(--accent-blue)"> TrueHD
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.audio && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.trueHDAtmos" @change="saveFilters()" style="accent-color:var(--accent-blue)"> TrueHD Atmos
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.audio && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.dtsX" @change="saveFilters()" style="accent-color:var(--accent-blue)"> DTS:X
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px" :class="!filters.audio && 'is-disabled'">
+                  <input type="checkbox" x-model="filters.dtsHDMA" @change="saveFilters()" style="accent-color:var(--accent-blue)"> DTS-HD Master Audio
+                </label>
+              </div>
+            </div>
+
+            <template x-if="!filters.quality && !filters.audio">
+              <div style="margin-top:10px;padding:8px 12px;background:var(--accent-orange-bg);border:1px solid var(--accent-orange);border-radius:6px;font-size:12px;color:var(--accent-orange)">
+                ⚠ At least one of Quality or Audio must be enabled to continue.
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- ===== Step 3 — Review ===== -->
+        <template x-if="discoverWizardVisibleSteps()[discoverWizard.step] === 'Review'">
+          <div>
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px">
+              Review your choices below. The Run-mode pick on Step 1 controls whether candidates auto-land or wait for your tick — the action button bottom-right reflects that.
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:8px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:12px 14px;font-size:13px;color:var(--text-body);margin-bottom:14px">
+              <div x-show="activeInstance()"><strong>Target:</strong> <span x-text="activeInstance() ? activeInstance().name : ''"></span> <span style="color:var(--text-secondary)" x-text="'(' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ')'"></span></div>
+              <div><strong>Run mode:</strong>
+                <span :style="discoverWizard.runMode === 'apply' ? 'color:var(--accent-green);font-weight:600' : 'color:var(--accent-sky);font-weight:600'"
+                      x-text="discoverWizard.runMode === 'apply' ? 'Apply (auto-add every candidate)' : 'Preview (you tick which to add)'"></span>
+              </div>
+              <div><strong>Add behavior:</strong>
+                <span x-text="discoverWizard.addBehavior === 'enabled' ? 'Add and enable' : 'Add but leave disabled'"></span>
+              </div>
+              <div><strong>Audit mode:</strong>
+                <span x-text="discoverWizard.includeKnown ? 'On (also list groups already configured)' : 'Off (only new groups)'"></span>
+              </div>
+              <div><strong>Filter:</strong> <span x-text="(filters.quality ? 'Quality on' : '') + (filters.quality && filters.audio ? ' · ' : '') + (filters.audio ? 'Audio on' : '')"></span></div>
+            </div>
+          </div>
+        </template>
+
+      </div>
+
+      <div style="flex:0 0 auto;padding:14px 22px;border-top:1px solid var(--border-subtle);display:flex;align-items:center;gap:8px">
+        <button class="btn" @click="closeDiscoverWizard()" :disabled="discoverWizard.busy">Cancel</button>
+        <div style="flex:1"></div>
+        <button class="btn" @click="discoverWizardPrev()" :disabled="discoverWizard.step === 0 || discoverWizard.busy">← Back</button>
+        <template x-if="discoverWizard.step < discoverWizardVisibleSteps().length - 1">
+          <button class="btn btn-primary" @click="discoverWizardNext()" :disabled="!discoverWizardCanAdvance() || discoverWizard.busy">Next →</button>
+        </template>
+        <template x-if="discoverWizard.step === discoverWizardVisibleSteps().length - 1">
+          <button class="btn btn-primary" @click="runDiscoverWizard()" :disabled="discoverWizard.busy">
+            <span x-show="!discoverWizard.busy" x-text="discoverWizard.runMode === 'apply' ? 'Run Discover + auto-add' : 'Run Discover'"></span>
+            <span x-show="discoverWizard.busy">Running…</span>
           </button>
         </template>
       </div>
