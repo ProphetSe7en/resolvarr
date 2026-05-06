@@ -94,6 +94,25 @@ function app() {
       runMode: 'preview',         // 'preview' | 'apply'
       busy: false,
     },
+    // Discover-only mini-wizard. Opened by the standalone "Run Discover"
+    // button on the Tag Release Groups actions card. Three steps:
+    //   Choices → Filter → Review.
+    // Same shape as tagRgWizard but no run-mode (Discover doesn't have
+    // preview/apply — it always lists candidates for the user to tick),
+    // no Active-groups step (we're finding NEW groups, not touching the
+    // existing list), and no sync (Discover doesn't write tags). The
+    // Choices step covers the two real options: audit mode (include
+    // groups already in Active in the result, for verification) and
+    // add-behavior (when the user later clicks Add Selected on the
+    // result modal, should the new groups land enabled or disabled).
+    discoverWizard: {
+      open: false,
+      step: 0,
+      runMode: 'preview',         // 'preview' | 'apply' — Preview: show candidates, user picks via Add Selected. Apply: auto-add all candidates with chosen addBehavior.
+      addBehavior: 'enabled',     // 'enabled' | 'disabled' — drives _tagRgDiscoverEnableOnAdd at run time
+      includeKnown: false,        // mirrors scanIncludeKnown — hydrated on open, written back on run
+      busy: false,
+    },
     scanDiscoverSelected: {},     // discover-mode: { [search]: true } for "Add Selected" (search is keyed in original case from response)
     scanDiscoverExpanded: {},     // discover-mode: { [search]: true } for which group rows are expanded to show samples
     // Per-sample row expand inside a group's drill-in. Composite key
@@ -1664,6 +1683,124 @@ function app() {
         // Discover adds don't inherit our pick. See closeTagRgWizard
         // for the full rationale.
         delete this._tagRgDiscoverEnableOnAdd;
+      }
+    },
+
+    // ===== Discover-only mini-wizard =====
+    //
+    // Opened by the "Run Discover" button on the Tag Release Groups
+    // actions card. Walks the user through audit-mode + add-behavior
+    // + filter selection before firing the existing runDiscover()
+    // handler. Replaces the previous one-click button that fired
+    // immediately against current globals (no way to confirm the
+    // filter the scan would use).
+
+    openDiscoverWizard() {
+      const pool = this.scanAvailableInstances();
+      if (pool.length === 0) {
+        const t = this.scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr';
+        this.showToast('Add a ' + t + ' instance in Settings → Instances first', 'error');
+        return;
+      }
+      // Auto-seed scanInstanceId when missing — same pattern as
+      // openTagRgWizard. Discover is per-instance so we need one set.
+      if (!this.scanInstanceId || !pool.some(i => i.id === this.scanInstanceId)) {
+        this.scanInstanceId = pool[0].id;
+      }
+      this.discoverWizard = {
+        open: true,
+        step: 0,
+        runMode: 'preview',
+        addBehavior: 'enabled',
+        includeKnown: !!this.scanIncludeKnown,
+        busy: false,
+      };
+    },
+
+    closeDiscoverWizard() {
+      if (this.discoverWizard.busy) return;
+      this.discoverWizard.open = false;
+    },
+
+    discoverWizardVisibleSteps() {
+      return ['Choices', 'Filter', 'Review'];
+    },
+
+    discoverWizardCanAdvance() {
+      const cur = this.discoverWizardVisibleSteps()[this.discoverWizard.step];
+      if (cur === 'Choices') {
+        // Hard gate: must have a target instance. Auto-seeded on open
+        // but defending against mid-wizard instance deletion.
+        return !!this.scanInstanceId;
+      }
+      if (cur === 'Filter') {
+        // Same gate as the Tag wizard — at least one filter must be on.
+        // Discover with no filter would surface every release group
+        // in the library (huge, useless result).
+        return !!(this.filters && (this.filters.quality || this.filters.audio));
+      }
+      return true;
+    },
+
+    discoverWizardNext() {
+      if (!this.discoverWizardCanAdvance()) return;
+      const max = this.discoverWizardVisibleSteps().length - 1;
+      if (this.discoverWizard.step < max) this.discoverWizard.step++;
+    },
+
+    discoverWizardPrev() {
+      if (this.discoverWizard.step > 0) this.discoverWizard.step--;
+    },
+
+    // Run hands off to runDiscover() after seeding the two globals
+    // it reads — scanIncludeKnown for audit mode, _tagRgDiscoverEnableOnAdd
+    // for the per-row Add Selected behavior. The flag is named "tagRg"
+    // historically but it's the shared "did the user pick enabled-on-add"
+    // bit; both wizards write it. Result modal pops automatically when
+    // scanResults.discover lands; user ticks candidates + Add Selected
+    // applies the chosen enable behavior.
+    async runDiscoverWizard() {
+      if (!this.scanInstanceId) {
+        this.discoverWizard.busy = false;
+        this.showToast('Pick an instance first', 'error');
+        return;
+      }
+      if (!this.filters || !(this.filters.quality || this.filters.audio)) {
+        this.showToast('Enable at least one filter before running Discover.', 'error');
+        return;
+      }
+      this.scanIncludeKnown = !!this.discoverWizard.includeKnown;
+      this._tagRgDiscoverEnableOnAdd = this.discoverWizard.addBehavior === 'enabled';
+      this.discoverWizard.busy = true;
+      try {
+        await this.runDiscover();
+        // Apply mode — auto-add every discovered candidate with the
+        // chosen add-behavior. Skips the manual Add Selected step.
+        // Preview mode (default) just leaves the result modal open
+        // for the user to tick which to add.
+        if (this.discoverWizard.runMode === 'apply' &&
+            this.scanResults && this.scanResults.discover) {
+          const found = this.scanResults.discover.discovered || [];
+          if (found.length > 0) {
+            const searches = found.map(d => d.search);
+            await this.addDiscoveredSearches(searches);
+            // Dismiss the result modal — user lands back on the
+            // Tag Release Groups page with a toast + the updated
+            // Active list. Otherwise the modal would still show
+            // the auto-added candidates as if pending review.
+            this.scanResults.discover = null;
+          } else {
+            this.showToast('Discover found no candidates.', 'info');
+          }
+        }
+      } finally {
+        this.discoverWizard.busy = false;
+        this.discoverWizard.open = false;
+        // The Add-Selected override stays alive ON PURPOSE in preview
+        // mode — the user just opened the result modal and is about
+        // to click Add Selected. Cleared on dismissDiscoverResults
+        // / next wizard open. In apply mode addDiscoveredSearches
+        // already consumed it; safe to leave dangling.
       }
     },
 
