@@ -30,7 +30,38 @@ function app() {
     timeFormat: 'auto',
     currentPage: 'settings',
     section: 'instances',
-    webhookSection: 'setup',  // M-soon placeholder sub-tab — Setup / Grab / Import-Upgrade / Delete / Activity
+    webhookSection: 'setup',  // Setup / Grab / Import-Upgrade / Delete / Activity (Grab/Import/Delete still placeholders)
+    // Webhook subsystem state. webhookConfigs is populated by
+    // loadWebhookSetupPage on Webhooks-tab open + after wizard finish:
+    // { [instanceId]: { token, url, loggingEnabled } }. Empty for
+    // instances that haven't been configured yet.
+    webhookConfigs: {},
+    // Per-instance recent events cache. Loaded lazily when the user
+    // picks an instance on the Recent activity sub-tab. Newest-first
+    // arrays of WebhookEvent objects.
+    webhookEvents: {},
+    webhookEventsLoading: false,
+    webhookActivityInstanceId: '',
+    webhookEventFilter: 'all',     // 'all' | <eventType> — chip filter on activity panel
+    webhookEventExpanded: {},      // { [eventId]: true } — expand-to-see-JSON toggle
+    // Webhook configuration wizard state. Two-step flow matching the
+    // QFA / Tag / Discover wizards' Step-1-carries-everything pattern:
+    //   Step 1 (Choices): Arr type pick (Sonarr/Radarr radio) +
+    //     instance pick (filtered to chosen type) + function picks
+    //     (today: only Enable logging — others are placeholders).
+    //   Step 2 (Summary): generated/existing webhook URL + the list
+    //     of Connect events to enable in Sonarr/Radarr based on the
+    //     function picks.
+    webhookWizard: {
+      open: false,
+      step: 0,
+      appType: 'radarr',
+      instanceId: '',
+      fnLogging: true,
+      busy: false,
+      generatedUrl: '',         // populated after Step 1 advance
+      generatedLoggingEnabled: false,
+    },
     scanSection: 'run',           // 'run' | 'groups' | 'filters' | 'recover' | 'audio' | 'video' | 'dvdetail' | 'history'
     // Library scan App-type pill — same pattern as Tag inventory. Picks
     // which Arr type the page operates on; instance dropdown is filtered
@@ -867,6 +898,12 @@ function app() {
         this.startSchedulePoll();
       } else {
         this.stopSchedulePoll();
+      }
+      // Lazy-load webhook configs + recent events the first time the
+      // user lands on the Webhooks page. Subsequent visits re-fetch
+      // so events captured while the user was elsewhere show up.
+      if (page === 'webhooks') {
+        this.loadWebhookSetupPage();
       }
     },
 
@@ -2750,6 +2787,444 @@ function app() {
         return d.toLocaleString(this.serverLocale || 'en-GB', this.dateFormatOptions());
       } catch (e) {
         return iso;
+      }
+    },
+
+    // ===== Webhook subsystem (M-Webhook foundation, logging-only today) =====
+
+    // Loads the per-instance webhook configs for every Arr instance.
+    // Called when the Webhooks page mounts + after wizard completion
+    // / token rotation. Failures are logged but don't block the UI —
+    // an instance whose GET fails just shows "not configured" and
+    // works the next time the page reloads.
+    //
+    // Fetches in parallel via Promise.all — serialised awaits stack
+    // latency on slow networks (5 instances × 50ms = 250ms wall).
+    async loadWebhookSetupPage() {
+      const insts = this.instances || [];
+      // Defensive: if the user picked an instance for the activity tab
+      // and that instance was deleted under Settings → Instances, the
+      // dropdown selected-id stays dangling. Reset before re-render.
+      if (this.webhookActivityInstanceId &&
+          !insts.find(i => i.id === this.webhookActivityInstanceId)) {
+        this.webhookActivityInstanceId = '';
+      }
+      const results = await Promise.all(insts.map(async inst => {
+        try {
+          const r = await this.apiFetch('/api/instances/' + inst.id + '/webhook');
+          if (r.ok) {
+            const d = await r.json();
+            return [inst.id, d];
+          }
+        } catch (e) {
+          // Tolerate per-instance failure — leave the entry unset
+          // and let the UI render "not configured" for that one.
+        }
+        return null;
+      }));
+      const next = {};
+      for (const r of results) {
+        if (r) next[r[0]] = r[1];
+      }
+      // Whole-object replacement so Alpine v3's reactivity proxy
+      // sees the change on EVERY key — nested-key writes don't
+      // always trigger re-render when the key wasn't tracked yet
+      // (the same trap that bit the Extra-tags toggle on M4).
+      this.webhookConfigs = next;
+      // Auto-pick the first instance for the Recent activity sub-tab
+      // if the user hasn't picked one yet — saves a click on first
+      // visit. They can still flip via the dropdown.
+      if (!this.webhookActivityInstanceId && insts.length > 0) {
+        this.webhookActivityInstanceId = insts[0].id;
+        this.loadWebhookEvents(insts[0].id);
+      }
+    },
+
+    // Fetches recent events for one instance and caches them. Writes
+    // to webhookEvents via spread-assign so Alpine reliably re-renders
+    // when adding a new instanceId key (nested-key writes don't always
+    // trigger updates in Alpine v3 — same trap class as Extra-tags).
+    async loadWebhookEvents(instanceId) {
+      if (!instanceId) return;
+      this.webhookEventsLoading = true;
+      try {
+        let events = [];
+        const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook/events');
+        if (r.ok) {
+          const d = await r.json();
+          events = Array.isArray(d) ? d : [];
+        }
+        this.webhookEvents = { ...this.webhookEvents, [instanceId]: events };
+      } catch (e) {
+        this.webhookEvents = { ...this.webhookEvents, [instanceId]: [] };
+      } finally {
+        this.webhookEventsLoading = false;
+      }
+    },
+
+    // "Last: 2 min ago" / "Never received" status pill text. Pulls
+    // from the per-instance event cache, falls back to "Never" when
+    // the cache is empty (server-side ring would be empty too in
+    // that case).
+    webhookLastReceivedLabel(instanceId) {
+      const events = this.webhookEvents[instanceId];
+      if (!events || events.length === 0) return 'Never received an event';
+      const newest = events[0]; // events are newest-first
+      if (!newest || !newest.receivedAt) return '';
+      try {
+        const d = new Date(newest.receivedAt);
+        const ageMs = Date.now() - d.getTime();
+        if (ageMs < 60 * 1000) return 'Last: just now';
+        if (ageMs < 60 * 60 * 1000) return 'Last: ' + Math.floor(ageMs / 60000) + ' min ago';
+        if (ageMs < 24 * 60 * 60 * 1000) return 'Last: ' + Math.floor(ageMs / 3600000) + ' h ago';
+        return 'Last: ' + Math.floor(ageMs / 86400000) + ' d ago';
+      } catch (e) {
+        return '';
+      }
+    },
+
+    // Copy webhook URL to clipboard. Fall back to selecting the
+    // input value when clipboard API is unavailable (insecure
+    // contexts — webhook setup happens on http:// dev instances
+    // sometimes).
+    async copyWebhookUrl(instanceId) {
+      const cfg = this.webhookConfigs[instanceId];
+      if (!cfg || !cfg.url) return;
+      try {
+        await navigator.clipboard.writeText(cfg.url);
+        this.showToast('Webhook URL copied', 'success');
+      } catch (e) {
+        this.showToast('Copy failed — select the field manually', 'error');
+      }
+    },
+
+    // Confirm + execute token rotation. New URL means the user has
+    // to update Sonarr/Radarr's Connect entry; warn explicitly so
+    // they don't lose the previous URL accidentally.
+    confirmRegenerateWebhookToken(instanceId, name) {
+      const cfg = this.webhookConfigs[instanceId];
+      const wasConfigured = !!(cfg && cfg.token);
+      const msg = wasConfigured
+        ? 'Generate a new webhook URL for "' + name + '"?\n\nThe current URL will stop working immediately. You\'ll need to paste the new URL into ' + ((this.instances.find(i => i.id === instanceId) || {}).type === 'sonarr' ? 'Sonarr' : 'Radarr') + ' → Settings → Connect.'
+        : 'Generate a webhook URL for "' + name + '"?';
+      if (!confirm(msg)) return;
+      this.regenerateWebhookToken(instanceId);
+    },
+
+    async regenerateWebhookToken(instanceId) {
+      try {
+        // No body — preserve LoggingEnabled. Backend reads it as
+        // *bool and now distinguishes "field omitted" (preserve)
+        // from "field present and false" (explicit disable). Old
+        // behaviour silently flipped logging off on rotate.
+        const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook/rotate', {
+          method: 'POST',
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        this.webhookConfigs = { ...this.webhookConfigs, [instanceId]: d };
+        this.showToast('New webhook URL generated', 'success');
+      } catch (e) {
+        this.showToast('Rotate failed: ' + e.message, 'error');
+      }
+    },
+
+    // Toggle the LoggingEnabled flag for an existing webhook config.
+    // Optimistic update — the checkbox flips immediately, server
+    // confirms in the background. On failure we revert. Writes use
+    // spread-assign on the parent object so Alpine reliably re-renders.
+    async toggleWebhookLogging(instanceId, enabled) {
+      const cfg = this.webhookConfigs[instanceId];
+      if (!cfg || !cfg.token) return;
+      const prev = cfg.loggingEnabled;
+      this.webhookConfigs = { ...this.webhookConfigs, [instanceId]: { ...cfg, loggingEnabled: enabled } };
+      try {
+        const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook/logging', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ loggingEnabled: enabled }),
+        });
+        if (!r.ok) {
+          const d = await r.json();
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
+      } catch (e) {
+        // Revert
+        this.webhookConfigs = { ...this.webhookConfigs, [instanceId]: { ...cfg, loggingEnabled: prev } };
+        this.showToast('Logging toggle failed: ' + e.message, 'error');
+      }
+    },
+
+    // Confirm + clear the per-instance log. Idempotent on the
+    // server but the confirm step matches the rest of the
+    // destructive-action UX (delete tag, delete instance, etc.).
+    confirmClearWebhookEvents(instanceId) {
+      if (!instanceId) return;
+      const events = this.webhookEvents[instanceId] || [];
+      if (events.length === 0) return;
+      const inst = this.instances.find(i => i.id === instanceId);
+      const name = inst ? inst.name : 'this instance';
+      if (!confirm('Clear ' + events.length + ' logged event(s) for "' + name + '"?')) return;
+      this.clearWebhookEventsApi(instanceId);
+    },
+
+    async clearWebhookEventsApi(instanceId) {
+      try {
+        const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook/events', {
+          method: 'DELETE',
+        });
+        if (!r.ok) {
+          const d = await r.json();
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
+        this.webhookEvents = { ...this.webhookEvents, [instanceId]: [] };
+        this.showToast('Log cleared', 'success');
+      } catch (e) {
+        this.showToast('Clear failed: ' + e.message, 'error');
+      }
+    },
+
+    // Build [type, count] pairs from the per-instance event cache,
+    // sorted by count desc. Drives the filter chip row on the
+    // Recent activity sub-tab.
+    webhookEventTypeCounts(instanceId) {
+      const events = this.webhookEvents[instanceId] || [];
+      const counts = new Map();
+      for (const ev of events) {
+        const t = ev.eventType || '(unknown)';
+        counts.set(t, (counts.get(t) || 0) + 1);
+      }
+      return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+    },
+
+    webhookEventsFiltered() {
+      const events = this.webhookEvents[this.webhookActivityInstanceId] || [];
+      if (this.webhookEventFilter === 'all') return events;
+      return events.filter(ev => ev.eventType === this.webhookEventFilter);
+    },
+
+    // Toggle the expand-to-see-JSON state on a single event card.
+    // Spread-assign so first-touch keys land cleanly on Alpine v3's
+    // proxy (object-key writes are the same trap class that bit
+    // webhookEvents / webhookConfigs).
+    toggleWebhookEventExpanded(eventId) {
+      const cur = !!this.webhookEventExpanded[eventId];
+      this.webhookEventExpanded = { ...this.webhookEventExpanded, [eventId]: !cur };
+    },
+
+    // Pretty-print the raw event JSON for the expand-to-see view.
+    // Falls back to showing the raw string when JSON.parse fails
+    // (the receiver stamps unparseable bodies through with
+    // eventType="(unparseable)"; pre-pretty-printing them as
+    // raw text is the right behaviour).
+    formatWebhookRaw(raw) {
+      if (!raw) return '';
+      // raw is a JSON value (object/array/etc.) decoded by Alpine
+      // from the JSON response — stringify it pretty.
+      try {
+        return JSON.stringify(raw, null, 2);
+      } catch (e) {
+        return String(raw);
+      }
+    },
+
+    // ===== Webhook configuration wizard =====
+    //
+    // Two-step (Choices → Summary), Arr-type-first layout matching
+    // the QFA / Tag / Discover wizards. Today's only function pick
+    // is "Enable logging"; subsequent sessions add per-function
+    // checkboxes (release-group tag on import, DV detail on import,
+    // qBit S/E tag on grab, etc.) that drive the Step-2 summary's
+    // "Connect events to enable" list per dev/analysis/M-webhook.md
+    // § 3.
+
+    openWebhookWizard() {
+      // Auto-pick the first Arr type that has any configured instance.
+      // Saves the user a click on first open. They can flip via the
+      // radio if they want the other type.
+      const insts = this.instances || [];
+      let appType = 'radarr';
+      const hasRadarr = insts.some(i => i.type === 'radarr');
+      const hasSonarr = insts.some(i => i.type === 'sonarr');
+      if (!hasRadarr && hasSonarr) appType = 'sonarr';
+      // Auto-seed instanceId to the first instance of the picked type.
+      const firstOfType = insts.find(i => i.type === appType);
+      this.webhookWizard = {
+        open: true,
+        step: 0,
+        appType,
+        instanceId: firstOfType ? firstOfType.id : '',
+        fnLogging: true,
+        busy: false,
+        generatedUrl: '',
+        generatedLoggingEnabled: false,
+      };
+    },
+
+    closeWebhookWizard() {
+      if (this.webhookWizard.busy) return;
+      this.webhookWizard.open = false;
+    },
+
+    webhookWizardVisibleSteps() {
+      return ['Choices', 'Summary'];
+    },
+
+    // Reactive instance list for the Step 1 picker — filtered to
+    // the chosen Arr type, sorted by name.
+    webhookWizardInstancesForType() {
+      return (this.instances || [])
+        .filter(i => i.type === this.webhookWizard.appType)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    },
+
+    // When the user flips the Arr-type radio, re-seed instanceId
+    // to the first instance of the new type (or empty when none).
+    webhookWizardSetAppType(type) {
+      this.webhookWizard.appType = type;
+      const list = this.webhookWizardInstancesForType();
+      this.webhookWizard.instanceId = list.length > 0 ? list[0].id : '';
+    },
+
+    webhookWizardCanAdvance() {
+      const cur = this.webhookWizardVisibleSteps()[this.webhookWizard.step];
+      if (cur === 'Choices') {
+        // Hard gate: must have an instance picked + at least one
+        // function ticked (today: logging is the only function so
+        // this collapses to "fnLogging must be true").
+        if (!this.webhookWizard.instanceId) return false;
+        if (!this.webhookWizard.fnLogging) return false;
+        return true;
+      }
+      return true;
+    },
+
+    webhookWizardPrev() {
+      if (this.webhookWizard.step > 0) this.webhookWizard.step--;
+    },
+
+    // Advance from Choices → Summary. This is where we actually
+    // mutate config: persist the function picks (Logging) and,
+    // if the instance has no token yet, generate one. Existing
+    // tokens are preserved so a user re-running the wizard for an
+    // already-configured instance doesn't accidentally rotate.
+    async webhookWizardNext() {
+      if (!this.webhookWizardCanAdvance()) return;
+      const cur = this.webhookWizardVisibleSteps()[this.webhookWizard.step];
+      if (cur === 'Choices') {
+        await this.webhookWizardCommit();
+        return;
+      }
+      // No further forward steps today; Summary is terminal (footer
+      // shows Close instead of Next).
+    },
+
+    async webhookWizardCommit() {
+      const { instanceId, fnLogging } = this.webhookWizard;
+      this.webhookWizard.busy = true;
+      try {
+        // If instance already has a token, just update the logging
+        // flag. Otherwise rotate to generate one. Both calls return
+        // a JSON body containing { token, url, loggingEnabled }.
+        const existing = this.webhookConfigs[instanceId];
+        let result;
+        if (existing && existing.token) {
+          // Toggle logging only — token preserved. Then re-fetch the
+          // full config so URL stays computed against the current
+          // request host.
+          const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook/logging', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ loggingEnabled: !!fnLogging }),
+          });
+          if (!r.ok) {
+            const d = await r.json();
+            throw new Error(d.error || 'HTTP ' + r.status);
+          }
+          // Re-fetch to get the URL (the logging endpoint doesn't
+          // return it). On failure surface the error rather than
+          // silently advancing with the cached URL — that URL was
+          // computed against a previous request's host header and
+          // could be stale if the user moved the container behind
+          // a different reverse proxy.
+          const g = await this.apiFetch('/api/instances/' + instanceId + '/webhook');
+          if (!g.ok) {
+            const d = await g.json().catch(() => ({}));
+            throw new Error(d.error || 'fetch URL: HTTP ' + g.status);
+          }
+          result = await g.json();
+        } else {
+          const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook/rotate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ loggingEnabled: !!fnLogging }),
+          });
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+          result = d;
+        }
+        // Mirror into the page-level cache via spread-assign so the
+        // Setup sub-tab sees the new state without a manual refresh
+        // and Alpine reliably re-renders even on first-write to a
+        // previously-untracked instance key.
+        this.webhookConfigs = { ...this.webhookConfigs, [instanceId]: result };
+        this.webhookWizard.generatedUrl = result.url || '';
+        this.webhookWizard.generatedLoggingEnabled = !!result.loggingEnabled;
+        this.webhookWizard.step = 1;
+      } catch (e) {
+        this.showToast('Webhook setup failed: ' + e.message, 'error');
+      } finally {
+        this.webhookWizard.busy = false;
+      }
+    },
+
+    // Connect-events-to-enable matrix for the Summary step. Today
+    // logging is everything-mode — Sonarr/Radarr should toggle ALL
+    // event types so resolvarr can capture them. When functions
+    // land, this list will whittle to only the events the picked
+    // functions need.
+    webhookWizardArrEvents() {
+      const isSonarr = this.webhookWizard.appType === 'sonarr';
+      // Matches Sonarr's / Radarr's actual checkbox labels in their
+      // Connect → Webhook config form so users can match them
+      // 1:1 in the Summary step.
+      if (isSonarr) {
+        return [
+          'On Test (verify connectivity)',
+          'On Grab',
+          'On Import (Download)',
+          'On Upgrade (Download — upgrade)',
+          'On Episode File Delete',
+          'On Series Add',
+          'On Series Delete',
+          'On Health Issue (optional)',
+          'On Health Restored (optional)',
+          'On Application Update (optional)',
+        ];
+      }
+      return [
+        'On Test (verify connectivity)',
+        'On Grab',
+        'On Import',
+        'On Upgrade',
+        'On Rename',
+        'On Movie Added',
+        'On Movie Delete',
+        'On Movie File Delete',
+        'On Health Issue (optional)',
+        'On Health Restored (optional)',
+        'On Application Update (optional)',
+      ];
+    },
+
+    // Copy the wizard's generated URL.
+    async copyWebhookWizardUrl() {
+      if (!this.webhookWizard.generatedUrl) return;
+      try {
+        await navigator.clipboard.writeText(this.webhookWizard.generatedUrl);
+        this.showToast('URL copied', 'success');
+      } catch (e) {
+        this.showToast('Copy failed — select the field manually', 'error');
       }
     },
 
@@ -6524,7 +6999,7 @@ function app() {
         dvDetail:        this.snapshotGlobalDvDetail(),
         releaseGroupIds: this.snapshotGlobalRGIds(inst),
       };
-      this.ruleEditor = { open: true, isCreate: true, isQuickFix: false, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [] };
+      this.ruleEditor = { open: true, isCreate: true, isQuickFix: false, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [], fixedAction: '' };
       this.computeRuleEditorNextFires();
     },
 
@@ -6611,7 +7086,192 @@ function app() {
         dvDetail:        this.snapshotGlobalDvDetail(),
         releaseGroupIds: this.snapshotGlobalRGIds(inst),
       };
-      this.ruleEditor = { open: true, isCreate: true, isQuickFix: true, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [] };
+      this.ruleEditor = { open: true, isCreate: true, isQuickFix: true, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [], fixedAction: '' };
+    },
+
+    // ===== Per-action standalone wizards =====
+    //
+    // openSpecificActionWizard reuses the QFA wizard infrastructure
+    // but pre-seeds combinedModes to a single action and sets a
+    // fixedAction flag so the Basics step's chain-checkboxes
+    // section can hide (the user came here to run ONE thing — not
+    // the whole "fix everything" chain). Wizard hydrates from
+    // globals like QFA does, lets the user tweak per-run, fires
+    // via runQuickFixChain on the Review step's Run button.
+    //
+    // Action keys: 'audiotags' | 'videotags' | 'dvdetail' | 'recover'.
+    // Cleanup is handled by a separate small wizard (cleanup isn't
+    // a combinedModes phase today).
+    openSpecificActionWizard(action) {
+      if (!this.instances || this.instances.length === 0) {
+        this.showToast('Configure at least one instance first', 'error');
+        return;
+      }
+      // Recover, Audio, Video work for both Arr types. DV detail is
+      // Radarr-only today. Audio/Video on Sonarr work via the M-Sonarr
+      // path. Discover/Tag remain Sonarr-deferred.
+      const wizardAppType = this.scanAppType === 'sonarr' ? 'sonarr' : 'radarr';
+      if (action === 'dvdetail' && wizardAppType !== 'radarr') {
+        this.showToast('Tag DV Details is Radarr-only', 'error');
+        return;
+      }
+      const pool = this.instances.filter(i => i.type === wizardAppType);
+      // Seed precedence:
+      //   1. last-used remembered instance for this action (if still in pool)
+      //   2. current scanInstanceId (when matches type — pre-removal of
+      //      header dropdown this was the legacy default; kept as a
+      //      sensible fallback for users who just clicked from a tab)
+      //   3. first-of-type
+      const remembered = this.recallWizardInstance(action, pool);
+      const seedInst = (remembered && pool.find(i => i.id === remembered))
+                    || pool.find(i => i.id === this.scanInstanceId)
+                    || pool[0];
+      if (!seedInst) {
+        this.showToast(
+          'Need a ' + (wizardAppType === 'sonarr' ? 'Sonarr' : 'Radarr') +
+          ' instance — add one in Settings → Instances', 'error');
+        return;
+      }
+      const inst = seedInst.id;
+      const titleByAction = {
+        audiotags: 'Tag Audio',
+        videotags: 'Tag Video',
+        dvdetail:  'Tag DV Details',
+        recover:   'Run Recover',
+      };
+      this.editingRule = {
+        id: '',
+        name: titleByAction[action] || 'Run',
+        mode: 'combined',
+        instanceId: inst,
+        preset: 'daily', hour: 3, minute: 0, hour12: 3, ampm: 'AM', dow: 0, dom: 1,
+        cron: '0 3 * * *',
+        enabled: true,
+        options: {
+          runMode: 'preview',
+          cleanupUnusedTags: false,
+          syncToSecondary: false,
+          syncToInstanceId: '',
+          combinedModes: [action],
+          includeDiscovery: false,
+          autoActivateDiscovered: false,
+          discoverWriteBack: false,
+          discoverScanSecondary: false,
+          recoverIncludeSecondary: false,
+          recoverIncludeSonarr: false,
+          recoverSonarrSecondary: false,
+          recoverTestItemId: 0,
+          debugTrace: false,
+          bypassDvCache: false,
+          audioTagsTarget: 'primary',
+          videoTagsTarget: 'primary',
+          dvDetailTarget:  'primary',
+        },
+        filters:         this.snapshotGlobalFilters(),
+        audioTags:       this.snapshotGlobalAudioTags(),
+        videoTags:       this.snapshotGlobalVideoTags(),
+        dvDetail:        this.snapshotGlobalDvDetail(),
+        releaseGroupIds: this.snapshotGlobalRGIds(inst),
+      };
+      this.ruleEditor = {
+        open: true, isCreate: true, isQuickFix: true,
+        step: 0, activeTab: 'basics', appType: wizardAppType,
+        busy: false, error: '', cronError: '', nextFires: [],
+        // fixedAction tells the Basics step to hide its chain-
+        // checkboxes section — the user came here to run a single
+        // action, not configure a chain. They can still hit Back
+        // from later steps to tweak instance / run-mode.
+        fixedAction: action,
+      };
+    },
+
+    // Convenience entry points the sub-tab Run buttons call.
+    openAudioWizard()   { this.openSpecificActionWizard('audiotags'); },
+    openVideoWizard()   { this.openSpecificActionWizard('videotags'); },
+    openDvWizard()      { this.openSpecificActionWizard('dvdetail'); },
+    openRecoverWizard() { this.openSpecificActionWizard('recover'); },
+
+    // ===== Per-wizard last-instance memory =====
+    //
+    // Each wizard remembers the instance the user picked on its
+    // last successful run. Stored per-action so Tag Audio's last
+    // pick doesn't bleed into Tag Video's. Bucket configs etc. are
+    // intentionally NOT remembered — page-as-defaults handles
+    // those, and rules handle "always identical settings" via
+    // explicit save. Ad-hoc bucket tweaks are per-run by design.
+    //
+    // Storage key: 'resolvarr-wizard-instance-<action>'.
+    // try/catch on every read+write — Safari private mode + similar
+    // can block localStorage.
+    _wizardInstanceKey(action) {
+      return 'resolvarr-wizard-instance-' + action;
+    },
+    rememberWizardInstance(action, instanceId) {
+      if (!action || !instanceId) return;
+      try { localStorage.setItem(this._wizardInstanceKey(action), instanceId); }
+      catch (e) { /* ignore — non-fatal */ }
+    },
+    // Returns the remembered instance ID iff it's still in pool +
+    // matches the wizard's required type. Caller falls back to its
+    // existing seed logic on null.
+    recallWizardInstance(action, pool) {
+      if (!action || !Array.isArray(pool) || pool.length === 0) return null;
+      let stored = null;
+      try { stored = localStorage.getItem(this._wizardInstanceKey(action)); }
+      catch (e) { return null; }
+      if (!stored) return null;
+      return pool.some(i => i.id === stored) ? stored : null;
+    },
+
+    // ===== Cleanup unused tags wizard =====
+    //
+    // Cleanup isn't a combinedModes phase (it's a separate scan
+    // action server-side), so it gets its own small wizard rather
+    // than reusing the QFA flow. One-step: pick instance + Run.
+    // The cleanup scan is preview-style — finds tags with 0 usage,
+    // pops the result modal where the user picks which to delete.
+    cleanupWizardState: {
+      open: false,
+      instanceId: '',
+      busy: false,
+    },
+    openCleanupWizard() {
+      const pool = (this.instances || []).filter(i => i.type === this.scanAppType);
+      if (pool.length === 0) {
+        const t = this.scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr';
+        this.showToast('Add a ' + t + ' instance in Settings → Instances first', 'error');
+        return;
+      }
+      this.cleanupWizardState = {
+        open: true,
+        instanceId: (pool.find(i => i.id === this.scanInstanceId) || pool[0]).id,
+        busy: false,
+      };
+    },
+    closeCleanupWizard() {
+      if (this.cleanupWizardState.busy) return;
+      this.cleanupWizardState.open = false;
+    },
+    async runCleanupWizard() {
+      if (!this.cleanupWizardState.instanceId) return;
+      this.cleanupWizardState.busy = true;
+      // Seed scanInstanceId so runCleanupCheck (which reads from
+      // it) targets the wizard's pick. Auto-revert on close isn't
+      // needed — when cleanup completes, scanInstanceId stays on
+      // the user's last pick which is consistent with how Tag
+      // and Audio runs already work.
+      this.scanInstanceId = this.cleanupWizardState.instanceId;
+      try {
+        await this.runCleanupCheck();
+      } finally {
+        this.cleanupWizardState.busy = false;
+        this.cleanupWizardState.open = false;
+      }
+    },
+    cleanupWizardInstancesForType() {
+      return (this.instances || [])
+        .filter(i => i.type === this.scanAppType)
+        .sort((a, b) => a.name.localeCompare(b.name));
     },
 
     // Translates an existing schedule row into the editingRule shape.
@@ -6681,7 +7341,7 @@ function app() {
       // a different rule; user must delete + re-create.
       const editInst = (this.instances || []).find(i => i.id === copy.instanceId);
       const editAppType = editInst ? editInst.type : 'radarr';
-      this.ruleEditor = { open: true, isCreate: false, isQuickFix: false, step: 0, activeTab: 'basics', appType: editAppType, busy: false, error: '', cronError: '', nextFires: [] };
+      this.ruleEditor = { open: true, isCreate: false, isQuickFix: false, step: 0, activeTab: 'basics', appType: editAppType, busy: false, error: '', cronError: '', nextFires: [], fixedAction: '' };
       this.computeRuleEditorNextFires();
     },
     closeRuleEditor() {
@@ -7831,6 +8491,17 @@ function app() {
       // the wizard (Apply-after-preview lives at the result panel).
       const r = overrideRule || this.editingRule;
       if (!r) return;
+      // Remember last-used instance per action. Per-action wizards
+      // (Tag Audio / Video / DV Details / Recover) carry fixedAction
+      // — save under that key. QFA proper has no single action;
+      // save under 'qfa' for the generic chain. Apply-now re-fire
+      // path also lands here but doesn't re-persist (overrideRule
+      // means user already chose this instance via the original
+      // wizard run, no need to overwrite).
+      if (!overrideRule && r.instanceId) {
+        const action = (this.ruleEditor && this.ruleEditor.fixedAction) || 'qfa';
+        this.rememberWizardInstance(action, r.instanceId);
+      }
       // For Apply-after-preview we use the same UI busy flag — the
       // result panel reads it to disable the button while running.
       this.ruleEditor.busy = true;

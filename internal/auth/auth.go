@@ -729,6 +729,14 @@ var publicPrefixes = []string{
 	"/css/",   // CSS bundle — base/layout/components/features (frontend extraction 2026-04-28)
 	"/js/",    // JS bundle — Alpine app.js
 	"/icons/", // PNG icons (radarr/sonarr instance icons)
+	// CONTAINER-LOCAL — Sonarr/Radarr Connect can't carry a session
+	// cookie, so /api/webhooks/{token} authenticates via the per-
+	// instance random URL token. Receiver looks up the token in
+	// config; bad/unknown tokens 404. Listed as a prefix because
+	// the token is a path component. Other webhook endpoints
+	// (events list, rotate-token) are admin-side and stay behind
+	// the auth middleware.
+	"/api/webhooks/",
 }
 
 // IsPublic returns true if the request path should bypass auth. Exact-match

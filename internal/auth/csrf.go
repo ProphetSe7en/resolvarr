@@ -91,6 +91,18 @@ func (s *Store) CSRFMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Sonarr/Radarr Connect events arrive server-to-server with no
+		// browser session — no CSRF cookie, no API key. The path token
+		// in /api/webhooks/{token} IS the auth bit; CSRF doesn't apply
+		// to a server-to-server protocol where the request never
+		// originates from a browser holding our cookies. Exempt the
+		// receive path; admin-side webhook endpoints under
+		// /api/instances/{id}/webhook/* keep CSRF protection.
+		if strings.HasPrefix(r.URL.Path, "/api/webhooks/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// VALID API-key requests bypass CSRF. Key must actually verify —
 		// an attacker setting a bogus X-Api-Key header to bypass the
 		// CSRF check doesn't work: they don't hold the real key.

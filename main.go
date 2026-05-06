@@ -83,6 +83,13 @@ func main() {
 	}
 	server.AttachDV(dvTools, dvCache)
 
+	// Webhook event log (M-Webhook foundation, logging-only today).
+	// Per-instance ring buffer for received Sonarr/Radarr Connect
+	// events with on-disk persistence so events survive restarts.
+	// Path under /config (volume-mounted on Unraid + Compose) so a
+	// container rebuild keeps the log.
+	server.AttachWebhookLog(filepath.Join(configDir, "webhook-events.json"))
+
 	// Scheduler (M3d) — wires cron-driven schedule firing through the
 	// api-side Runner adapter. Constructed AFTER the server because the
 	// adapter holds a reference back to server.runX methods. SafeGo'd

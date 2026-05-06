@@ -1,5 +1,87 @@
 # Changelog
 
+## v0.3.9-dev — Webhook foundation + wizard-everywhere + filter honesty (2026-05-07)
+
+### What you get
+
+- **Webhooks tab is live (logging-only mode).** Configure a webhook
+  per Sonarr / Radarr instance via the new wizard, paste the URL
+  into your Arr's Settings → Connect, and every event you fire
+  lands in the Recent activity panel — full decoded JSON, click
+  to expand. Lets you verify Connect setup end-to-end before any
+  per-event tagging features ship in subsequent sessions.
+
+- **Tag Audio / Tag Video / Tag DV Details now have their own
+  Run wizards.** Click "Run Tag Audio" (or Video / DV Details)
+  on the sub-tab and a wizard opens with instance + run-mode +
+  per-bucket allow-list + Review steps. Same shape as Quick fix-all
+  but locked to that one action. Settings configured on the
+  sub-tab page still act as defaults the wizard pre-fills from.
+
+- **Run Recover** + **Find unused tags** likewise open small
+  wizards — pick instance + (preview/apply for Recover) + Run.
+  Replaces the "header instance picker + click button" flow which
+  could disagree with what the wizard would show.
+
+- **Lossless / lossy audio label is honest now.** Before: a movie
+  with `DDP5.1` audio that passed the Quality filter (with Audio
+  filter off) showed up labelled "Lossless audio" — wrong. Now:
+  it shows "EAC3/DD+ (lossy)", "AAC (lossy)", "AC3 (lossy)", or
+  "No lossless audio" depending on what's actually in the file.
+  Quality column similarly: rows that pass with no MA/Play prefix
+  read "AMZN (not MA/Play)" / "Netflix (not MA/Play)" / "Plain
+  WEB-DL (no MA/Play prefix)" / "No WEB-DL source" instead of
+  the placeholder "Unknown".
+
+- **Header "Instance" dropdown removed.** Every wizard has its own
+  instance picker on Step 1 — single source of truth, no more
+  header-says-X but wizard-shows-Y confusion. App-type pill
+  (Sonarr / Radarr) stays since it controls page-level visibility.
+
+- **Per-action wizards remember last instance.** Tag Audio / Video /
+  DV Details / Recover wizards remember which instance you fired
+  last time and pre-select it. Cross-tab memory via localStorage.
+  Other wizards (Tag Release Groups, Discover, QFA, Webhook)
+  still seed from current state — extending memory to those is
+  parked for next session.
+
+### Bug fixes
+
+- Webhook receiver no longer poisons its on-disk log when an
+  unparseable event arrives (json.RawMessage validation would
+  fail every subsequent persist; now wraps invalid bytes into a
+  valid JSON envelope before storing).
+- `handleRenameTag` lowercases + per-app-type validates the new
+  label server-side. Frontend already sanitises keystrokes; this
+  is defence-in-depth so a curl client can't trip the case-
+  sensitive FindByLabel race in upstream Arr code.
+- AAC2.0 / DDP5.1 / EAC3.5.1 channel-suffixed lossy variants now
+  match the lossy-detection regex (was missing the trailing-digit
+  forms — bash inherits the same gap but never surfaced it
+  because bash always runs with audio filter enabled).
+- Several smaller traps fixed during a backend + frontend code
+  review: ring-buffer backing array now reallocates on FIFO
+  eviction (was leaking dead WebhookEvents over long uptimes),
+  list() deep-copies Raw bytes (defence against future code
+  mutating in place), constant-time token compare on webhook
+  receive, rotate-without-body preserves loggingEnabled, all
+  webhookEvents/webhookConfigs writes use spread-assign (Alpine
+  v3 reactivity trap on object-key add).
+
+### Coming next
+
+- **Wizard-everywhere finalisation.** Decide where bucket configs
+  live — sub-tab page (current), wizard with save-to-globals on
+  fire, or wizard with localStorage memory. Three documented
+  paths in `dev/analysis/wizard-everywhere-followup.md`.
+- **qBit auto-tagging via Sonarr Grab webhook + backlog scan.**
+  Two services on the M-Webhook foundation: realtime tag-on-grab
+  and one-off backlog catch-up.
+- **Apply now button on standalone Audio / Video / DV result
+  panels** with frozen preview-time settings.
+
+---
+
 ## v0.3.8-dev — Run Discover gets its own wizard (2026-05-06)
 
 ### What you get
