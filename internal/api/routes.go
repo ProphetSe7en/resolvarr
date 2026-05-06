@@ -118,6 +118,18 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/notifications/agents/{id}", s.handleDeleteNotificationAgent)
 	mux.HandleFunc("POST /api/notifications/agents/test", s.handleTestNotificationAgentInline)
 	mux.HandleFunc("POST /api/notifications/agents/{id}/test", s.handleTestNotificationAgent)
+
+	// Webhooks (M-Webhook foundation — logging-only today). The receive
+	// path lives under /api/webhooks/{token} so the whole URL pasted
+	// into Sonarr/Radarr Connect carries the auth bit. The other
+	// endpoints are admin-side and live under the standard per-
+	// instance namespace so they share the auth middleware.
+	mux.HandleFunc("POST /api/webhooks/{token}", s.handleWebhookReceive)
+	mux.HandleFunc("GET /api/instances/{id}/webhook", s.handleWebhookGet)
+	mux.HandleFunc("GET /api/instances/{id}/webhook/events", s.handleWebhookListEvents)
+	mux.HandleFunc("DELETE /api/instances/{id}/webhook/events", s.handleWebhookClearEvents)
+	mux.HandleFunc("POST /api/instances/{id}/webhook/rotate", s.handleWebhookRotateToken)
+	mux.HandleFunc("PUT /api/instances/{id}/webhook/logging", s.handleWebhookSetLogging)
 }
 
 // RegisterAuthRoutes wires the setup wizard, login/logout, and

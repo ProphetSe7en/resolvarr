@@ -37,6 +37,25 @@ type Instance struct {
 	// older configs from gaining a noisy `"pathMappings": null` line
 	// on their next save.
 	PathMappings []PathMapping `json:"pathMappings,omitempty"`
+
+	// Webhook holds the per-instance Connect-webhook config. Empty
+	// struct means webhook isn't set up yet. The Token is the
+	// per-instance shared secret baked into the webhook URL the user
+	// pastes into Sonarr/Radarr — base64url-encoded crypto/rand
+	// 32 bytes. Other fields are user-toggleable function flags.
+	// Today only LoggingEnabled is wired; subsequent sessions add
+	// per-function flags (release-group tag on import, DV detail
+	// on import, etc.) — see dev/analysis/M-webhook.md § 3 for the
+	// full mapping.
+	Webhook WebhookConfig `json:"webhook,omitempty"`
+}
+
+// WebhookConfig is the per-Arr-instance webhook subscription state.
+// Token-empty == webhook not configured. Per-function flags default
+// false; the configuration wizard flips them on per the user's picks.
+type WebhookConfig struct {
+	Token          string `json:"token,omitempty"`          // base64url-encoded random — empty when not configured
+	LoggingEnabled bool   `json:"loggingEnabled,omitempty"` // when true, every received event is appended to the in-memory + on-disk ring
 }
 
 // PathMapping is a single from→to prefix translation. The "from"

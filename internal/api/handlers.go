@@ -239,6 +239,14 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		if cfg.Instances[i].APIKey != "" {
 			cfg.Instances[i].APIKey = maskKey(cfg.Instances[i].APIKey)
 		}
+		// Webhook token is path-component-as-secret — anyone with the
+		// URL can post Connect events. Mask it on the broad config
+		// endpoint; dedicated GET /api/instances/{id}/webhook returns
+		// the unmasked value for admin-side display + the configuration
+		// wizard's Summary step.
+		if cfg.Instances[i].Webhook.Token != "" {
+			cfg.Instances[i].Webhook.Token = maskSentinel
+		}
 	}
 	cfg.Discord.WebhookURL = maskSecret(cfg.Discord.WebhookURL, maskedDiscordWebhook)
 	// Mask credentials inside notification agents so the legacy /api/config

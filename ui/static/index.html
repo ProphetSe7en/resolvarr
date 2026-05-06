@@ -37,7 +37,7 @@
            Roadmap source: dev/analysis/post-M3d-roadmap.md.
            Each navigates to a "coming soon" page describing the feature scope. -->
       <div class="tab" :class="currentPage === 'lists' && 'active'" @click="setCurrentPage('lists')" style="opacity:0.7" title="Coming with M5 — full plan in dev/analysis/post-M3d-roadmap.md">Lists <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:500">M5</span></div>
-      <div class="tab" :class="currentPage === 'webhooks' && 'active'" @click="setCurrentPage('webhooks')" style="opacity:0.7" title="Coming with the webhook half — Radarr Connect receiver">Webhooks <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:500">soon</span></div>
+      <div class="tab" :class="currentPage === 'webhooks' && 'active'" @click="setCurrentPage('webhooks')" title="Receive Sonarr/Radarr Connect events — logging-only today; per-event functions land in coming sessions">Webhooks <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:500">logging</span></div>
       <div class="tab" :class="currentPage === 'settings' && 'active'" @click="setCurrentPage('settings')">Settings</div>
     </div>
     <!-- Right-side area: logout. Pushed to far right via margin-left:auto.
@@ -494,40 +494,23 @@
               @click="setScanAppType('sonarr')">Sonarr</button>
     </div>
 
-    <!-- Page-level instance picker. ONE control drives every sub-tab —
-         Run mode, Release Groups, Filters, Extra tags. The standalone
-         Quick fix-all wizard seeds its instance from this picker too.
-         When the picker changes, all sub-tabs reflect the new instance. -->
-    <div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:14px;padding:12px 16px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:18px">
-      <div style="flex:1;min-width:280px;max-width:480px">
-        <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px">Instance — applies to every Library scan action</label>
-        <select class="input" style="width:100%" x-model="scanInstanceId" @change="onGroupsInstanceChange()">
-          <template x-if="scanAvailableInstances().length === 0">
-            <option value="" x-text="'— no ' + scanAppType + ' instance configured —'"></option>
-          </template>
-          <template x-if="scanAvailableInstances().length > 0">
-            <option value="">— pick an instance —</option>
-          </template>
-          <template x-for="inst in scanAvailableInstances()" :key="inst.id">
-            <option :value="inst.id" x-text="inst.name"></option>
-          </template>
-        </select>
+    <!-- Page-level instance picker REMOVED 2026-05-06.
+         Action wizards (Tag release groups, Run Discover, QFA, Create
+         rule, Tag Audio / Video / DV Details, Run Recover, Cleanup
+         unused tags) all carry their own instance picker on Step 1
+         so there's a single source of truth for what an action
+         targets — header dropdown was a second source that could
+         disagree with the wizard's pick. App-type pills above
+         still drive page-level visibility (which sub-tabs / configs
+         render) since those are per-Arr-type, not per-instance. -->
+    <template x-if="instances.length === 0">
+      <div style="font-size:13px;color:var(--accent-orange);padding:12px 16px;background:var(--bg-page);border:1px solid var(--accent-orange);border-radius:8px;margin-bottom:18px">No instances configured. Add one under <strong>Settings → Instances</strong>.</div>
+    </template>
+    <template x-if="instances.length > 0 && (instances || []).filter(i => i.type === scanAppType).length === 0">
+      <div style="font-size:13px;color:var(--accent-orange);padding:12px 16px;background:var(--bg-page);border:1px solid var(--accent-orange);border-radius:8px;margin-bottom:18px">
+        No <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> instances configured. Switch app-type above or add one under <strong>Settings → Instances</strong>.
       </div>
-      <div style="font-size:12px;color:var(--text-muted-secondary);padding-bottom:8px;flex:1;min-width:200px">
-        <template x-if="!scanInstanceId">
-          <span>Pick an instance to enable Run scan, Quick fix-all, schedules, and per-tab settings.</span>
-        </template>
-        <template x-if="scanInstanceId && scanAppType === 'sonarr'">
-          <span style="color:var(--text-secondary)"><strong x-text="activeInstance() && activeInstance().name"></strong> — Sonarr supports Recover, Tag Audio and Tag Video (series-level aggregation). Tag release groups (Discover + tag) and Tag DV Details land per future milestones.</span>
-        </template>
-        <template x-if="scanInstanceId && scanAppType === 'radarr'">
-          <span>Configured: <strong x-text="activeInstance() && activeInstance().name"></strong>. Switching here updates every sub-tab.</span>
-        </template>
-      </div>
-      <template x-if="instances.length === 0">
-        <div style="font-size:13px;color:var(--accent-orange);padding-bottom:8px">No instances configured. Add one under <strong>Settings → Instances</strong>.</div>
-      </template>
-    </div>
+    </template>
 
     <div class="settings-layout">
       <!-- Sidebar — focused sub-tabs: Run mode (operations + saved rules),
@@ -1028,7 +1011,10 @@
                   <strong style="color:var(--text-body)">Run Recover is read-only — nothing is written.</strong> It opens a result panel showing what could be fixed and why; in there you tick the rows you want, optionally tick <em>Trigger rename after fix</em>, and click <strong>Apply selected fixes</strong> to commit the changes. Apply is the only step that touches Sonarr.
                 </div>
               </div>
-              <button class="btn btn-primary" @click="runRecoverCheck()" :disabled="!scanInstanceId || recoverLoading" style="white-space:nowrap;flex-shrink:0">
+              <button class="btn btn-primary" @click="openRecoverWizard()"
+                      :disabled="(instances || []).filter(i => i.type === scanAppType).length === 0 || recoverLoading"
+                      :title="(instances || []).filter(i => i.type === scanAppType).length === 0 ? 'Add an instance first' : 'Open the Recover wizard — pick instance, preview/apply, review then run'"
+                      style="white-space:nowrap;flex-shrink:0">
                 <span x-show="!recoverLoading">Run Recover</span>
                 <span x-show="recoverLoading">Running…</span>
               </button>
@@ -1254,7 +1240,8 @@
                     <span x-show="!scanLoading">Run Discover</span>
                     <span x-show="scanLoading">…</span>
                   </button>
-                  <button class="btn btn-sm btn-primary" style="font-size:12px;padding:4px 12px;white-space:nowrap;flex:1" @click="runRecoverCheck()" :disabled="!scanInstanceId || recoverLoading">
+                  <button class="btn btn-sm btn-primary" style="font-size:12px;padding:4px 12px;white-space:nowrap;flex:1" @click="openRecoverWizard()"
+                          :disabled="(instances || []).filter(i => i.type === scanAppType).length === 0 || recoverLoading">
                     <span x-show="!recoverLoading">Run Recover</span>
                     <span x-show="recoverLoading">…</span>
                   </button>
@@ -1423,7 +1410,10 @@
                   <span>Will check <strong x-text="activeInstance() && activeInstance().name"></strong> for managed tags with 0 movies.</span>
                 </template>
               </div>
-              <button class="btn btn-primary" @click="runCleanupCheck()" :disabled="!scanInstanceId || cleanupLoading" style="white-space:nowrap">
+              <button class="btn btn-primary" @click="openCleanupWizard()"
+                      :disabled="(instances || []).filter(i => i.type === scanAppType).length === 0 || cleanupLoading"
+                      :title="(instances || []).filter(i => i.type === scanAppType).length === 0 ? 'Add an instance first' : 'Pick instance, then run a preview scan to find tags with 0 movies'"
+                      style="white-space:nowrap">
                 <span x-show="!cleanupLoading">Find unused tags</span>
                 <span x-show="cleanupLoading">Checking…</span>
               </button>
@@ -2398,7 +2388,10 @@
                   <span>Will check <strong x-text="activeInstance() && activeInstance().name"></strong> for managed tags with 0 movies.</span>
                 </template>
               </div>
-              <button class="btn btn-primary" @click="runCleanupCheck()" :disabled="!scanInstanceId || cleanupLoading" style="white-space:nowrap">
+              <button class="btn btn-primary" @click="openCleanupWizard()"
+                      :disabled="(instances || []).filter(i => i.type === scanAppType).length === 0 || cleanupLoading"
+                      :title="(instances || []).filter(i => i.type === scanAppType).length === 0 ? 'Add an instance first' : 'Pick instance, then run a preview scan to find tags with 0 movies'"
+                      style="white-space:nowrap">
                 <span x-show="!cleanupLoading">Find unused tags</span>
                 <span x-show="cleanupLoading">Checking…</span>
               </button>
@@ -2459,28 +2452,23 @@
             </template>
           </div>
 
-          <!-- Section title row + run controls. -->
+          <!-- Section title row + run launcher.
+               2026-05-06: inline run-mode radio + Run scan button replaced
+               by a single 'Run Tag Audio' button that opens the per-action
+               wizard (instance, run-mode, bucket tweaks, review). The
+               page below is now the 'Edit defaults' surface — its
+               saveAudioTags() persists changes, the wizard hydrates from
+               those defaults on each open. -->
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-            <div class="settings-section-title" style="margin:0">Audio tags</div>
+            <div class="settings-section-title" style="margin:0">Audio tags <span style="color:var(--text-secondary);font-size:12px;font-weight:400">— defaults</span></div>
             <div style="flex:1"></div>
-            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-              <span style="font-size:13px;color:var(--text-body);font-weight:500">Run mode:</span>
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                <input type="radio" x-model="audioTagsRunMode" value="preview" name="audio-tags-mode" style="accent-color:var(--accent-blue)">
-                <span>Preview <span style="color:var(--text-secondary)">(read-only)</span></span>
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                <input type="radio" x-model="audioTagsRunMode" value="apply" name="audio-tags-mode" style="accent-color:var(--accent-blue)">
-                <span>Apply <span style="color:var(--text-secondary)" x-text="scanAppType === 'sonarr' ? '(writes tags to Sonarr)' : '(writes tags to Radarr)'"></span></span>
-              </label>
-              <button class="btn btn-primary btn-sm"
-                      :disabled="!scanInstanceId || !anyAudioTagsBucketEnabled() || scanLoading || (audioTagsRunMode === 'apply' && isHistoricalForAction('audiotags'))"
-                      :title="audioTagsRunMode === 'apply' && isHistoricalForAction('audiotags') ? 'Run a fresh Preview before applying — current panel is a saved snapshot' : ''"
-                      @click="audioTagsRunMode === 'apply' ? openAudioTagsApplyConfirm() : runAudioTagsScan('preview')">
-                <span x-show="!scanLoading">Run Audio-tags scan</span>
-                <span x-show="scanLoading">Running…</span>
-              </button>
-            </div>
+            <button class="btn btn-primary btn-sm"
+                    :disabled="(instances || []).filter(i => i.type === scanAppType).length === 0 || scanLoading"
+                    :title="(instances || []).filter(i => i.type === scanAppType).length === 0 ? 'Add an instance first' : 'Open the Tag Audio wizard — pick instance, preview/apply, tweak buckets per-run'"
+                    @click="openAudioWizard()">
+              <span x-show="!scanLoading">Run Tag Audio</span>
+              <span x-show="scanLoading">Running…</span>
+            </button>
           </div>
 
           <template x-if="scanAppType === 'sonarr'">
@@ -2645,27 +2633,18 @@
             </template>
           </div>
 
+          <!-- Section title row + run launcher (see Audio sub-tab for
+               the rationale — page is 'Edit defaults', wizard fires). -->
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-            <div class="settings-section-title" style="margin:0">Video tags</div>
+            <div class="settings-section-title" style="margin:0">Video tags <span style="color:var(--text-secondary);font-size:12px;font-weight:400">— defaults</span></div>
             <div style="flex:1"></div>
-            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-              <span style="font-size:13px;color:var(--text-body);font-weight:500">Run mode:</span>
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                <input type="radio" x-model="videoTagsRunMode" value="preview" name="video-tags-mode" style="accent-color:var(--accent-blue)">
-                <span>Preview</span>
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                <input type="radio" x-model="videoTagsRunMode" value="apply" name="video-tags-mode" style="accent-color:var(--accent-blue)">
-                <span>Apply</span>
-              </label>
-              <button class="btn btn-primary btn-sm"
-                      :disabled="!scanInstanceId || !anyVideoTagsBucketEnabled() || scanLoading || (videoTagsRunMode === 'apply' && isHistoricalForAction('videotags'))"
-                      :title="videoTagsRunMode === 'apply' && isHistoricalForAction('videotags') ? 'Run a fresh Preview before applying — current panel is a saved snapshot' : ''"
-                      @click="videoTagsRunMode === 'apply' ? openVideoTagsApplyConfirm() : runVideoTagsScan('preview')">
-                <span x-show="!scanLoading">Run Video-tags scan</span>
-                <span x-show="scanLoading">Running…</span>
-              </button>
-            </div>
+            <button class="btn btn-primary btn-sm"
+                    :disabled="(instances || []).filter(i => i.type === scanAppType).length === 0 || scanLoading"
+                    :title="(instances || []).filter(i => i.type === scanAppType).length === 0 ? 'Add an instance first' : 'Open the Tag Video wizard — pick instance, preview/apply, tweak buckets per-run'"
+                    @click="openVideoWizard()">
+              <span x-show="!scanLoading">Run Tag Video</span>
+              <span x-show="scanLoading">Running…</span>
+            </button>
           </div>
           <template x-if="scanAppType === 'sonarr'">
             <div class="settings-section-desc">Tags every series with the video info from its episodes (resolution, codec, HDR). Three groups, each with its own switch and prefix — turn off any group you don't want.</div>
@@ -2776,32 +2755,19 @@
             </div>
           </div>
 
+          <!-- Section title row + run launcher (see Audio sub-tab for
+               the rationale). The Skip-cache toggle moves into the wizard
+               via editingRule.options.bypassDvCache, kept off the page. -->
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-            <div class="settings-section-title" style="margin:0">Dolby Vision detail</div>
+            <div class="settings-section-title" style="margin:0">Dolby Vision detail <span style="color:var(--text-secondary);font-size:12px;font-weight:400">— defaults</span></div>
             <div style="flex:1"></div>
-            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-secondary)"
-                     title="Skip /config/dv-cache.json for this scan only — every file goes through ffmpeg + dovi_tool fresh. Default off (cache active).">
-                <input type="checkbox" x-model="dvBypassCache" style="accent-color:var(--accent-orange)">
-                <span>Skip cache</span>
-              </label>
-              <span style="font-size:13px;color:var(--text-body);font-weight:500">Run mode:</span>
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                <input type="radio" x-model="dvDetailRunMode" value="preview" name="dv-detail-mode" style="accent-color:var(--accent-blue)">
-                <span>Preview</span>
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                <input type="radio" x-model="dvDetailRunMode" value="apply" name="dv-detail-mode" style="accent-color:var(--accent-blue)">
-                <span>Apply</span>
-              </label>
-              <button class="btn btn-primary btn-sm"
-                      :disabled="!scanInstanceId || !dvDetail.enabled || !dvTools.installed || scanLoading || (dvDetailRunMode === 'apply' && isHistoricalForAction('dvdetail'))"
-                      :title="dvDetailRunMode === 'apply' && isHistoricalForAction('dvdetail') ? 'Run a fresh Preview before applying — current panel is a saved snapshot' : ''"
-                      @click="dvDetailRunMode === 'apply' ? openDvDetailApplyConfirm() : runDvDetailScan('preview')">
-                <span x-show="!scanLoading">Run DV-detail scan</span>
-                <span x-show="scanLoading">Running…</span>
-              </button>
-            </div>
+            <button class="btn btn-primary btn-sm"
+                    :disabled="(instances || []).filter(i => i.type === 'radarr').length === 0 || !dvTools.installed || scanLoading"
+                    :title="(instances || []).filter(i => i.type === 'radarr').length === 0 ? 'Add a Radarr instance first — DV detail is Radarr-only' : (!dvTools.installed ? 'DV tools not yet ready — see banner below' : 'Open the Tag DV Details wizard — pick instance, preview/apply, tweak DV allow-lists per-run')"
+                    @click="openDvWizard()">
+              <span x-show="!scanLoading">Run Tag DV Details</span>
+              <span x-show="scanLoading">Running…</span>
+            </button>
           </div>
           <div class="settings-section-desc">Layers Dolby Vision profile + layer + CM-version tags (<code>mel</code> / <code>fel</code> / <code>dvprofile8</code> / <code>cm2</code> / <code>cm4</code>) on top of the base <code>dv</code> tag emitted by Video tags → HDR. Cached to <code>/config/dv-cache.json</code> so re-scans only touch new or changed files.</div>
 
@@ -3567,6 +3533,42 @@
             <span x-show="discoverWizard.busy">Running…</span>
           </button>
         </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Cleanup unused tags mini-wizard =====
+       Single-step pick-instance-and-run modal. Cleanup runs in
+       preview style (lists tags with 0 usage); the result modal
+       handles the per-tag delete / Delete-all step. -->
+  <div class="modal-overlay" x-show="cleanupWizardState.open" x-cloak @click.self="closeCleanupWizard()" @keydown.escape.window="if (cleanupWizardState.open) closeCleanupWizard()">
+    <div class="modal" style="width:480px">
+      <div class="modal-title">Find unused tags</div>
+      <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px">
+        Scans the picked instance for managed release-group tags with 0 movies attached. After the scan you'll see the result panel where you tick the tags to delete, or click <strong>Delete all</strong>. Nothing is deleted until you confirm there.
+      </div>
+      <template x-if="cleanupWizardInstancesForType().length === 0">
+        <div style="padding:8px 12px;background:var(--accent-orange-bg);border:1px solid var(--accent-orange);border-radius:6px;font-size:12px;color:var(--accent-orange);margin-bottom:14px">
+          No <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> instances configured. Add one under <strong>Settings → Instances</strong> first.
+        </div>
+      </template>
+      <template x-if="cleanupWizardInstancesForType().length > 0">
+        <div class="form-group">
+          <label class="label" x-text="'Target ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance'"></label>
+          <select class="input" x-model="cleanupWizardState.instanceId">
+            <template x-for="inst in cleanupWizardInstancesForType()" :key="inst.id">
+              <option :value="inst.id" x-text="inst.name"></option>
+            </template>
+          </select>
+        </div>
+      </template>
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <button class="btn" @click="closeCleanupWizard()" :disabled="cleanupWizardState.busy">Cancel</button>
+        <button class="btn btn-primary" @click="runCleanupWizard()" :disabled="cleanupWizardState.busy || !cleanupWizardState.instanceId">
+          <span x-show="!cleanupWizardState.busy">Find unused tags</span>
+          <span x-show="cleanupWizardState.busy">Scanning…</span>
+        </button>
       </div>
     </div>
   </div>
@@ -4493,9 +4495,9 @@
   <div class="page" x-show="currentPage === 'webhooks'" x-cloak>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
       <div class="section-title">Webhooks</div>
-      <span style="font-size:11px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:2px 8px;border-radius:8px;font-weight:500">Coming after Phase 3</span>
+      <span style="font-size:11px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:2px 8px;border-radius:8px;font-weight:500">Logging only — functions next session</span>
     </div>
-    <div class="section-subtitle">Receive Radarr / Sonarr Connect events to apply tags as files come in, instead of waiting for the next Library scan. tagarr exposes a webhook URL per instance; you point Radarr / Sonarr Connect at it and pick which events to forward.</div>
+    <div class="section-subtitle">Receive Sonarr / Radarr Connect events. Today's mode is <strong>logging only</strong> — every event lands in the Recent activity panel so you can verify your Connect setup and inspect the JSON. Per-event tagging functions (release-group, DV, audio/video, qBit episode/season, grab rename) land in subsequent sessions.</div>
 
     <div class="settings-layout">
       <!-- Sidebar -->
@@ -4512,14 +4514,69 @@
 
         <!-- ===== Setup ===== -->
         <div x-show="webhookSection === 'setup'" x-cloak>
-          <div class="settings-section-title">Setup</div>
-          <div class="settings-section-desc">Per-instance webhook URL + secret to paste into Radarr / Sonarr's Connect → Webhook entry. Setup wizard walks you through the Connect-side configuration; no shell scripts, no <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">cont-init.d</code> hooks.</div>
-          <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;margin-top:16px;opacity:0.6;max-width:820px">
-            <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;font-size:13px;color:var(--text-body);align-items:center">
-              <div style="color:var(--text-secondary)">Webhook URL</div><input class="input" disabled placeholder="http://tagarr:6075/api/webhook/&lt;instance-id&gt;" style="opacity:0.5">
-              <div style="color:var(--text-secondary)">Secret</div><input class="input" disabled placeholder="auto-generated per instance" style="opacity:0.5">
-              <div></div><button class="btn btn-sm" disabled style="opacity:0.5;cursor:not-allowed;justify-self:start">Copy URL <span style="font-size:9px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 5px;border-radius:8px;margin-left:4px;font-weight:500">soon</span></button>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+            <div>
+              <div class="settings-section-title">Setup</div>
+              <div class="settings-section-desc">Per-instance webhook URL to paste into Sonarr/Radarr's Connect → Webhook entry. Each instance gets its own random URL token — that's the auth bit; treat the URL like a credential.</div>
             </div>
+            <button class="btn btn-primary" @click="openWebhookWizard()" :disabled="(instances || []).length === 0"
+                    :title="(instances || []).length === 0 ? 'Add an Arr instance first' : 'Walks you through Sonarr/Radarr → instance → enable logging, then shows the URL + setup steps for the Arr side'">
+              + Configure webhook
+            </button>
+          </div>
+
+          <!-- Empty state -->
+          <template x-if="(instances || []).length === 0">
+            <div style="background:var(--bg-card);border:1px dashed var(--border-subtle);border-radius:8px;padding:24px;text-align:center;color:var(--text-muted-secondary);font-size:13px">
+              Add a Sonarr or Radarr instance under <strong>Settings → Instances</strong> first, then come back here to configure its webhook.
+            </div>
+          </template>
+
+          <!-- Per-instance card list. Loaded eagerly when the
+               Webhooks page mounts; refreshed after wizard completion
+               and after token rotation. -->
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <template x-for="inst in (instances || [])" :key="inst.id">
+              <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+                  <div style="font-size:14px;font-weight:600;color:var(--text-primary)" x-text="inst.name"></div>
+                  <span class="app-badge" :class="inst.type === 'sonarr' ? 'app-sonarr' : 'app-radarr'" x-text="inst.type === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>
+                  <template x-if="webhookConfigs[inst.id] && webhookConfigs[inst.id].token">
+                    <span class="pill green" style="font-size:11px">configured</span>
+                  </template>
+                  <template x-if="!webhookConfigs[inst.id] || !webhookConfigs[inst.id].token">
+                    <span class="pill gray" style="font-size:11px">not configured</span>
+                  </template>
+                  <div style="flex:1"></div>
+                  <span style="font-size:12px;color:var(--text-muted-secondary)" x-text="webhookLastReceivedLabel(inst.id)"></span>
+                </div>
+
+                <!-- Configured: show URL + actions -->
+                <template x-if="webhookConfigs[inst.id] && webhookConfigs[inst.id].token">
+                  <div>
+                    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+                      <input class="input" readonly :value="webhookConfigs[inst.id].url" style="flex:1;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:12px" @click="$event.target.select()">
+                      <button class="btn btn-sm" @click="copyWebhookUrl(inst.id)" title="Copy to clipboard">Copy</button>
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px">
+                      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-body)">
+                        <input type="checkbox" :checked="webhookConfigs[inst.id].loggingEnabled" @change="toggleWebhookLogging(inst.id, $event.target.checked)" style="accent-color:var(--accent-blue)">
+                        <span>Enable logging <span style="color:var(--text-secondary)">— append received events to Recent activity below</span></span>
+                      </label>
+                      <div style="flex:1"></div>
+                      <button class="btn btn-sm" @click="confirmRegenerateWebhookToken(inst.id, inst.name)" title="Generate a new token. The old URL stops working — you'll need to paste the new URL into Sonarr/Radarr.">Regenerate URL</button>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Not configured: hint to use the wizard -->
+                <template x-if="!webhookConfigs[inst.id] || !webhookConfigs[inst.id].token">
+                  <div style="font-size:12px;color:var(--text-secondary);font-style:italic">
+                    Click <strong>+ Configure webhook</strong> above to generate this instance's webhook URL.
+                  </div>
+                </template>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -4593,11 +4650,275 @@
 
         <!-- ===== Recent activity ===== -->
         <div x-show="webhookSection === 'activity'" x-cloak>
-          <div class="settings-section-title">Recent activity</div>
-          <div class="settings-section-desc">Every received event lands here. Last 50 in memory + rotated log file. Same retention model as Scheduled runs (M3d).</div>
-          <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:20px;margin-top:16px;opacity:0.6;max-width:820px;text-align:center;font-size:13px;color:var(--text-muted-secondary);font-style:italic">When live, a table will list each event here — title, event type, applied tags, duration, status.</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+            <div>
+              <div class="settings-section-title">Recent activity</div>
+              <div class="settings-section-desc">Last 100 received events per instance. Persists to <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">/config/webhook-events.json</code> across container restarts. Click a card to expand and see the full decoded JSON.</div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <select class="input" x-model="webhookActivityInstanceId" @change="loadWebhookEvents(webhookActivityInstanceId)" style="font-size:12px;height:30px;max-width:240px">
+                <option value="">— pick an instance —</option>
+                <template x-for="inst in (instances || [])" :key="inst.id">
+                  <option :value="inst.id" x-text="inst.name + ' (' + (inst.type === 'sonarr' ? 'Sonarr' : 'Radarr') + ')'"></option>
+                </template>
+              </select>
+              <button class="btn btn-sm" @click="loadWebhookEvents(webhookActivityInstanceId)" :disabled="!webhookActivityInstanceId" title="Refresh the list">↻</button>
+              <button class="btn btn-sm btn-danger" @click="confirmClearWebhookEvents(webhookActivityInstanceId)" :disabled="!webhookActivityInstanceId || (webhookEvents[webhookActivityInstanceId] || []).length === 0">Clear log</button>
+            </div>
+          </div>
+
+          <!-- Filter chips per event type. Built dynamically from
+               whatever event types arrived; "All" + N counts. -->
+          <template x-if="webhookActivityInstanceId && (webhookEvents[webhookActivityInstanceId] || []).length > 0">
+            <div class="filter-row" style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px">
+              <span class="filter-label">Filter by event:</span>
+              <button class="filter-pill" :class="{ 'is-active': webhookEventFilter === 'all' }" @click="webhookEventFilter = 'all'">
+                All <span class="filter-count" x-text="'(' + (webhookEvents[webhookActivityInstanceId] || []).length + ')'"></span>
+              </button>
+              <template x-for="[type, count] in webhookEventTypeCounts(webhookActivityInstanceId)" :key="type">
+                <button class="filter-pill" :class="{ 'is-active': webhookEventFilter === type }" @click="webhookEventFilter = type">
+                  <span x-text="type"></span>
+                  <span class="filter-count" x-text="'(' + count + ')'"></span>
+                </button>
+              </template>
+            </div>
+          </template>
+
+          <!-- Empty states -->
+          <template x-if="!webhookActivityInstanceId">
+            <div style="background:var(--bg-card);border:1px dashed var(--border-subtle);border-radius:8px;padding:24px;text-align:center;color:var(--text-muted-secondary);font-size:13px">
+              Pick an instance above to see its received events.
+            </div>
+          </template>
+          <template x-if="webhookActivityInstanceId && (webhookEvents[webhookActivityInstanceId] || []).length === 0 && !webhookEventsLoading">
+            <div style="background:var(--bg-card);border:1px dashed var(--border-subtle);border-radius:8px;padding:24px;text-align:center;color:var(--text-muted-secondary);font-size:13px">
+              No events received yet for this instance.<br>
+              <span style="display:inline-block;margin-top:6px">Configure the webhook URL in <strong>Sonarr/Radarr → Settings → Connect</strong> and fire a Test event to verify the wiring.</span>
+            </div>
+          </template>
+          <template x-if="webhookEventsLoading">
+            <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:24px;text-align:center;color:var(--text-muted-secondary);font-size:13px">Loading…</div>
+          </template>
+
+          <!-- Event cards. Hidden during a refresh so the user
+               doesn't see stale cards + spinner simultaneously
+               (the loading template above takes over). -->
+          <template x-if="webhookActivityInstanceId && webhookEventsFiltered().length > 0 && !webhookEventsLoading">
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <template x-for="ev in webhookEventsFiltered()" :key="ev.id">
+                <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+                  <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;flex-wrap:wrap" @click="toggleWebhookEventExpanded(ev.id)">
+                    <span class="pill blue" style="font-size:11px;text-transform:none" x-text="ev.eventType"></span>
+                    <div style="flex:1;min-width:200px">
+                      <div style="font-size:13px;color:var(--text-primary);font-weight:500" x-text="ev.title || '(no title)'"></div>
+                      <template x-if="ev.subtitle">
+                        <div style="font-size:12px;color:var(--text-secondary);margin-top:2px" x-text="ev.subtitle"></div>
+                      </template>
+                    </div>
+                    <span style="font-size:11px;color:var(--text-muted-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace" x-text="formatDate(ev.receivedAt)"></span>
+                    <span style="font-size:14px;color:var(--text-muted-secondary)" x-text="webhookEventExpanded[ev.id] ? '▾' : '▸'"></span>
+                  </div>
+                  <template x-if="webhookEventExpanded[ev.id]">
+                    <div style="background:var(--bg-page);border-top:1px solid var(--border-subtle);padding:12px 14px">
+                      <pre style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;color:var(--text-body);margin:0;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-word" x-text="formatWebhookRaw(ev.raw)"></pre>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
         </div>
 
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Webhook configuration wizard =====
+       Two-step: Choices (Arr type + instance + functions) → Summary
+       (URL + Connect events to enable in Sonarr/Radarr). Today only
+       'Enable logging' is wired; per-function checkboxes are
+       placeholders for subsequent sessions. -->
+  <div class="modal-overlay" x-show="webhookWizard.open" x-cloak @click.self="closeWebhookWizard()" @keydown.escape.window="if (webhookWizard.open) closeWebhookWizard()">
+    <div class="modal" style="width:680px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0">
+      <div style="flex:0 0 auto;padding:18px 22px 0">
+        <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px">
+          <div class="modal-title" style="margin:0">Configure webhook</div>
+          <div style="font-size:12px;color:var(--text-secondary)">
+            Step <span x-text="webhookWizard.step + 1"></span> of <span x-text="webhookWizardVisibleSteps().length"></span>
+          </div>
+        </div>
+        <div style="display:flex;gap:4px;font-size:11px;color:var(--text-muted-secondary);margin-top:4px">
+          <template x-for="(s, idx) in webhookWizardVisibleSteps()" :key="s">
+            <span :style="idx === webhookWizard.step ? 'color:var(--accent-blue);font-weight:600' : ''" x-text="s"></span>
+          </template>
+        </div>
+      </div>
+
+      <div style="flex:1 1 auto;overflow-y:auto;padding:18px 22px">
+
+        <!-- ===== Step 1 — Choices ===== -->
+        <template x-if="webhookWizardVisibleSteps()[webhookWizard.step] === 'Choices'">
+          <div>
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:8px">
+              Pick the Arr instance to configure, then which functions you want resolvarr to perform on each received event. The next step shows the URL to paste into Sonarr/Radarr's Connect setup plus which event types to enable there.
+            </div>
+
+            <!-- Arr type radio. Same UX as every other wizard. -->
+            <div class="form-group">
+              <label class="label">Arr type</label>
+              <div style="display:flex;gap:16px">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                  <input type="radio" name="webhook-wiz-apptype" value="radarr" :checked="webhookWizard.appType === 'radarr'" @change="webhookWizardSetAppType('radarr')" style="accent-color:var(--accent-blue)">
+                  Radarr
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                  <input type="radio" name="webhook-wiz-apptype" value="sonarr" :checked="webhookWizard.appType === 'sonarr'" @change="webhookWizardSetAppType('sonarr')" style="accent-color:var(--accent-blue)">
+                  Sonarr
+                </label>
+              </div>
+            </div>
+
+            <!-- Instance picker — filtered to chosen Arr type. -->
+            <div class="form-group">
+              <label class="label" x-text="'Target ' + (webhookWizard.appType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance'"></label>
+              <template x-if="webhookWizardInstancesForType().length === 0">
+                <div style="padding:8px 12px;background:var(--accent-orange-bg);border:1px solid var(--accent-orange);border-radius:6px;font-size:12px;color:var(--accent-orange)">
+                  No <span x-text="webhookWizard.appType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> instances configured yet. Add one under <strong>Settings → Instances</strong> first.
+                </div>
+              </template>
+              <template x-if="webhookWizardInstancesForType().length > 0">
+                <select class="input" x-model="webhookWizard.instanceId" style="max-width:340px">
+                  <template x-for="inst in webhookWizardInstancesForType()" :key="inst.id">
+                    <option :value="inst.id" x-text="inst.name"></option>
+                  </template>
+                </select>
+              </template>
+            </div>
+
+            <!-- Functions block. Today only Enable logging is wired;
+                 the others are placeholders showing the eventual
+                 surface so testers can see the roadmap. -->
+            <div class="form-group">
+              <label class="label">Functions to enable for this instance</label>
+              <div style="display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                  <input type="checkbox" x-model="webhookWizard.fnLogging" style="accent-color:var(--accent-blue);margin-top:3px">
+                  <span>
+                    <strong>Enable logging</strong>
+                    <span style="color:var(--text-secondary)">— append every received event to the Recent activity panel. Lets you verify your Connect setup and inspect the JSON.</span>
+                  </span>
+                </label>
+                <!-- Placeholder rows — disabled today, planned for
+                     coming sessions. The checkbox shape stays so
+                     the eventual structure is visible. -->
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:not-allowed;line-height:1.45;opacity:0.55">
+                  <input type="checkbox" disabled style="margin-top:3px">
+                  <span>
+                    Tag release groups <span style="color:var(--accent-orange);font-size:11px;margin-left:4px">coming next session</span>
+                    <span style="color:var(--text-secondary);display:block;font-size:12px;margin-top:2px">On Import + Upgrade, fire engine.MatchReleaseGroup → DecideTag against the imported file.</span>
+                  </span>
+                </label>
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:not-allowed;line-height:1.45;opacity:0.55">
+                  <input type="checkbox" disabled style="margin-top:3px">
+                  <span>
+                    Tag DV details <span style="color:var(--accent-orange);font-size:11px;margin-left:4px">coming next session</span>
+                    <span style="color:var(--text-secondary);display:block;font-size:12px;margin-top:2px">Run dovi_tool on the imported file, apply DV profile/layer/cm-version tags. Radarr only.</span>
+                  </span>
+                </label>
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:not-allowed;line-height:1.45;opacity:0.55">
+                  <input type="checkbox" disabled style="margin-top:3px">
+                  <span>
+                    Tag Audio + Video <span style="color:var(--accent-orange);font-size:11px;margin-left:4px">coming next session</span>
+                    <span style="color:var(--text-secondary);display:block;font-size:12px;margin-top:2px">On Import + Upgrade, derive informative tags from the imported file's mediaInfo.</span>
+                  </span>
+                </label>
+                <template x-if="webhookWizard.appType === 'sonarr'">
+                  <label style="display:flex;align-items:flex-start;gap:8px;cursor:not-allowed;line-height:1.45;opacity:0.55">
+                    <input type="checkbox" disabled style="margin-top:3px">
+                    <span>
+                      qBit episode/season tag <span style="color:var(--accent-orange);font-size:11px;margin-left:4px">coming next session</span>
+                      <span style="color:var(--text-secondary);display:block;font-size:12px;margin-top:2px">On Grab, tag the qBit torrent with S01 / S01E05 / S01E05E06 so backlogs stay organised.</span>
+                    </span>
+                  </label>
+                </template>
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:not-allowed;line-height:1.45;opacity:0.55">
+                  <input type="checkbox" disabled style="margin-top:3px">
+                  <span>
+                    qBit grab rename <span style="color:var(--accent-orange);font-size:11px;margin-left:4px">coming next session</span>
+                    <span style="color:var(--text-secondary);display:block;font-size:12px;margin-top:2px">On Grab, append release-group + preserve source/version tokens on the qBit torrent name.</span>
+                  </span>
+                </label>
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:not-allowed;line-height:1.45;opacity:0.55">
+                  <input type="checkbox" disabled style="margin-top:3px">
+                  <span>
+                    Tag cleanup on file delete <span style="color:var(--accent-orange);font-size:11px;margin-left:4px">coming next session</span>
+                    <span style="color:var(--text-secondary);display:block;font-size:12px;margin-top:2px">Strip release-group tag when the last file carrying it is removed.</span>
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- ===== Step 2 — Summary ===== -->
+        <template x-if="webhookWizardVisibleSteps()[webhookWizard.step] === 'Summary'">
+          <div>
+            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px;padding:10px 14px;background:var(--alpha-green);border:1px solid var(--accent-green);border-radius:8px;color:var(--accent-green)">
+              ✓ Webhook configured. Copy the URL below and follow the setup steps in <span x-text="webhookWizard.appType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>.
+            </div>
+
+            <!-- Webhook URL -->
+            <div class="form-group">
+              <label class="label">Webhook URL</label>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input class="input" readonly :value="webhookWizard.generatedUrl" style="flex:1;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:12px" @click="$event.target.select()">
+                <button class="btn btn-sm" @click="copyWebhookWizardUrl()">Copy</button>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:4px;line-height:1.5">Treat this URL like a credential — anyone with it can post fake events. Use the <em>Regenerate URL</em> button on the Setup tab to rotate the token if it leaks.</div>
+            </div>
+
+            <!-- Setup steps for the Arr side -->
+            <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px;margin-bottom:14px">
+              <div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:10px">
+                Configure these in <span x-text="webhookWizard.appType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>:
+              </div>
+              <ol style="margin:0;padding-left:20px;font-size:13px;color:var(--text-body);line-height:1.65">
+                <li>Open <strong>Settings → Connect</strong>.</li>
+                <li>Click <strong>+ Add</strong> and pick <strong>Webhook</strong>.</li>
+                <li>Set <strong>Name</strong> to <code style="background:var(--bg-muted);padding:1px 5px;border-radius:3px">resolvarr</code> (or whatever helps you identify it).</li>
+                <li>Set <strong>URL</strong> to the address above.</li>
+                <li>Set <strong>Method</strong> to <code style="background:var(--bg-muted);padding:1px 5px;border-radius:3px">POST</code>.</li>
+                <li>Leave <strong>Username / Password</strong> blank.</li>
+                <li>Toggle on these notification triggers:
+                  <ul style="margin-top:6px;padding-left:18px;font-size:12px">
+                    <template x-for="ev in webhookWizardArrEvents()" :key="ev">
+                      <li x-text="ev"></li>
+                    </template>
+                  </ul>
+                </li>
+                <li>Click <strong>Save</strong>.</li>
+                <li>Click <strong>Test</strong> in the Connect entry — within 1-2 seconds you should see the Test event in the Recent activity panel back in resolvarr's Webhooks page.</li>
+              </ol>
+            </div>
+
+            <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
+              <strong>Logging is captured on every event type</strong> regardless of which subset of triggers you tick — the toggles above are the recommended set so you see all relevant events for future function work. You can untick any you don't want; resolvarr only logs what Arr actually sends.
+            </div>
+          </div>
+        </template>
+
+      </div>
+
+      <div style="flex:0 0 auto;padding:14px 22px;border-top:1px solid var(--border-subtle);display:flex;align-items:center;gap:8px">
+        <button class="btn" @click="closeWebhookWizard()" :disabled="webhookWizard.busy" x-text="webhookWizardVisibleSteps()[webhookWizard.step] === 'Summary' ? 'Close' : 'Cancel'"></button>
+        <div style="flex:1"></div>
+        <button class="btn" @click="webhookWizardPrev()" :disabled="webhookWizard.step === 0 || webhookWizard.busy" x-show="webhookWizardVisibleSteps()[webhookWizard.step] !== 'Choices'">← Back</button>
+        <template x-if="webhookWizardVisibleSteps()[webhookWizard.step] === 'Choices'">
+          <button class="btn btn-primary" @click="webhookWizardNext()" :disabled="!webhookWizardCanAdvance() || webhookWizard.busy">
+            <span x-show="!webhookWizard.busy">Next →</span>
+            <span x-show="webhookWizard.busy">Saving…</span>
+          </button>
+        </template>
       </div>
     </div>
   </div>
@@ -5008,7 +5329,13 @@
       <!-- Header: title + step indicator + tab/step strip. Pinned, never scrolls. -->
       <div style="flex:0 0 auto;padding:18px 22px 0">
         <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px">
-          <div class="modal-title" style="margin:0" x-text="ruleEditor.isQuickFix ? 'Quick fix-all' : (ruleEditor.isCreate ? 'New schedule rule' : 'Edit schedule rule')"></div>
+          <div class="modal-title" style="margin:0" x-text="
+            ruleEditor.fixedAction === 'audiotags' ? 'Tag Audio' :
+            ruleEditor.fixedAction === 'videotags' ? 'Tag Video' :
+            ruleEditor.fixedAction === 'dvdetail'  ? 'Tag DV Details' :
+            ruleEditor.fixedAction === 'recover'   ? 'Run Recover' :
+            (ruleEditor.isQuickFix ? 'Quick fix-all' : (ruleEditor.isCreate ? 'New schedule rule' : 'Edit schedule rule'))
+          "></div>
           <div style="font-size:12px;color:var(--text-secondary)" x-show="ruleEditor.isCreate">
             Step <span x-text="ruleEditor.step + 1"></span> of <span x-text="ruleEditorVisibleSteps().length"></span>
           </div>
@@ -5136,23 +5463,54 @@
                (e.g. only Recover). Frontend forces editingRule.mode =
                'combined' on open so the chain renderer always runs;
                combinedModes carries the user's pick(s).
-               Sonarr-context shows a heads-up about limited support. -->
-          <div class="form-group">
-            <label class="label">What does this rule do?</label>
-            <div style="display:flex;flex-direction:column;gap:6px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
-              <template x-for="sub in ruleCombinedSubstepsForInstance()" :key="sub.value">
-                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-primary)">
-                  <input type="checkbox" :checked="ruleEditorCombinedHas(sub.value)" @change="ruleEditorCombinedToggle(sub.value)" style="accent-color:var(--accent-blue)">
-                  <span x-text="sub.label"></span>
-                  <span x-show="sub.optIn" style="color:var(--accent-orange);font-size:11px">(opt-in)</span>
-                </label>
-              </template>
+               Sonarr-context shows a heads-up about limited support.
+               Per-action wizards (openAudioWizard, openVideoWizard,
+               openDvWizard, openRecoverWizard) come in via
+               openSpecificActionWizard which sets ruleEditor.fixedAction
+               to the single phase the user picked. We hide the chain
+               checkboxes there — the action is locked, the user came
+               to run that one thing. They can still tweak instance,
+               run-mode, and per-bucket config on later steps. -->
+          <template x-if="!ruleEditor.fixedAction">
+            <div class="form-group">
+              <label class="label">What does this rule do?</label>
+              <div style="display:flex;flex-direction:column;gap:6px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
+                <template x-for="sub in ruleCombinedSubstepsForInstance()" :key="sub.value">
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-primary)">
+                    <input type="checkbox" :checked="ruleEditorCombinedHas(sub.value)" @change="ruleEditorCombinedToggle(sub.value)" style="accent-color:var(--accent-blue)">
+                    <span x-text="sub.label"></span>
+                    <span x-show="sub.optIn" style="color:var(--accent-orange);font-size:11px">(opt-in)</span>
+                  </label>
+                </template>
+              </div>
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:6px"
+                   x-text="ruleEditorInstanceType() === 'sonarr'
+                     ? 'Steps run in this order: Recover → Audio tags → Video tags. Pick one or more.'
+                     : 'Steps run in this order: Discover → Recover → Tag → Audio tags → Video tags → DV detail. Pick one or more.'"></div>
             </div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:6px"
-                 x-text="ruleEditorInstanceType() === 'sonarr'
-                   ? 'Steps run in this order: Recover → Audio tags → Video tags. Pick one or more.'
-                   : 'Steps run in this order: Discover → Recover → Tag → Audio tags → Video tags → DV detail. Pick one or more.'"></div>
-          </div>
+          </template>
+          <!-- When fixedAction is set, just confirm what the user
+               came here to run — no checkboxes, no chain editing. -->
+          <template x-if="ruleEditor.fixedAction">
+            <div class="form-group">
+              <label class="label">Action</label>
+              <div style="padding:10px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;font-size:13px;color:var(--text-body)">
+                <strong x-text="
+                  ruleEditor.fixedAction === 'audiotags' ? 'Tag Audio' :
+                  ruleEditor.fixedAction === 'videotags' ? 'Tag Video' :
+                  ruleEditor.fixedAction === 'dvdetail'  ? 'Tag DV Details' :
+                  ruleEditor.fixedAction === 'recover'   ? 'Run Recover' :
+                  ruleEditor.fixedAction"></strong>
+                <span style="color:var(--text-secondary)" x-text="'— ' + (
+                  ruleEditor.fixedAction === 'audiotags' ? 'walk every movie/series and tag them with codec / channels / atmos info from each file\'s mediaInfo.' :
+                  ruleEditor.fixedAction === 'videotags' ? 'walk every movie/series and tag them with resolution / codec / HDR info from each file\'s mediaInfo.' :
+                  ruleEditor.fixedAction === 'dvdetail'  ? 'extract Dolby Vision profile / layer / cm-version per file via dovi_tool and tag.' :
+                  ruleEditor.fixedAction === 'recover'   ? 'find files with empty / Unknown release group and recover the value from grab history.' :
+                  ''
+                )"></span>
+              </div>
+            </div>
+          </template>
 
           <div class="form-group">
             <label class="label">Primary instance</label>

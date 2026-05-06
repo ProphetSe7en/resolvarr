@@ -45,6 +45,13 @@ type Server struct {
 	// Nil when no scan is running.
 	DvScanState *DvScanState
 	dvScanMu    sync.Mutex
+
+	// WebhookLog is the per-instance Connect-event ring buffer. Set
+	// by main.go via AttachWebhookLog after server construction. Nil
+	// during early startup; webhook handlers no-op or return 503 in
+	// that case (they can't run before main has set up the persistence
+	// path). See internal/api/webhook_log.go for the type.
+	WebhookLog *webhookLog
 }
 
 // DvScanState is the atomic snapshot the progress endpoint returns.
@@ -94,6 +101,14 @@ func (s *Server) AttachDV(tools dvdetect.Tools, cache *dvdetect.Cache) {
 // this to construct the Runner that the Scheduler invokes on every fire.
 func (s *Server) NewSchedulerRunner() core.Runner {
 	return newSchedulerRunner(s)
+}
+
+// AttachWebhookLog wires the per-instance Connect-event ring buffer.
+// main.go calls this once at boot with the on-disk persistence path
+// so events survive restarts. Pass nil to disable webhook logging
+// (handlers will 503 on POST, return empty list on GET).
+func (s *Server) AttachWebhookLog(persistPath string) {
+	s.WebhookLog = newWebhookLog(persistPath)
 }
 
 // ---- helpers ----
