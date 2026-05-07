@@ -43,9 +43,16 @@ func readJSON(t *testing.T, rr *httptest.ResponseRecorder, out any) {
 // than waiting on the full 10s qbitTestTimeout. (An earlier draft
 // used 192.168.86.22 and accidentally hit a real qui running on the
 // dev host.)
-const realQuiToken = "602f21d07ef107895b37e0e679d0575c69ae6687c338624c946bd2fc1fe0c33e"
+// SYNTHETIC test fixtures — never copy a real qui-proxy token or
+// real qBit password into here, even one the user pasted into the
+// chat as a shape example. Test fixtures land in a public GitHub
+// repo verbatim; a real token here = unrecoverable leak. v0.3.10-dev
+// shipped with the user's actual token because the post-compaction
+// summary said "stand-in for a real qui token" and I copied the real
+// one anyway. Always synthesise.
+const realQuiToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 const realQuiURL = "http://127.0.0.1:1/proxy/" + realQuiToken
-const realPassword = "real-qbit-password-1234"
+const realPassword = "synthetic-test-password-do-not-use"
 
 // TestQbitHandlers_T78_MaskResolution_FullCycle drives the full
 // secret-handling contract end-to-end: a Create stores plaintext, a
@@ -339,7 +346,7 @@ func TestMaskQbitURL(t *testing.T) {
 	}{
 		{
 			name: "qui_proxy_long_token",
-			in:   "http://192.168.86.22:7476/proxy/602f21d07ef107895b37e0e679d0575c69ae6687c338624c946bd2fc1fe0c33e",
+			in:   "http://192.168.86.22:7476/proxy/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			want: "http://192.168.86.22:7476/proxy/602f" + repeat56Stars() + "c33e",
 		},
 		{
@@ -417,7 +424,7 @@ func TestIsMaskedQbitURL(t *testing.T) {
 		},
 		{
 			"clean_real_url",
-			"http://192.168.86.22:7476/proxy/602f21d07ef107895b37e0e679d0575c69ae6687c338624c946bd2fc1fe0c33e",
+			"http://192.168.86.22:7476/proxy/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			false,
 		},
 		{
@@ -450,7 +457,7 @@ func TestIsMaskedQbitURL(t *testing.T) {
 // way masking_test.go does for maskKey ↔ isMasked.
 func TestMaskQbitURL_RoundTripDetected(t *testing.T) {
 	inputs := []string{
-		"http://qui:7476/proxy/602f21d07ef107895b37e0e679d0575c69ae6687c338624c946bd2fc1fe0c33e",
+		"http://qui:7476/proxy/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"https://192.168.86.22:7476/proxy/abcdef0123456789abcdef0123456789",
 	}
 	for _, in := range inputs {
