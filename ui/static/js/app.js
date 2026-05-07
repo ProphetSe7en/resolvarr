@@ -30,7 +30,7 @@ function app() {
     timeFormat: 'auto',
     currentPage: 'settings',
     section: 'instances',
-    webhookSection: 'setup',  // Setup / Grab / Import-Upgrade / Delete / Activity (Grab/Import/Delete still placeholders)
+    webhookSection: 'setup',  // 'setup' | 'activity'. Per-event-type sub-tabs (Grab / Import / Delete) dropped 2026-05-07 — they suggested global per-event settings, but real architecture is per-instance via wizard.
     // Webhook subsystem state. webhookConfigs is populated by
     // loadWebhookSetupPage on Webhooks-tab open + after wizard finish:
     // { [instanceId]: { token, url, loggingEnabled } }. Empty for
@@ -199,6 +199,33 @@ function app() {
     recoverExclusionsLoading: false,
     showScanApplyConfirm: false,  // confirm modal before applying a preview's decisions
     instances: [],
+    // qBittorrent instances — user-managed list. Populated by
+    // loadQbitInstances on Settings → qBit visit + after each
+    // create/update/delete. Used today for the standalone CRUD
+    // page; future sessions add WebhookConfig.QbitInstanceID
+    // pairing + backlog scan picker.
+    qbitInstances: [],
+    qbitInstanceModal: {
+      open: false,
+      id: '',
+      name: '',
+      url: '',
+      username: '',
+      password: '',
+      trustedCerts: false,
+      busy: false,
+      testing: false,
+      testResult: '',
+      testOk: false,
+    },
+    // Per-instance live status — flat-shape parity with Arr's
+    // instStatus/instError so the row pill template renders the same
+    // way ("Connected" / "Failed — <err>" / "Testing" / "Not tested").
+    // Auto-refreshed via refreshAllQbitStatus() on init + every 60s.
+    qbitStatus: {},
+    qbitError: {},
+    deleteQbitTarget: null,
+    deleteQbitBusy: false,
     // (legacy single-Discord state was here — replaced by multi-agent)
     // Notification agents (multi-provider). Each entry is one Discord/
     // Gotify/NTFY/Pushover/Apprise config with its own credentials and
@@ -632,6 +659,14 @@ function app() {
     qfaDetailAudio: null,        // scan_auto_tags response for an audio phase row
     qfaDetailVideo: null,        // scan_auto_tags response for a video phase row
     qfaDetailDv: null,           // scan_dv_detail response for a DV phase row
+    // qfaDetailVariants holds per-instance variants when the chain
+    // ran the active phase on multiple instances (target='both').
+    // Each entry: { instanceId, label, response }. When length > 1
+    // the modal renders an instance switcher above the body so the
+    // user can flip between primary + secondary results without
+    // re-running. Empty when only one instance ran.
+    qfaDetailVariants: [],
+    qfaDetailVariantIdx: 0,
     qfaDetailDvFilter: 'add',    // DV drill-in action chip (add/remove/keep)
     qfaDetailDvStatusFilter: null, // DV drill-in status chip (cached/extracted/failed/tools-missing/null=all)
     qfaDetailDvTagFilter: null,  // {tag, action} narrowing from a clicked breakdown row; null = no tag filter
@@ -883,8 +918,14 @@ function app() {
         this.loadSecurityPanel();
       }
       // Kick off initial status check for all instances, then poll every 60s.
+      // Same cadence applies to qBit so the row pill reflects live state, not
+      // the last-clicked Test result.
       this.refreshAllStatus();
-      this.pollHandle = setInterval(() => this.refreshAllStatus(), 60000);
+      this.refreshAllQbitStatus();
+      this.pollHandle = setInterval(() => {
+        this.refreshAllStatus();
+        this.refreshAllQbitStatus();
+      }, 60000);
     },
 
     setCurrentPage(page) {
@@ -902,8 +943,12 @@ function app() {
       // Lazy-load webhook configs + recent events the first time the
       // user lands on the Webhooks page. Subsequent visits re-fetch
       // so events captured while the user was elsewhere show up.
+      // Leaving the page closes the SSE stream so we don't hold an
+      // open EventSource for a tab the user isn't looking at.
       if (page === 'webhooks') {
         this.loadWebhookSetupPage();
+      } else {
+        this.stopWebhookEventStream();
       }
     },
 
@@ -921,6 +966,192 @@ function app() {
       }
       if (section === 'logging') {
         this.loadLogging();
+      }
+      if (section === 'qbit') {
+        this.loadQbitInstances();
+      }
+    },
+
+    // ===== qBittorrent instances =====
+    //
+    // Standalone CRUD list. Loaded on Settings → qBit visit, refreshed
+    // after each create / update / delete + the on-boot loadConfig
+    // (since /api/config also returns the list, masked-passwords).
+    // The dedicated /api/qbit-instances endpoint is the source-of-truth
+    // for the Settings page; loadConfig's mirror is a fallback for
+    // first-render before the dedicated fetch returns.
+
+    async loadQbitInstances() {
+      try {
+        const r = await this.apiFetch('/api/qbit-instances');
+        if (r.ok) {
+          const d = await r.json();
+          this.qbitInstances = Array.isArray(d) ? d : [];
+          // Kick a silent status sweep so freshly-loaded rows don't
+          // sit at "Not tested" until the 60s poll catches up. Honors
+          // the silent path so a manual click already in flight isn't
+          // overwritten.
+          this.refreshAllQbitStatus();
+        }
+      } catch (e) {
+        // Silent — page renders empty state until next refresh.
+      }
+    },
+
+    openQbitInstanceModal(qi) {
+      // qi is the existing instance (edit) or undefined (create).
+      // Password placeholder for edit shows '••••••••' so the user
+      // knows leaving it blank preserves the stored value.
+      this.qbitInstanceModal = {
+        open: true,
+        id: qi ? qi.id : '',
+        name: qi ? qi.name : '',
+        url: qi ? qi.url : '',
+        username: qi ? (qi.username || '') : '',
+        password: '', // never pre-populate — masked on edit, blank on create
+        trustedCerts: !!(qi && qi.trustedCerts),
+        busy: false,
+        testing: false,
+        testResult: '',
+        testOk: false,
+      };
+    },
+
+    closeQbitInstanceModal() {
+      if (this.qbitInstanceModal.busy) return;
+      this.qbitInstanceModal.open = false;
+    },
+
+    // testQbitInstanceModal hits the inline-creds endpoint that
+    // probes against whatever's currently in the modal — lets the
+    // user verify creds BEFORE saving. Distinct from
+    // testQbitInstance() which probes against the SAVED creds for
+    // a row in the list.
+    async testQbitInstanceModal() {
+      const m = this.qbitInstanceModal;
+      if (!m.url) return;
+      m.testing = true;
+      m.testResult = '';
+      try {
+        const r = await this.apiFetch('/api/qbit-instances/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: m.id, // empty on create — backend ignores; populated on edit so the masked-password path can pull stored creds
+            url: m.url,
+            username: m.username,
+            password: m.password,
+            trustedCerts: m.trustedCerts,
+          }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        m.testOk = !!d.ok;
+        m.testResult = d.ok ? (d.message || 'Connected') : ('Failed: ' + (d.error || 'unknown'));
+        // Bridge into the row-status map when editing a saved instance,
+        // so closing the modal doesn't leave the row pill stuck at "Not
+        // tested" right after the user verified it works.
+        if (m.id) {
+          this.qbitStatus[m.id] = d.ok ? 'connected' : 'failed';
+          this.qbitError[m.id] = d.ok ? '' : (d.error || '');
+        }
+      } catch (e) {
+        m.testOk = false;
+        m.testResult = 'Failed: ' + e.message;
+        if (m.id) {
+          this.qbitStatus[m.id] = 'failed';
+          this.qbitError[m.id] = e.message;
+        }
+      } finally {
+        m.testing = false;
+      }
+    },
+
+    async saveQbitInstanceModal() {
+      const m = this.qbitInstanceModal;
+      if (!m.name || !m.url) return;
+      m.busy = true;
+      try {
+        const body = {
+          name: m.name,
+          url: m.url,
+          username: m.username,
+          password: m.password,
+          trustedCerts: m.trustedCerts,
+        };
+        const path = m.id ? '/api/qbit-instances/' + m.id : '/api/qbit-instances';
+        const method = m.id ? 'PUT' : 'POST';
+        const r = await this.apiFetch(path, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        await this.loadQbitInstances();
+        this.qbitInstanceModal.open = false;
+        this.showToast('qBit instance saved', 'success');
+      } catch (e) {
+        this.showToast('Save failed: ' + e.message, 'error');
+      } finally {
+        m.busy = false;
+      }
+    },
+
+    // testQbitInstance — same shape as testInstance (Arr): probes the
+    // saved-creds endpoint, writes flat status/error into qbitStatus +
+    // qbitError. silent=true skips the "testing" pill flash so the
+    // 60s background refresh doesn't strobe every row.
+    async testQbitInstance(id, silent = false) {
+      if (!silent) this.qbitStatus[id] = 'testing';
+      this.qbitError[id] = '';
+      try {
+        const r = await this.apiFetch('/api/qbit-instances/' + id + '/test', {
+          method: 'POST',
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        this.qbitStatus[id] = d.ok ? 'connected' : 'failed';
+        this.qbitError[id] = d.ok ? '' : (d.error || '');
+      } catch (e) {
+        this.qbitStatus[id] = 'failed';
+        this.qbitError[id] = e.message;
+      }
+    },
+
+    // Mirror refreshAllStatus for qBit. Skip rows already mid-Test so
+    // a manual click doesn't get clobbered by the silent background
+    // sweep.
+    async refreshAllQbitStatus() {
+      for (const qi of (this.qbitInstances || [])) {
+        if (this.qbitStatus[qi.id] === 'testing') continue;
+        this.testQbitInstance(qi.id, true);
+      }
+    },
+
+    confirmDeleteQbitInstance(qi) {
+      this.deleteQbitTarget = qi;
+    },
+
+    async deleteQbitInstance() {
+      const target = this.deleteQbitTarget;
+      if (!target) return;
+      this.deleteQbitBusy = true;
+      try {
+        const r = await this.apiFetch('/api/qbit-instances/' + target.id, {
+          method: 'DELETE',
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
+        await this.loadQbitInstances();
+        this.deleteQbitTarget = null;
+        this.showToast('qBit instance deleted', 'success');
+      } catch (e) {
+        this.showToast('Delete failed: ' + e.message, 'error');
+      } finally {
+        this.deleteQbitBusy = false;
       }
     },
 
@@ -1545,11 +1776,13 @@ function app() {
         this.showToast('Add a ' + t + ' instance in Settings → Instances first', 'error');
         return;
       }
-      // Auto-seed scanInstanceId when missing so the wizard's
-      // dependent helpers (groupsFilteredByInstanceType, secondary
-      // pickers, sync gates) all read consistent state from open.
-      // User can still change via the picker on Choices.
-      if (!this.scanInstanceId || !pool.some(i => i.id === this.scanInstanceId)) {
+      // Seed precedence: last-used remembered → current scanInstanceId
+      // (when in pool) → first-of-type. Wizard's instance picker on
+      // Choices lets the user override.
+      const remembered = this.recallWizardInstance('tag-rg', pool);
+      if (remembered) {
+        this.scanInstanceId = remembered;
+      } else if (!this.scanInstanceId || !pool.some(i => i.id === this.scanInstanceId)) {
         this.scanInstanceId = pool[0].id;
       }
       // Hydrate from current global state so a user who's already
@@ -1683,6 +1916,8 @@ function app() {
         this.showToast('Enable at least one filter before tagging.', 'error');
         return;
       }
+      // Remember the picked instance for next time the wizard opens.
+      this.rememberWizardInstance('tag-rg', this.scanInstanceId);
 
       // Seed the standard scan state from wizard picks. runLibraryScan
       // reads these.
@@ -1739,9 +1974,12 @@ function app() {
         this.showToast('Add a ' + t + ' instance in Settings → Instances first', 'error');
         return;
       }
-      // Auto-seed scanInstanceId when missing — same pattern as
-      // openTagRgWizard. Discover is per-instance so we need one set.
-      if (!this.scanInstanceId || !pool.some(i => i.id === this.scanInstanceId)) {
+      // Seed precedence: last-used remembered → current scanInstanceId
+      // (when in pool) → first-of-type.
+      const remembered = this.recallWizardInstance('discover', pool);
+      if (remembered) {
+        this.scanInstanceId = remembered;
+      } else if (!this.scanInstanceId || !pool.some(i => i.id === this.scanInstanceId)) {
         this.scanInstanceId = pool[0].id;
       }
       this.discoverWizard = {
@@ -1806,6 +2044,8 @@ function app() {
         this.showToast('Enable at least one filter before running Discover.', 'error');
         return;
       }
+      // Remember the picked instance for next time the wizard opens.
+      this.rememberWizardInstance('discover', this.scanInstanceId);
       this.scanIncludeKnown = !!this.discoverWizard.includeKnown;
       this._tagRgDiscoverEnableOnAdd = this.discoverWizard.addBehavior === 'enabled';
       this.discoverWizard.busy = true;
@@ -2831,6 +3071,15 @@ function app() {
       // always trigger re-render when the key wasn't tracked yet
       // (the same trap that bit the Extra-tags toggle on M4).
       this.webhookConfigs = next;
+      // Prefetch event lists for every CONFIGURED instance so the
+      // Setup-tab "Last received" label reflects reality. Only the
+      // ones with a token are worth fetching (untokenized rows can't
+      // have received anything). Runs in parallel — slowest one
+      // doesn't block the others.
+      for (const inst of insts) {
+        const cfg = next[inst.id];
+        if (cfg && cfg.token) this.prefetchWebhookEventsForLabel(inst.id);
+      }
       // Auto-pick the first instance for the Recent activity sub-tab
       // if the user hasn't picked one yet — saves a click on first
       // visit. They can still flip via the dropdown.
@@ -2844,8 +3093,16 @@ function app() {
     // to webhookEvents via spread-assign so Alpine reliably re-renders
     // when adding a new instanceId key (nested-key writes don't always
     // trigger updates in Alpine v3 — same trap class as Extra-tags).
+    //
+    // Also (re)starts the SSE stream for the picked instance so future
+    // events arrive in real-time without further GET calls. Stream
+    // disconnect happens when the user picks another instance, leaves
+    // the Webhooks page, or closes the tab.
     async loadWebhookEvents(instanceId) {
-      if (!instanceId) return;
+      if (!instanceId) {
+        this.stopWebhookEventStream();
+        return;
+      }
       this.webhookEventsLoading = true;
       try {
         let events = [];
@@ -2860,6 +3117,96 @@ function app() {
       } finally {
         this.webhookEventsLoading = false;
       }
+      this.startWebhookEventStream(instanceId);
+    },
+
+    // Lightweight events-only fetch (no SSE, no loading flag) used by
+    // the Setup tab to populate webhookLastReceivedLabel for every
+    // configured instance. Without this the label says "Never received"
+    // for any instance the user hasn't opened in the Activity dropdown
+    // yet, even when the server-side ring buffer has events. Failures
+    // are silent — the label just stays at "Never" until the next
+    // refresh.
+    async prefetchWebhookEventsForLabel(instanceId) {
+      if (!instanceId) return;
+      try {
+        const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook/events');
+        if (!r.ok) return;
+        const d = await r.json();
+        const events = Array.isArray(d) ? d : [];
+        this.webhookEvents = { ...this.webhookEvents, [instanceId]: events };
+      } catch (e) {
+        // silent — label falls back to "Never received"
+      }
+    },
+
+    // SSE-driven live updates for the Recent activity panel.
+    // Replaces a polling alternative — the receiver knows when an
+    // event arrives, so it pushes; browser doesn't have to ask.
+    //
+    // Owner of `_webhookEventSource` is this Alpine component. Only
+    // one stream is alive at a time; switching instances closes the
+    // old one. Browser's EventSource auto-reconnects on transient
+    // network drop; we don't add a manual reconnect loop.
+    startWebhookEventStream(instanceId) {
+      this.stopWebhookEventStream();
+      if (!instanceId) return;
+      if (typeof EventSource === 'undefined') {
+        // Old browser — no SSE support. Recent activity still
+        // works via the GET endpoint + the ↻ button. No-op here.
+        return;
+      }
+      try {
+        const url = '/api/instances/' + instanceId + '/webhook/events/stream';
+        const es = new EventSource(url);
+        es.addEventListener('webhook', (msgEvent) => {
+          this._handleWebhookSseEvent(instanceId, msgEvent.data);
+        });
+        // No reconnect spam — EventSource handles transient drops
+        // itself. We only log the FIRST onerror so dev consoles
+        // aren't full of "EventSource failed" reconnect noise.
+        es.onerror = () => {
+          // Browser will auto-reconnect; no action needed.
+        };
+        this._webhookEventSource = es;
+        this._webhookEventSourceInstanceId = instanceId;
+      } catch (e) {
+        // Mostly defensive — `new EventSource` only throws on
+        // a malformed URL, which we control. Swallow + leave the
+        // panel in poll-via-↻ mode.
+      }
+    },
+
+    stopWebhookEventStream() {
+      if (this._webhookEventSource) {
+        try { this._webhookEventSource.close(); } catch (e) { /* ignore */ }
+      }
+      this._webhookEventSource = null;
+      this._webhookEventSourceInstanceId = null;
+    },
+
+    // Handler for one SSE 'webhook' event payload. Prepends the new
+    // event to the in-memory list (newest-first). Trims to the
+    // server-side cap (100) so the display matches the persisted
+    // ring on disk. Spread-assign on webhookEvents to dodge the
+    // Alpine v3 nested-key reactivity trap that caught us before.
+    _handleWebhookSseEvent(instanceId, payload) {
+      // Stale-stream guard: if the user already switched instances
+      // between event-arrival and this handler firing, drop the
+      // event. The new stream will deliver future events.
+      if (instanceId !== this._webhookEventSourceInstanceId) return;
+      let ev;
+      try { ev = JSON.parse(payload); }
+      catch (e) { return; }
+      if (!ev || typeof ev !== 'object') return;
+      // Defence-in-depth: server stream is per-instance, so
+      // ev.instanceId should always equal instanceId. Drop
+      // mismatches rather than silently land an event on the
+      // wrong instance's panel.
+      if (ev.instanceId && ev.instanceId !== instanceId) return;
+      const cur = this.webhookEvents[instanceId] || [];
+      const next = [ev].concat(cur).slice(0, 100);
+      this.webhookEvents = { ...this.webhookEvents, [instanceId]: next };
     },
 
     // "Last: 2 min ago" / "Never received" status pill text. Pulls
@@ -2883,19 +3230,52 @@ function app() {
       }
     },
 
-    // Copy webhook URL to clipboard. Fall back to selecting the
-    // input value when clipboard API is unavailable (insecure
-    // contexts — webhook setup happens on http:// dev instances
-    // sometimes).
+    // Copy text to clipboard with a legacy fallback. The modern
+    // navigator.clipboard API only works in secure contexts (HTTPS
+    // or localhost) — most users run resolvarr on a LAN HTTP URL,
+    // which fails the SecureContext check. The textarea +
+    // execCommand('copy') path still works there. Returns true on
+    // success.
+    async copyToClipboard(text) {
+      if (!text) return false;
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (e) {
+          // fall through to legacy
+        }
+      }
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      // Off-screen but in the layout so focus + select work in every
+      // browser. position:fixed avoids triggering page scroll on
+      // .focus() in iOS Safari.
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      let ok = false;
+      try {
+        ok = document.execCommand('copy');
+      } catch (e) {
+        ok = false;
+      }
+      document.body.removeChild(ta);
+      return ok;
+    },
+
     async copyWebhookUrl(instanceId) {
       const cfg = this.webhookConfigs[instanceId];
       if (!cfg || !cfg.url) return;
-      try {
-        await navigator.clipboard.writeText(cfg.url);
-        this.showToast('Webhook URL copied', 'success');
-      } catch (e) {
-        this.showToast('Copy failed — select the field manually', 'error');
-      }
+      const ok = await this.copyToClipboard(cfg.url);
+      this.showToast(
+        ok ? 'Webhook URL copied' : 'Copy failed — your browser blocked clipboard access',
+        ok ? 'success' : 'error',
+      );
     },
 
     // Confirm + execute token rotation. New URL means the user has
@@ -2926,6 +3306,44 @@ function app() {
         this.showToast('New webhook URL generated', 'success');
       } catch (e) {
         this.showToast('Rotate failed: ' + e.message, 'error');
+      }
+    },
+
+    // Confirm + delete a configured webhook. Clears the token so the
+    // receiver path returns 404 for the previous URL, reverts the
+    // row to "not configured" + drops the persisted Connect entry's
+    // ability to reach us. Recent activity events are NOT wiped —
+    // they're keyed by instance ID, not token, and the user has a
+    // separate Clear log button if they want both.
+    confirmDeleteWebhook(instanceId, name) {
+      const arr = (this.instances.find(i => i.id === instanceId) || {}).type === 'sonarr' ? 'Sonarr' : 'Radarr';
+      const msg = 'Remove the webhook for "' + name + '"?\n\n' +
+        'The current URL will stop working immediately. To reconfigure later you\'ll need to:\n' +
+        '  1. Generate a new webhook here.\n' +
+        '  2. Update the URL in ' + arr + ' → Settings → Connect, or remove the Connect entry there.';
+      if (!confirm(msg)) return;
+      this.deleteWebhook(instanceId);
+    },
+
+    async deleteWebhook(instanceId) {
+      try {
+        const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook', {
+          method: 'DELETE',
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
+        // Reflect the cleared state locally — empty the entry rather
+        // than dropping the key, so x-text on the row sees a defined
+        // (but empty) config and renders the "not configured" branch.
+        this.webhookConfigs = {
+          ...this.webhookConfigs,
+          [instanceId]: { token: '', url: '', loggingEnabled: false },
+        };
+        this.showToast('Webhook removed', 'success');
+      } catch (e) {
+        this.showToast('Delete failed: ' + e.message, 'error');
       }
     },
 
@@ -3047,13 +3465,17 @@ function app() {
       const hasRadarr = insts.some(i => i.type === 'radarr');
       const hasSonarr = insts.some(i => i.type === 'sonarr');
       if (!hasRadarr && hasSonarr) appType = 'sonarr';
-      // Auto-seed instanceId to the first instance of the picked type.
+      // Seed instance: last-used remembered (when still in pool of
+      // the picked appType — note: remembered may be from a different
+      // type, in which case we ignore it) → first-of-type.
+      const remembered = this.recallWizardInstance('webhook', insts.filter(i => i.type === appType));
       const firstOfType = insts.find(i => i.type === appType);
+      const seedId = remembered || (firstOfType ? firstOfType.id : '');
       this.webhookWizard = {
         open: true,
         step: 0,
         appType,
-        instanceId: firstOfType ? firstOfType.id : '',
+        instanceId: seedId,
         fnLogging: true,
         busy: false,
         generatedUrl: '',
@@ -3121,6 +3543,8 @@ function app() {
 
     async webhookWizardCommit() {
       const { instanceId, fnLogging } = this.webhookWizard;
+      // Remember the picked instance for next time the wizard opens.
+      if (instanceId) this.rememberWizardInstance('webhook', instanceId);
       this.webhookWizard.busy = true;
       try {
         // If instance already has a token, just update the logging
@@ -3220,12 +3644,11 @@ function app() {
     // Copy the wizard's generated URL.
     async copyWebhookWizardUrl() {
       if (!this.webhookWizard.generatedUrl) return;
-      try {
-        await navigator.clipboard.writeText(this.webhookWizard.generatedUrl);
-        this.showToast('URL copied', 'success');
-      } catch (e) {
-        this.showToast('Copy failed — select the field manually', 'error');
-      }
+      const ok = await this.copyToClipboard(this.webhookWizard.generatedUrl);
+      this.showToast(
+        ok ? 'URL copied' : 'Copy failed — your browser blocked clipboard access',
+        ok ? 'success' : 'error',
+      );
     },
 
     // formatBytes renders a byte count in B / KB / MB / GB with one
@@ -4421,6 +4844,84 @@ function app() {
       }
     },
 
+    // persistRuleSnapshotsToGlobals writes the per-action wizard's
+    // bucket-config snapshot back to globals via the same endpoints
+    // the (now-removed) sub-tab pages used. Called from
+    // runQuickFixChain after a successful per-action run so the
+    // wizard's tweaks become the new default for next open.
+    //
+    // No-op for actions without a bucket config (recover) and for
+    // anything outside audiotags / videotags / dvdetail.
+    //
+    // Failures are soft: the chain already succeeded, so a save
+    // failure is annoying but not catastrophic. Surface as a toast,
+    // leave the run results intact. User can fire the wizard again
+    // to re-attempt.
+    async persistRuleSnapshotsToGlobals(rule, action) {
+      if (!rule) return;
+      try {
+        if (action === 'audiotags' && rule.audioTags) {
+          const a = rule.audioTags;
+          const r = await this.apiFetch('/api/audio-tags', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              audio: a.audio,
+              removeOrphanedTags: !!a.removeOrphanedTags,
+            }),
+          });
+          if (!r.ok) {
+            const b = await r.json().catch(() => ({}));
+            throw new Error(b.error || 'HTTP ' + r.status);
+          }
+          // Mirror into local cache so the sub-tab page (still
+          // visible if user navigates there) reflects the new
+          // state without a reload.
+          this.audioTags = JSON.parse(JSON.stringify(a));
+        } else if (action === 'videotags' && rule.videoTags) {
+          const v = rule.videoTags;
+          const r = await this.apiFetch('/api/video-tags', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              resolution: v.resolution,
+              codec:      v.codec,
+              hdr:        v.hdr,
+              removeOrphanedTags: !!v.removeOrphanedTags,
+            }),
+          });
+          if (!r.ok) {
+            const b = await r.json().catch(() => ({}));
+            throw new Error(b.error || 'HTTP ' + r.status);
+          }
+          this.videoTags = JSON.parse(JSON.stringify(v));
+        } else if (action === 'dvdetail' && rule.dvDetail) {
+          const d = rule.dvDetail;
+          const r = await this.apiFetch('/api/dv-detail', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              enabled: !!d.enabled,
+              prefix: d.prefix || '',
+              allowedValues: d.allowedValues,
+              selectMode: d.selectMode || '',
+              removeOrphanedTags: !!d.removeOrphanedTags,
+            }),
+          });
+          if (!r.ok) {
+            const b = await r.json().catch(() => ({}));
+            throw new Error(b.error || 'HTTP ' + r.status);
+          }
+          this.dvDetail = JSON.parse(JSON.stringify(d));
+        }
+        // 'recover' has no bucket config — silent no-op is correct.
+      } catch (e) {
+        // Soft failure — the run itself succeeded; just couldn't
+        // persist as new default. Surface but don't undo.
+        this.showToast('Could not save as new default: ' + e.message, 'error');
+      }
+    },
+
     async saveAudioTags() {
       if (this.audioTagPrefixInvalid()) {
         this.showToast('Audio prefix has invalid characters — Radarr only allows a-z, 0-9, and -', 'error');
@@ -5132,12 +5633,12 @@ function app() {
 
     async copySecurityApiKey() {
       if (!this.securityApiKey) return;
-      try {
-        await navigator.clipboard.writeText(this.securityApiKey);
+      const ok = await this.copyToClipboard(this.securityApiKey);
+      if (ok) {
         this.securityApiKeyCopied = true;
         setTimeout(() => { this.securityApiKeyCopied = false; }, 2000);
-      } catch (e) {
-        this.showToast('Copy failed: ' + e.message, 'error');
+      } else {
+        this.showToast('Copy failed — your browser blocked clipboard access', 'error');
       }
     },
 
@@ -6948,11 +7449,13 @@ function app() {
         this.showToast('No ' + (wizardAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance configured — add one in Settings → Instances', 'error');
         return;
       }
-      // Prefer the instance the user already had selected on the scan
-      // page, but only if it matches the active app-type. Otherwise
-      // first instance of the picked type.
+      // Seed precedence: last-used remembered (per-Arr-type key so
+      // Radarr Create-rule and Sonarr Create-rule remember separately) →
+      // current scanInstanceId → first-of-type.
+      const memKey = 'create-rule-' + wizardAppType;
+      const remembered = this.recallWizardInstance(memKey, poolForType);
       const scanPicked = poolForType.find(i => i.id === this.scanInstanceId);
-      const inst = (scanPicked || poolForType[0]).id;
+      const inst = remembered || (scanPicked || poolForType[0]).id;
       // mode='combined' for every rule. Single-mode runs are expressed
       // by ticking one chain step (combinedModes carries the user's
       // pick). Sonarr-context seeds 'recover' since that's the only
@@ -7020,35 +7523,40 @@ function app() {
       // only the phases backend supports today (recover + audio +
       // video — tag/discover land with M-Sonarr Phase 2).
       const wizardAppType = this.scanAppType === 'sonarr' ? 'sonarr' : 'radarr';
-      const seedInst = this.instances.find(i => i.id === this.scanInstanceId && i.type === wizardAppType)
-                    || this.instances.find(i => i.type === wizardAppType);
-      if (!seedInst) {
+      const poolForType = this.instances.filter(i => i.type === wizardAppType);
+      if (poolForType.length === 0) {
         this.showToast(
           'Quick fix-all needs a ' + (wizardAppType === 'sonarr' ? 'Sonarr' : 'Radarr') +
           ' instance — add one in Settings → Instances', 'error');
         return;
       }
-      const inst = seedInst.id;
+      // QFA carries its own state in localStorage (resolvarr-qfa-state-<arrtype>)
+      // — independent of globals, independent of per-action wizard
+      // defaults. User's last-fired QFA configuration (chain checks,
+      // bucket configs, sync targets, instance, run-mode) becomes the
+      // pre-fill for next open. Falls back to globals on first open
+      // (cleared cache, new install).
+      const restored = this._loadQfaState(wizardAppType);
+      // Validate restored instance is still in pool. If the user
+      // deleted their Radarr and the localStorage points to a dead
+      // ID, we'd seed a wizard that can't fire.
+      let inst;
+      if (restored && restored.instanceId && poolForType.some(i => i.id === restored.instanceId)) {
+        inst = restored.instanceId;
+      } else {
+        const scanPicked = poolForType.find(i => i.id === this.scanInstanceId);
+        inst = (scanPicked || poolForType[0]).id;
+      }
+
       // Default to Preview for safety — the wizard is interactive
       // and one-shot, so a Preview-then-Apply flow is the right
       // pattern. The result panel's "Apply now" button promotes
-      // a clean preview to apply without re-walking the wizard,
-      // so committing to Apply up-front is rarely the user's
-      // intent. Keeps QFA + Tag-release-groups mini-wizard
-      // consistent (both default to preview).
-      this.editingRule = {
+      // a clean preview to apply without re-walking the wizard.
+      const defaults = {
         id: '',
-        // Auto-name lets the chain-summary header read as something
-        // recognisable in the activity log without making the user type.
         name: 'Quick fix-all',
-        // Quickfix defaults to combined-mode with the most-common chain
-        // for the active Arr-type. Radarr: discover+recover+tag head
-        // chain. Sonarr: recover+audiotags+videotags (the three phases
-        // backend supports today). User can narrow the chain in Basics.
         mode: 'combined',
         instanceId: inst,
-        // Cron stays unused but kept on the shape so the existing
-        // Review markup doesn't have to special-case quickfix.
         preset: 'daily', hour: 3, minute: 0, hour12: 3, ampm: 'AM', dow: 0, dom: 1,
         cron: '0 3 * * *',
         enabled: true,
@@ -7069,13 +7577,7 @@ function app() {
           debugTrace: false,
           bypassDvCache: false,
           // Per-bucket instance target. 'primary' (default), 'secondary',
-          // or 'both'. Audio/Video/DV-tags each pick independently. The
-          // chain runs primary phases first (discover/recover/tag), then
-          // a sub-chain on the primary instance with whichever of
-          // audio/video/dv have target=primary or 'both', then a sub-chain
-          // on the secondary instance with whichever have target=secondary
-          // or 'both'. Token allow-lists are universal — same per-rule
-          // settings get applied to whichever instance(s) run.
+          // or 'both'. Audio/Video/DV-tags each pick independently.
           audioTagsTarget: 'primary',
           videoTagsTarget: 'primary',
           dvDetailTarget:  'primary',
@@ -7086,7 +7588,152 @@ function app() {
         dvDetail:        this.snapshotGlobalDvDetail(),
         releaseGroupIds: this.snapshotGlobalRGIds(inst),
       };
+      // Merge restored state over defaults. Bucket snapshots use
+      // recursive per-field merge so a localStorage payload written
+      // before a new bucket field landed (e.g. SonarrAggregation in
+      // M-Sonarr Phase A) doesn't leak undefined past the backend's
+      // overlay validator on next Apply. Top-level fields use
+      // shallow-merge — restored wins on every field that's
+      // actually present.
+      this.editingRule = restored
+        ? {
+            ...defaults,
+            ...restored,
+            instanceId: inst, // post-validation pick; restored may have a stale ID
+            options: { ...defaults.options, ...(restored.options || {}) },
+            filters:   this._mergeBucketSnapshot(restored.filters,   defaults.filters),
+            audioTags: this._mergeBucketSnapshot(restored.audioTags, defaults.audioTags),
+            videoTags: this._mergeBucketSnapshot(restored.videoTags, defaults.videoTags),
+            dvDetail:  this._mergeBucketSnapshot(restored.dvDetail,  defaults.dvDetail),
+            releaseGroupIds: Array.isArray(restored.releaseGroupIds)
+              ? restored.releaseGroupIds
+              : defaults.releaseGroupIds,
+          }
+        : defaults;
       this.ruleEditor = { open: true, isCreate: true, isQuickFix: true, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [], fixedAction: '' };
+    },
+
+    // ===== QFA localStorage state =====
+    //
+    // QFA stores its full editingRule snapshot per Arr-type so the
+    // wizard remembers the user's last chain configuration without
+    // mutating globals (which per-action wizards own). Key shape:
+    // 'resolvarr-qfa-state-radarr' / '-sonarr'. Per-Arr-type because
+    // Radarr QFA and Sonarr QFA have different valid chain phases.
+
+    _qfaStateKey(arrType) {
+      return 'resolvarr-qfa-state-' + (arrType === 'sonarr' ? 'sonarr' : 'radarr');
+    },
+    _saveQfaState(arrType, rule) {
+      if (!rule) return;
+      try {
+        // Strip volatile fields — `id` empty, `name` auto-generated.
+        // Keep only what should re-hydrate next open. Deep-clone via
+        // JSON.stringify-then-parse so a later mutation of rule.options
+        // (e.g. an analytics post-run hook that mucks with combinedModes)
+        // can't bleed into the persisted snapshot.
+        const persist = {
+          mode: rule.mode,
+          instanceId: rule.instanceId,
+          options: rule.options,
+          filters: rule.filters,
+          audioTags: rule.audioTags,
+          videoTags: rule.videoTags,
+          dvDetail: rule.dvDetail,
+          releaseGroupIds: rule.releaseGroupIds || [],
+        };
+        localStorage.setItem(this._qfaStateKey(arrType), JSON.stringify(persist));
+      } catch (e) { /* ignore — Safari private mode et al */ }
+    },
+
+    // Per-field merge for QFA-state hydration. Old localStorage payloads
+    // written before a new bucket field landed (e.g. SonarrAggregation
+    // added in M-Sonarr Phase A) shouldn't leak `undefined` past the
+    // backend's validator on next Apply. Recursively layer restored
+    // values over defaults so missing fields fall back to fresh defaults.
+    // ===== Per-action wizard: unified instance + "both" picker =====
+    //
+    // For Tag Audio / Video / DV Details runs, "primary" has no
+    // semantic meaning — each instance reads its own mediaInfo
+    // independently, there's no TmdbID-mirror like tag-release-groups
+    // does. So the Step-1 "Primary instance" picker and the Step-2
+    // "Run X on" target picker are redundant pairs encoding the same
+    // intent twice.
+    //
+    // Per-action wizards collapse them into ONE dropdown on Step 1
+    // listing instances by name + a "Both instances" option (when
+    // 2+ same-type instances exist). State translation:
+    //   value = '<inst-id>'  →  instanceId = <inst-id>, target = 'primary'
+    //   value = '__both__'   →  instanceId = first-of-type, target = 'both'
+    // The chain runner already handles target='both' by running on
+    // primary (instanceId) + secondary (auto-derived first-other-of-type),
+    // so keeping instanceId as a real ID + target='both' just works.
+
+    _perActionTargetField() {
+      const fa = (this.ruleEditor && this.ruleEditor.fixedAction) || '';
+      if (fa === 'audiotags') return 'audioTagsTarget';
+      if (fa === 'videotags') return 'videoTagsTarget';
+      if (fa === 'dvdetail')  return 'dvDetailTarget';
+      return '';
+    },
+    // True when the current per-action wizard supports the unified
+    // picker (i.e. fixedAction is one of the auto-tag phases).
+    // Used to gate markup that shows the unified picker vs the
+    // legacy primary-instance-only picker on Basics.
+    isPerActionAutoTag() {
+      const fa = (this.ruleEditor && this.ruleEditor.fixedAction) || '';
+      return fa === 'audiotags' || fa === 'videotags' || fa === 'dvdetail';
+    },
+    perActionInstanceSelectorValue() {
+      if (!this.editingRule || !this.editingRule.options) return '';
+      const tf = this._perActionTargetField();
+      if (!tf) return this.editingRule.instanceId || '';
+      if (this.editingRule.options[tf] === 'both') return '__both__';
+      return this.editingRule.instanceId || '';
+    },
+    setPerActionInstance(value) {
+      if (!this.editingRule || !this.editingRule.options) return;
+      const tf = this._perActionTargetField();
+      if (!tf) {
+        this.editingRule.instanceId = value;
+        return;
+      }
+      if (value === '__both__') {
+        // Anchor instanceId to the first available instance of the
+        // wizard's app type. The chain runner picks the secondary
+        // automatically (first other-of-same-type).
+        const pool = this.ruleEditorInstancesAvailable();
+        if (pool.length > 0) this.editingRule.instanceId = pool[0].id;
+        this.editingRule.options[tf] = 'both';
+      } else {
+        this.editingRule.instanceId = value;
+        this.editingRule.options[tf] = 'primary';
+      }
+    },
+
+    _mergeBucketSnapshot(restored, fallback) {
+      if (!restored || typeof restored !== 'object') return fallback;
+      if (!fallback || typeof fallback !== 'object') return restored;
+      const out = { ...fallback };
+      for (const k of Object.keys(restored)) {
+        const rv = restored[k];
+        const fv = fallback[k];
+        if (rv && typeof rv === 'object' && !Array.isArray(rv) &&
+            fv && typeof fv === 'object' && !Array.isArray(fv)) {
+          out[k] = this._mergeBucketSnapshot(rv, fv);
+        } else if (rv !== undefined) {
+          out[k] = rv;
+        }
+      }
+      return out;
+    },
+    _loadQfaState(arrType) {
+      try {
+        const s = localStorage.getItem(this._qfaStateKey(arrType));
+        if (!s) return null;
+        const parsed = JSON.parse(s);
+        return (parsed && typeof parsed === 'object') ? parsed : null;
+      } catch (e) { return null; }
     },
 
     // ===== Per-action standalone wizards =====
@@ -7242,9 +7889,14 @@ function app() {
         this.showToast('Add a ' + t + ' instance in Settings → Instances first', 'error');
         return;
       }
+      // Seed precedence: last-used remembered → current scanInstanceId
+      // (when in pool) → first-of-type.
+      const remembered = this.recallWizardInstance('cleanup', pool);
+      const seedId = remembered
+        || (pool.find(i => i.id === this.scanInstanceId) || pool[0]).id;
       this.cleanupWizardState = {
         open: true,
-        instanceId: (pool.find(i => i.id === this.scanInstanceId) || pool[0]).id,
+        instanceId: seedId,
         busy: false,
       };
     },
@@ -7254,6 +7906,8 @@ function app() {
     },
     async runCleanupWizard() {
       if (!this.cleanupWizardState.instanceId) return;
+      // Remember the picked instance for next time the wizard opens.
+      this.rememberWizardInstance('cleanup', this.cleanupWizardState.instanceId);
       this.cleanupWizardState.busy = true;
       // Seed scanInstanceId so runCleanupCheck (which reads from
       // it) targets the wizard's pick. Auto-revert on close isn't
@@ -7395,12 +8049,41 @@ function app() {
       await this.runQuickFixChain(rule);
     },
 
+    // Switch between primary / secondary variants when the chain
+    // ran the active phase on multiple instances (target='both').
+    selectQfaDetailVariant(idx) {
+      if (!this.qfaDetailVariants || idx < 0 || idx >= this.qfaDetailVariants.length) return;
+      this.qfaDetailVariantIdx = idx;
+      const v = this.qfaDetailVariants[idx];
+      // Replay viewPhaseDetails-equivalent slot writes for the
+      // active phase. Re-using the dispatcher would close+reopen
+      // the modal; we just want to swap the response in place.
+      if (this.qfaDetail === 'audio') {
+        this.qfaDetailAudio = v.response;
+        this.qfaDetailAutoFilter = this.pickAutoDetailFilter(v.response);
+      } else if (this.qfaDetail === 'video') {
+        this.qfaDetailVideo = v.response;
+        this.qfaDetailAutoFilter = this.pickAutoDetailFilter(v.response);
+      } else if (this.qfaDetail === 'dv') {
+        this.qfaDetailDv = v.response;
+        this.qfaDetailDvStatusFilter = null;
+        this.qfaDetailDvTagFilter = null;
+      }
+      // Clear filters/expansions that were keyed off the prior
+      // variant's data so the new variant renders cleanly.
+      this.qfaDetailExpanded = {};
+      this.qfaDetailAutoTagFilter = null;
+    },
+
     closeQfaDetail() {
       this.qfaDetail = null;
       this.qfaDetailExpanded = {};
       this.qfaDetailAudio = null;
       this.qfaDetailVideo = null;
       this.qfaDetailDv = null;
+      // Drop variant memory on close — next open populates fresh.
+      this.qfaDetailVariants = [];
+      this.qfaDetailVariantIdx = 0;
       this.qfaDetailDvStatusFilter = null;
       this.qfaDetailDvTagFilter = null;
       this.qfaDetailDvStatusHelpOpen = false;
@@ -8420,6 +9103,11 @@ function app() {
         this.ruleEditor.error = 'Pick at least one Release Group for this rule, or enable Discover with "Add to config + enable" so it seeds them at runtime';
         return;
       }
+      // Remember the picked instance per Arr-type so the next
+      // Create-rule wizard open pre-fills with the same instance.
+      // ruleEditor.appType holds the wizard's locked Arr-type.
+      const memKey = 'create-rule-' + (this.ruleEditor.appType || 'radarr');
+      this.rememberWizardInstance(memKey, r.instanceId);
       const options = { ...r.options };
       if (r.mode !== 'combined') options.combinedModes = [];
       if (r.mode === 'discover' || r.mode === 'recover') {
@@ -8705,7 +9393,7 @@ function app() {
             if (!includeForTarget(a.target)) continue;
             if (isCancelled()) break;
             const data = await fetchPhase(a.phase, instanceId);
-            const row = { phase: a.phase, ok: true, response: data };
+            const row = { phase: a.phase, ok: true, response: data, instanceId };
             if (instanceLabel) row.instanceLabel = instanceLabel;
             results.phases.push(row);
           }
@@ -8725,7 +9413,70 @@ function app() {
         this.quickFixResults = results;
         const verb = runMode === 'apply' ? 'applied' : 'previewed';
         const ranList = [...headPhases, ...autoPhases.map(a => a.phase)];
-        this.showToast('Quick fix-all ' + verb + ': ' + ranList.join(', '), 'success');
+        // Toast wording: per-action wizards (fixedAction) use the
+        // action's display name so the toast matches what the user
+        // clicked. QFA proper keeps the chain wording. Apply-after-
+        // preview falls into the QFA branch since overrideRule
+        // doesn't set fixedAction.
+        const fixedAction = (this.ruleEditor && this.ruleEditor.fixedAction) || '';
+        const actionLabels = {
+          audiotags: 'Tag Audio',
+          videotags: 'Tag Video',
+          dvdetail:  'Tag DV Details',
+          recover:   'Recover',
+        };
+        if (!overrideRule && fixedAction && actionLabels[fixedAction]) {
+          this.showToast(actionLabels[fixedAction] + ' ' + verb, 'success');
+        } else {
+          this.showToast('Quick fix-all ' + verb + ': ' + ranList.join(', '), 'success');
+        }
+        // Pop the standalone result modal for per-action runs so
+        // users see the result in-place (Discover does this via
+        // scanResults.discover auto-pop; the same applies here for
+        // audiotags / videotags / dvdetail / recover via
+        // viewPhaseDetails). When target='both' the chain ran the
+        // phase on TWO instances — collect both responses as
+        // variants so the modal can render an instance switcher
+        // above the body.
+        if (!overrideRule && fixedAction) {
+          const matches = (results.phases || []).filter(
+            p => p.phase === fixedAction && p.ok && p.response
+          );
+          if (matches.length > 0) {
+            const variants = matches.map(m => {
+              const inst = this.instances.find(i => i.id === m.instanceId);
+              return {
+                instanceId: m.instanceId || '',
+                label: inst ? inst.name : (m.instanceLabel === 'secondary' ? 'Secondary' : 'Primary'),
+                response: m.response,
+              };
+            });
+            this.qfaDetailVariants = variants;
+            this.qfaDetailVariantIdx = 0;
+            this.viewPhaseDetails({ phase: fixedAction, response: variants[0].response });
+          }
+        }
+        // Per-action wizard save-to-globals: when the user fired a
+        // per-action wizard (Tag Audio / Tag Video / Tag DV Details)
+        // and the chain succeeded, persist the rule's bucket config
+        // back to globals so next open of that wizard pre-fills with
+        // the just-used values. overrideRule (Apply-after-preview) is
+        // exempt — re-running a previous decision shouldn't re-mutate
+        // globals.
+        if (!overrideRule && this.ruleEditor && this.ruleEditor.fixedAction) {
+          // Fire-and-forget — failures here don't undo the run that
+          // just succeeded; surface as a soft toast and leave the
+          // run results intact.
+          this.persistRuleSnapshotsToGlobals(r, this.ruleEditor.fixedAction);
+        }
+        // QFA proper (no fixedAction) saves to its own localStorage
+        // bucket per Arr-type. Independent of globals — per-action
+        // wizards can't perturb QFA's memory and vice versa. Skipped
+        // for overrideRule because Apply-after-preview re-fires the
+        // already-saved snapshot; no new state to remember.
+        if (!overrideRule && this.ruleEditor && this.ruleEditor.isQuickFix && !this.ruleEditor.fixedAction) {
+          this._saveQfaState(this.ruleEditor.appType || 'radarr', r);
+        }
         // Only close + clear the wizard when this was a wizard-driven
         // run. Apply-after-preview re-fires without ever opening the
         // wizard — leave editingRule alone in that case.

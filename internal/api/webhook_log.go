@@ -28,6 +28,13 @@ import (
 // pressure". 100 events × ~5 KB JSON = ~500 KB peak per instance.
 const webhookEventsCap = 100
 
+// webhookSubscriberCap limits live SSE subscribers per instance.
+// Defence against a runaway browser extension / loop that piles
+// up subscriptions and turns fan-out into an O(N) walk. 32 covers
+// every realistic UI usage (one tab, maybe two, plus reconnects);
+// past that we assume something's wrong and reject the new stream.
+const webhookSubscriberCap = 32
+
 // webhookEventsPath is the on-disk JSON file. Lives under /config so
 // it persists across container restarts (same convention as the
 // scan dumps under /config/logs/). Single file rather than per-event
@@ -54,10 +61,23 @@ type WebhookEvent struct {
 // webhookLog is a per-instance ring buffer + atomic JSON-file mirror.
 // One global instance lives on Server. Mutex serialises everything
 // (read/write are equally cheap; events arrive at human pace).
+//
+// subscribers holds active SSE listeners keyed by instanceID. Each
+// listener is a buffered channel — append() fans out new events to
+// every subscriber for that instance via a non-blocking send so a
+// slow client can't back-pressure the receiver. Slow clients drop
+// events; they can refresh to recover via the GET /events endpoint.
+// subMu is a separate mutex from `mu` so a long subscriber-iteration
+// during fan-out doesn't block append callers from queuing further
+// events. (Today fan-out is fast — a handful of subscribers — but
+// keeping the mutexes separate keeps the design honest if N grows.)
 type webhookLog struct {
 	mu          sync.Mutex
 	events      map[string][]WebhookEvent // instanceID → recent events, newest last
 	persistPath string
+
+	subMu       sync.Mutex
+	subscribers map[string][]chan WebhookEvent // instanceID → live SSE listeners
 }
 
 // newWebhookLog constructs the log + best-effort loads any persisted
@@ -68,6 +88,7 @@ func newWebhookLog(persistPath string) *webhookLog {
 	l := &webhookLog{
 		events:      make(map[string][]WebhookEvent),
 		persistPath: persistPath,
+		subscribers: make(map[string][]chan WebhookEvent),
 	}
 	l.loadFromDisk()
 	return l
@@ -129,9 +150,16 @@ func (l *webhookLog) persistLocked() {
 // FIFO eviction once the slice exceeds webhookEventsCap. Returns
 // the (possibly new) ring length so the HTTP handler can include
 // it in the ack response — handy for Connect setup verification.
+//
+// After persisting, fans the event out to every active SSE
+// subscriber for that instance. Fan-out is non-blocking — a
+// subscriber whose buffered channel is full gets the event dropped
+// rather than back-pressuring this call. The subscriber can
+// recover by re-listing via GET /webhook/events when their handler
+// catches up. Connect-event arrival is the hot path; we don't want
+// a stuck client to block it.
 func (l *webhookLog) append(ev WebhookEvent) int {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	bucket := l.events[ev.InstanceID]
 	bucket = append(bucket, ev)
 	if len(bucket) > webhookEventsCap {
@@ -150,7 +178,74 @@ func (l *webhookLog) append(ev WebhookEvent) int {
 	}
 	l.events[ev.InstanceID] = bucket
 	l.persistLocked()
-	return len(bucket)
+	count := len(bucket)
+	l.mu.Unlock()
+	// Fan-out happens AFTER releasing the events mutex so a slow
+	// channel send can't block append callers waiting on `mu`.
+	l.fanOut(ev)
+	return count
+}
+
+// fanOut delivers the event to every active subscriber for the
+// instance. Non-blocking sends — channels are buffered, full
+// channels mean "client is too slow", drop the event for them.
+// Held under subMu so subscribe/unsubscribe can't race with
+// the broadcast.
+func (l *webhookLog) fanOut(ev WebhookEvent) {
+	l.subMu.Lock()
+	defer l.subMu.Unlock()
+	for _, ch := range l.subscribers[ev.InstanceID] {
+		select {
+		case ch <- ev:
+			// Delivered.
+		default:
+			// Subscriber's buffer is full — skip. Browser can
+			// recover by hitting GET /webhook/events to refresh
+			// from the persisted ring.
+		}
+	}
+}
+
+// Subscribe registers a buffered channel for new events on the
+// given instance. Returns the channel and an unsubscribe func the
+// caller MUST invoke (typically via defer) when done — failing
+// to unsubscribe leaks the channel into the subscribers map and
+// causes future fan-outs to attempt sends on a goner.
+//
+// Buffer size 16 matches the worst-case Connect burst (Sonarr's
+// season-pack import can fire ~10 EpisodeFile events back-to-back).
+// Most browsers consume an SSE event in <1ms, so the buffer is
+// generous insurance.
+//
+// Returns nil channel + no-op unsubscribe when the per-instance
+// subscriber cap is hit — defence against a runaway browser /
+// extension piling up subscriptions. SSE handler treats a nil
+// channel as "stream rejected" and returns 503.
+func (l *webhookLog) Subscribe(instanceID string) (<-chan WebhookEvent, func()) {
+	l.subMu.Lock()
+	if len(l.subscribers[instanceID]) >= webhookSubscriberCap {
+		l.subMu.Unlock()
+		return nil, func() {}
+	}
+	ch := make(chan WebhookEvent, 16)
+	l.subscribers[instanceID] = append(l.subscribers[instanceID], ch)
+	l.subMu.Unlock()
+	unsubscribe := func() {
+		l.subMu.Lock()
+		defer l.subMu.Unlock()
+		subs := l.subscribers[instanceID]
+		for i, c := range subs {
+			if c == ch {
+				// Order doesn't matter — swap-and-truncate.
+				subs[i] = subs[len(subs)-1]
+				l.subscribers[instanceID] = subs[:len(subs)-1]
+				close(ch)
+				return
+			}
+		}
+		// Already removed (e.g. double-unsubscribe). Idempotent.
+	}
+	return ch, unsubscribe
 }
 
 // list returns a deep-enough copy of the events for an instance,

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -251,6 +252,102 @@ func (s *Server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleWebhookEventsStream is the SSE push channel. Browser opens
+// EventSource('/api/instances/{id}/webhook/events/stream'), server
+// holds the connection open, fan-out from webhookLog.append delivers
+// new events as they arrive. Connection closes when the browser
+// navigates away (r.Context().Done()) or the server shuts down.
+//
+// Format: each event is one SSE record like
+//   event: webhook
+//   data: <one-line JSON of WebhookEvent>
+//   <blank line>
+// Plus a `: heartbeat` comment every 25s to keep proxies / load
+// balancers from idle-closing the connection. EventSource handles
+// reconnect automatically on connection drop.
+func (s *Server) handleWebhookEventsStream(w http.ResponseWriter, r *http.Request) {
+	if s.WebhookLog == nil {
+		writeError(w, 503, "webhook log not initialised")
+		return
+	}
+	inst := s.instanceByID(w, r.PathValue("id"))
+	if inst == nil {
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// Theoretically possible behind a buffering reverse proxy
+		// that strips the Flusher interface. Fall back to a 501
+		// rather than silently leak the connection.
+		writeError(w, 501, "streaming not supported on this connection")
+		return
+	}
+
+	// SSE headers. Cache-Control: no-cache prevents a sneaky proxy
+	// from caching the stream; X-Accel-Buffering: no tells nginx
+	// to flush each chunk through immediately.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-store")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	// Send an initial comment so the EventSource onopen fires
+	// immediately — browsers wait for any data before transitioning
+	// from CONNECTING to OPEN.
+	fmt.Fprint(w, ": connected\n\n")
+	flusher.Flush()
+
+	ch, unsubscribe := s.WebhookLog.Subscribe(inst.ID)
+	if ch == nil {
+		// Subscriber cap hit — too many active streams on this
+		// instance. Headers already sent (200 OK), so we can't
+		// switch to 503; write a final SSE error event + close.
+		fmt.Fprint(w, "event: error\ndata: {\"error\":\"subscriber cap reached — close some browser tabs and retry\"}\n\n")
+		flusher.Flush()
+		return
+	}
+	defer unsubscribe()
+
+	heartbeat := time.NewTicker(25 * time.Second)
+	defer heartbeat.Stop()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+			// SSE comment line — recognised by the spec, ignored
+			// by EventSource. Just keeps the TCP connection
+			// alive past proxy idle timeouts (typically 30-60s).
+			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case ev, ok := <-ch:
+			if !ok {
+				// Channel closed (server shutdown / forced
+				// unsubscribe). Bail.
+				return
+			}
+			payload, err := json.Marshal(ev)
+			if err != nil {
+				// Skip — log to stderr but keep the stream open.
+				fmt.Fprintf(os.Stderr, "resolvarr: SSE marshal: %v\n", err)
+				continue
+			}
+			// json.Marshal never emits raw newlines in its output
+			// (it escapes them as \n in strings), so the SSE
+			// `data:` line is single-line by construction.
+			// Switching to MarshalIndent would break framing.
+			if _, err := fmt.Fprintf(w, "event: webhook\ndata: %s\n\n", payload); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
 // handleWebhookListEvents returns the recent-events list for an
 // instance. Newest first.
 func (s *Server) handleWebhookListEvents(w http.ResponseWriter, r *http.Request) {
@@ -381,6 +478,34 @@ func (s *Server) handleWebhookGet(w http.ResponseWriter, r *http.Request) {
 		resp["url"] = fmt.Sprintf("%s://%s/api/webhooks/%s", scheme, r.Host, inst.Webhook.Token)
 	}
 	writeJSON(w, resp)
+}
+
+// handleWebhookDelete clears the webhook configuration for an instance
+// — wipes Token + LoggingEnabled so the receiver path stops accepting
+// the previous URL and the row reverts to its "not configured" state.
+// 200 on success regardless of whether a token was set (idempotent;
+// caller can hit this safely without checking first). The recent-
+// activity log under /config/webhook-events.json is NOT touched —
+// it's keyed by instance ID, not by token, and the user has a
+// separate Clear log button for that.
+func (s *Server) handleWebhookDelete(w http.ResponseWriter, r *http.Request) {
+	inst := s.instanceByID(w, r.PathValue("id"))
+	if inst == nil {
+		return
+	}
+	if err := s.App.Config.Update(func(c *core.Config) {
+		for i := range c.Instances {
+			if c.Instances[i].ID == inst.ID {
+				c.Instances[i].Webhook.Token = ""
+				c.Instances[i].Webhook.LoggingEnabled = false
+				return
+			}
+		}
+	}); err != nil {
+		writeError(w, 500, "save: "+err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok"})
 }
 
 // handleWebhookSetLogging toggles just the LoggingEnabled flag on an

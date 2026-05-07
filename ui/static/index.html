@@ -60,8 +60,7 @@
       <!-- Sidebar -->
       <div class="settings-sidebar">
         <div class="settings-nav" :class="section === 'instances' && 'settings-nav-active'" @click="setSettingsSection('instances')">Instances</div>
-        <!-- qBittorrent placeholder — M7 wires connection + backlog scan here. -->
-        <div class="settings-nav" :class="section === 'qbit' && 'settings-nav-active'" @click="setSettingsSection('qbit')" style="opacity:0.7" title="Coming with M7 — qBit credentials + season/episode backlog scan">qBittorrent <span style="font-size:9px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 5px;border-radius:8px;margin-left:4px;font-weight:500">M7</span></div>
+        <div class="settings-nav" :class="section === 'qbit' && 'settings-nav-active'" @click="setSettingsSection('qbit')">qBittorrent</div>
         <div class="settings-nav" :class="section === 'notifications' && 'settings-nav-active'" @click="setSettingsSection('notifications')">Notifications</div>
         <div class="settings-nav" :class="section === 'security' && 'settings-nav-active'" @click="setSettingsSection('security')">Security</div>
         <div class="settings-nav" :class="section === 'display' && 'settings-nav-active'" @click="setSettingsSection('display')">Display</div>
@@ -102,7 +101,11 @@
             <div class="inst-row">
               <img class="inst-icon" :src="iconUrl(inst.type, inst.iconVariant || 'standard')" :alt="inst.type" style="background:transparent">
               <div style="font-size:13px;font-weight:500;min-width:80px" x-text="inst.name"></div>
-              <div style="font-size:13px;color:var(--text-muted);margin-left:4px" x-text="inst.url"></div>
+              <!-- URL intentionally not shown at rest — the user picked
+                   the icon variant + name, and surfacing host:port on
+                   every page view is connection metadata noise. Edit
+                   modal still shows the URL when explicitly opened.
+                   Same principle as the qBit + webhook rows. -->
               <div style="margin-left:auto;text-align:right;white-space:nowrap">
                 <template x-if="instStatus[inst.id] === 'testing'">
                   <span class="status-testing"><span class="spinner"></span>Testing</span>
@@ -129,30 +132,62 @@
              of a top-level qBit tab. The on-grab tagging behavior is configured
              under Webhooks → On Grab where the rename/tagging logic actually
              fires. -->
+        <!-- qBittorrent section — user-managed list of qBit instances.
+             Standalone CRUD: each row is one qBit connection that can
+             be referenced from any Arr's webhook config (pairing lives
+             on WebhookConfig.QbitInstanceID when functions ship). The
+             list is also the picker source for backlog scan (Service B).
+             Add/edit modal carries URL + Username + Password +
+             TrustedCerts toggle; Test Connection probe runs on demand. -->
         <div x-show="section === 'qbit'" x-cloak>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-            <div class="settings-section-title" style="margin:0">qBittorrent</div>
-            <span style="font-size:11px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:2px 8px;border-radius:8px;font-weight:500">Coming with M7</span>
-          </div>
-          <div class="settings-section-desc">Connection details for qBittorrent. Used by the Webhooks → On Grab handler (rename + season/episode tagging on Sonarr Grab) and the backlog-scan button below.</div>
-
-          <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;margin-top:16px;opacity:0.6;max-width:560px">
-            <div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:10px">Connection</div>
-            <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;font-size:13px;color:var(--text-body);align-items:center">
-              <div style="color:var(--text-secondary)">URL</div><input class="input" disabled placeholder="http://qbittorrent:8080" style="opacity:0.5">
-              <div style="color:var(--text-secondary)">Username</div><input class="input" disabled placeholder="admin" style="opacity:0.5">
-              <div style="color:var(--text-secondary)">Password</div><input class="input" disabled placeholder="•••" type="password" style="opacity:0.5">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <div>
+              <div class="settings-section-title">qBittorrent</div>
+              <div class="settings-section-desc">Configured qBittorrent instances. Webhook handlers + backlog scans pick from this list. Three URL forms supported: direct (<code>http://192.168.1.100:8080</code>), reverse-proxied (<code>https://qbit.example.com/qbit</code>), and qui client proxy (<code>http://qui:7476/proxy/&lt;hex&gt;</code>) — for qui, leave the username + password blank.</div>
             </div>
-            <div style="margin-top:10px;display:flex;gap:8px">
-              <button class="btn btn-sm" disabled style="opacity:0.5;cursor:not-allowed">Test connection <span style="font-size:9px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 5px;border-radius:8px;margin-left:4px;font-weight:500">M7</span></button>
-              <button class="btn btn-sm btn-primary" disabled style="opacity:0.5;cursor:not-allowed">Save <span style="font-size:9px;color:var(--text-on-accent);background:#1a4d20;padding:1px 5px;border-radius:8px;margin-left:4px;font-weight:500">M7</span></button>
-            </div>
+            <button class="btn btn-primary" @click="openQbitInstanceModal()">+ Add qBittorrent</button>
           </div>
 
-          <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;margin-top:12px;opacity:0.6;max-width:560px">
-            <div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:8px">Backlog scan</div>
-            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px">Walk every torrent in qBit and apply season / episode tags based on the configuration under Webhooks → On Grab. Use it once to tag the existing backlog; the webhook keeps it up to date going forward.</div>
-            <button class="btn btn-sm btn-primary" disabled style="opacity:0.5;cursor:not-allowed">Run backlog scan <span style="font-size:9px;color:var(--text-on-accent);background:#1a4d20;padding:1px 5px;border-radius:8px;margin-left:4px;font-weight:500">M7</span></button>
+          <!-- Empty state -->
+          <template x-if="(qbitInstances || []).length === 0">
+            <div style="background:var(--bg-card);border:1px dashed var(--border-subtle);border-radius:8px;padding:24px;text-align:center;color:var(--text-muted-secondary);font-size:13px">
+              No qBittorrent instances configured yet. Click <strong>+ Add qBittorrent</strong> to add one.
+            </div>
+          </template>
+
+          <!-- Per-instance row list — name + status + actions only.
+               URL is not shown (the qui-proxy token + host:port is
+               connection metadata the user already chose; surfacing it
+               on every page-view leaks where qBit lives without giving
+               the user anything they don't already know). Edit modal
+               carries the masked URL for verification when needed.
+               Status pill is auto-refreshed every 60s in the same
+               poll cycle as Arr instances. -->
+          <div>
+            <template x-for="qi in (qbitInstances || [])" :key="qi.id">
+              <div class="inst-row">
+                <div style="font-size:13px;font-weight:500;min-width:120px" x-text="qi.name"></div>
+                <div style="margin-left:auto;display:flex;align-items:center;gap:10px;white-space:nowrap">
+                  <template x-if="qbitStatus[qi.id] === 'testing'">
+                    <span class="status-testing"><span class="spinner"></span>Testing</span>
+                  </template>
+                  <template x-if="qbitStatus[qi.id] === 'connected'">
+                    <span class="status-connected">Connected</span>
+                  </template>
+                  <template x-if="qbitStatus[qi.id] === 'failed'">
+                    <span class="status-failed" :title="qbitError[qi.id] || ''" x-text="'Failed' + (qbitError[qi.id] ? ' — ' + qbitError[qi.id] : '')"></span>
+                  </template>
+                  <template x-if="!qbitStatus[qi.id]">
+                    <span style="font-size:12px;color:var(--text-muted)">Not tested</span>
+                  </template>
+                  <div style="display:flex;gap:6px">
+                    <button class="btn btn-sm" @click="testQbitInstance(qi.id)" :disabled="qbitStatus[qi.id] === 'testing'">Test</button>
+                    <button class="btn btn-sm" @click="openQbitInstanceModal(qi)">Edit</button>
+                    <button class="btn btn-sm btn-danger" @click="confirmDeleteQbitInstance(qi)">Delete</button>
+                  </div>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -1649,6 +1684,18 @@
       <div style="flex:0 0 auto;padding:16px 22px;border-bottom:1px solid var(--border-subtle);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <span style="font-size:11px;font-weight:500;background:var(--alpha-blue);color:var(--accent-sky);padding:2px 10px;border-radius:8px;text-transform:uppercase;letter-spacing:0.4px">Quick fix-all</span>
         <div class="modal-title" style="margin:0" x-text="qfaDetail === 'audio' ? 'Audio tags — detail' : qfaDetail === 'video' ? 'Video tags — detail' : qfaDetail === 'dv' ? 'DV detail — per-movie' : ''"></div>
+        <!-- Instance variant switcher — visible when the chain ran
+             the active phase on 2+ instances (target='both'). Lets
+             the user flip between primary / secondary results
+             without re-running the scan. -->
+        <template x-if="(qfaDetailVariants || []).length > 1">
+          <div style="display:flex;align-items:center;gap:6px;margin-left:6px">
+            <span style="font-size:11px;color:var(--text-muted-secondary);text-transform:uppercase;letter-spacing:0.4px">Instance:</span>
+            <template x-for="(v, idx) in qfaDetailVariants" :key="v.instanceId + ':' + idx">
+              <button class="filter-pill" :class="{ 'is-active': idx === qfaDetailVariantIdx }" @click="selectQfaDetailVariant(idx)" x-text="v.label"></button>
+            </template>
+          </div>
+        </template>
         <div style="flex:1"></div>
         <button class="btn btn-sm" @click="closeQfaDetail()">Close</button>
       </div>
@@ -2453,14 +2500,12 @@
           </div>
 
           <!-- Section title row + run launcher.
-               2026-05-06: inline run-mode radio + Run scan button replaced
-               by a single 'Run Tag Audio' button that opens the per-action
-               wizard (instance, run-mode, bucket tweaks, review). The
-               page below is now the 'Edit defaults' surface — its
-               saveAudioTags() persists changes, the wizard hydrates from
-               those defaults on each open. -->
+               2026-05-07: bucket-config edit panels removed — wizard is
+               the single editing surface. Page is now help + launcher.
+               Wizard saves bucket configs back to globals on each
+               successful run, so next open pre-fills with last picks. -->
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-            <div class="settings-section-title" style="margin:0">Audio tags <span style="color:var(--text-secondary);font-size:12px;font-weight:400">— defaults</span></div>
+            <div class="settings-section-title" style="margin:0">Tag Audio</div>
             <div style="flex:1"></div>
             <button class="btn btn-primary btn-sm"
                     :disabled="(instances || []).filter(i => i.type === scanAppType).length === 0 || scanLoading"
@@ -2478,94 +2523,16 @@
             <div class="settings-section-desc">Tags every movie with the audio info from its file (codec, channels, Atmos). Leave the prefix empty for bare tags like <code>truehd</code>, or set a prefix like <code>audio-</code> to namespace them.</div>
           </template>
 
-          <!-- Audio bucket config card. -->
-          <div style="margin-top:16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px">
-            <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px">
-                <input type="checkbox" x-model="audioTags.audio.enabled" @change="saveAudioTags()" style="accent-color:var(--accent-blue)">
-                <span style="font-weight:600">Enable Audio tagging</span>
-              </label>
-              <div style="flex:1"></div>
-              <label style="display:flex;align-items:center;gap:8px;font-size:13px">
-                <span style="color:var(--text-secondary)">Tag prefix</span>
-                <input type="text" x-model="audioTags.audio.prefix" @change="saveAudioTags()" placeholder="empty = bare values"
-                       :class="audioTagPrefixInvalid() ? 'input-invalid' : ''"
-                       style="width:160px;padding:5px 9px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page);color:var(--text-body);font-size:13px">
-              </label>
-            </div>
-
-            <!-- Three sub-categories rendered as separate checkbox groups
-                 for visual clarity, but they share the single Audio
-                 bucket toggle + AllowedValues. The Select all / Select
-                 none buttons act on AllowedValues + the SelectMode flag
-                 without touching the master Enable toggle — saves a lot
-                 of clicking when the user wants only one or two flags. -->
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-              <div style="font-size:13px;color:var(--text-body)">Tags to emit
-                <span style="color:var(--text-secondary)">— uncheck any you don't want:</span>
-              </div>
-              <div style="display:flex;gap:6px">
-                <button class="btn btn-sm" :disabled="!audioTags.audio.enabled" @click="selectAllAudioValues()" title="Check every value in every group below — bucket stays enabled">Select all</button>
-                <button class="btn btn-sm" :disabled="!audioTags.audio.enabled" @click="selectNoneAudioValues()" title="Uncheck every value — bucket stays enabled but emits nothing until you tick something">Select none</button>
-              </div>
-            </div>
-
-            <div style="display:flex;flex-direction:column;gap:10px">
-              <div :class="!audioTags.audio.enabled ? 'is-disabled' : ''">
-                <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:5px">Codec</div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap">
-                  <template x-for="v in audioVocab.codecs" :key="v">
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;padding:4px 9px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page)">
-                      <input type="checkbox"
-                             :checked="audioTagValueChecked(v)"
-                             @change="toggleAudioTagValue(v, audioFullVocab())"
-                             :disabled="!audioTags.audio.enabled"
-                             style="accent-color:var(--accent-blue)">
-                      <code x-text="v"></code>
-                    </label>
-                  </template>
-                </div>
-              </div>
-
-              <div :class="!audioTags.audio.enabled ? 'is-disabled' : ''">
-                <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:5px">Channels</div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap">
-                  <template x-for="v in audioVocab.channels" :key="v">
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;padding:4px 9px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page)">
-                      <input type="checkbox"
-                             :checked="audioTagValueChecked(v)"
-                             @change="toggleAudioTagValue(v, audioFullVocab())"
-                             :disabled="!audioTags.audio.enabled"
-                             style="accent-color:var(--accent-blue)">
-                      <code x-text="v"></code>
-                    </label>
-                  </template>
-                </div>
-              </div>
-
-              <div :class="!audioTags.audio.enabled ? 'is-disabled' : ''">
-                <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:5px">Flags</div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap">
-                  <template x-for="v in audioVocab.flags" :key="v">
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;padding:4px 9px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page)">
-                      <input type="checkbox"
-                             :checked="audioTagValueChecked(v)"
-                             @change="toggleAudioTagValue(v, audioFullVocab())"
-                             :disabled="!audioTags.audio.enabled"
-                             style="accent-color:var(--accent-blue)">
-                      <code x-text="v"></code>
-                    </label>
-                  </template>
-                </div>
-              </div>
-            </div>
-
-            <label style="margin-top:14px;display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
-              <input type="checkbox" x-model="audioTags.removeOrphanedTags" @change="saveAudioTags()" style="accent-color:var(--accent-blue)">
-              <span>Remove orphaned audio tags on Apply
-                <span style="color:var(--text-secondary)">— when on, disabling the Audio bucket or unchecking a value removes that tag from movies that already have it. Off by default; scoped to audio labels only.</span>
-              </span>
-            </label>
+          <!-- Bucket-config edit moved into the wizard 2026-05-07.
+               Click Run Tag Audio above; the wizard's Audio step
+               carries the full edit surface (codec / channels / flags
+               allow-list, prefix, Remove orphaned audio tags toggle).
+               Settings persist to globals on each successful run, so
+               next open pre-fills with your last picks. Want stable
+               settings forever? Save a Rule via Run mode → Create
+               rule. -->
+          <div style="margin-top:16px;padding:14px 18px;background:var(--bg-page);border:1px dashed var(--border-subtle);border-radius:8px;font-size:13px;color:var(--text-secondary);line-height:1.55">
+            Bucket config (codec / channels / atmos / prefix / remove-orphaned) lives inside the wizard now. Click <strong>Run Tag Audio</strong> above, configure on the Audio step, fire — your last picks become the new default.
           </div>
 
           <!-- ===== Audio tags result panel =====
@@ -2636,7 +2603,7 @@
           <!-- Section title row + run launcher (see Audio sub-tab for
                the rationale — page is 'Edit defaults', wizard fires). -->
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-            <div class="settings-section-title" style="margin:0">Video tags <span style="color:var(--text-secondary);font-size:12px;font-weight:400">— defaults</span></div>
+            <div class="settings-section-title" style="margin:0">Tag Video</div>
             <div style="flex:1"></div>
             <button class="btn btn-primary btn-sm"
                     :disabled="(instances || []).filter(i => i.type === scanAppType).length === 0 || scanLoading"
@@ -2653,50 +2620,17 @@
             <div class="settings-section-desc">Tags every movie with the video info from its file (resolution, codec, HDR). Three groups, each with its own switch and prefix — turn off any group you don't want.</div>
           </template>
 
-          <!-- Three video bucket cards (resolution / codec / hdr). -->
-          <template x-for="bucketKey in ['resolution', 'codec', 'hdr']" :key="bucketKey">
-            <div style="margin-top:16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px">
-              <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
-                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px">
-                  <input type="checkbox" x-model="videoTags[bucketKey].enabled" @change="saveVideoTags()" style="accent-color:var(--accent-blue)">
-                  <span style="font-weight:600;text-transform:capitalize" x-text="bucketKey"></span>
-                </label>
-                <div style="flex:1"></div>
-                <label style="display:flex;align-items:center;gap:8px;font-size:13px">
-                  <span style="color:var(--text-secondary)">Prefix</span>
-                  <input type="text" x-model="videoTags[bucketKey].prefix" @change="saveVideoTags()" placeholder="empty = bare values"
-                         :class="videoTagPrefixInvalid(bucketKey) ? 'input-invalid' : ''"
-                         style="width:160px;padding:5px 9px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page);color:var(--text-body);font-size:13px">
-                </label>
-              </div>
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px">
-                <div style="font-size:12px;color:var(--text-secondary)">Tags to emit — uncheck any you don't want:</div>
-                <div style="display:flex;gap:6px">
-                  <button class="btn btn-sm" :disabled="!videoTags[bucketKey].enabled" @click="selectAllVideoValues(bucketKey)" title="Check every value — bucket stays enabled">Select all</button>
-                  <button class="btn btn-sm" :disabled="!videoTags[bucketKey].enabled" @click="selectNoneVideoValues(bucketKey)" title="Uncheck every value — bucket stays enabled but emits nothing until you tick something">Select none</button>
-                </div>
-              </div>
-              <div :class="!videoTags[bucketKey].enabled ? 'is-disabled' : ''" style="display:flex;gap:8px;flex-wrap:wrap">
-                <template x-for="v in videoVocab[bucketKey]" :key="v">
-                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;padding:4px 9px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page)">
-                    <input type="checkbox"
-                           :checked="videoTagValueChecked(bucketKey, v)"
-                           @change="toggleVideoTagValue(bucketKey, v, videoVocab[bucketKey])"
-                           :disabled="!videoTags[bucketKey].enabled"
-                           style="accent-color:var(--accent-blue)">
-                    <code x-text="v"></code>
-                  </label>
-                </template>
-              </div>
-            </div>
-          </template>
-
-          <label style="margin-top:14px;display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
-            <input type="checkbox" x-model="videoTags.removeOrphanedTags" @change="saveVideoTags()" style="accent-color:var(--accent-blue)">
-            <span>Remove orphaned video tags on Apply
-              <span style="color:var(--text-secondary)">— when on, disabling a video bucket or unchecking a value removes that tag from movies that already have it. Off by default; scoped to video labels only.</span>
-            </span>
-          </label>
+          <!-- Bucket-config edit moved into the wizard 2026-05-07.
+               Click Run Tag Video above; the wizard's Video step
+               carries the full edit surface (resolution / codec /
+               HDR allow-lists, per-bucket prefix, Remove orphaned
+               video tags toggle). Settings persist to globals on
+               each successful run, so next open pre-fills with your
+               last picks. Want stable settings forever? Save a Rule
+               via Run mode → Create rule. -->
+          <div style="margin-top:16px;padding:14px 18px;background:var(--bg-page);border:1px dashed var(--border-subtle);border-radius:8px;font-size:13px;color:var(--text-secondary);line-height:1.55">
+            Bucket config (resolution / codec / HDR / per-bucket prefix / remove-orphaned) lives inside the wizard now. Click <strong>Run Tag Video</strong> above, configure on the Video step, fire — your last picks become the new default.
+          </div>
 
           <!-- ===== Video tags result panel ===== -->
           <!-- Video tags results render in the QFA detail modal once scanResults.videoTags is set (auto-pop). -->
@@ -2759,7 +2693,7 @@
                the rationale). The Skip-cache toggle moves into the wizard
                via editingRule.options.bypassDvCache, kept off the page. -->
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-            <div class="settings-section-title" style="margin:0">Dolby Vision detail <span style="color:var(--text-secondary);font-size:12px;font-weight:400">— defaults</span></div>
+            <div class="settings-section-title" style="margin:0">Tag DV Details</div>
             <div style="flex:1"></div>
             <button class="btn btn-primary btn-sm"
                     :disabled="(instances || []).filter(i => i.type === 'radarr').length === 0 || !dvTools.installed || scanLoading"
@@ -2834,50 +2768,16 @@
             </template>
           </div>
 
-          <!-- DV detail config card. -->
-          <div style="margin-top:16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px">
-            <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px">
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px">
-                <input type="checkbox" x-model="dvDetail.enabled" @change="saveDvDetail()" style="accent-color:var(--accent-blue)">
-                <span style="font-weight:600">Enable DV detail tagging</span>
-              </label>
-              <div style="flex:1"></div>
-              <label style="display:flex;align-items:center;gap:8px;font-size:13px">
-                <span style="color:var(--text-secondary)">Tag prefix</span>
-                <input type="text" x-model="dvDetail.prefix" @change="saveDvDetail()" placeholder="empty = bare values"
-                       :class="!/^[a-z0-9-]*$/.test(dvDetail.prefix) ? 'input-invalid' : ''"
-                       style="width:160px;padding:5px 9px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page);color:var(--text-body);font-size:13px">
-              </label>
-            </div>
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-              <div style="font-size:13px;color:var(--text-body)">Tags to emit
-                <span style="color:var(--text-secondary)">— uncheck any you don't want:</span>
-              </div>
-              <div style="display:flex;gap:6px">
-                <button class="btn btn-sm" :disabled="!dvDetail.enabled" @click="selectAllDvDetailValues()" title="Check every DV-detail tag — bucket stays enabled">Select all</button>
-                <button class="btn btn-sm" :disabled="!dvDetail.enabled" @click="selectNoneDvDetailValues()" title="Uncheck every DV-detail tag — bucket stays enabled but emits nothing until you tick something">Select none</button>
-              </div>
-            </div>
-            <div style="display:flex;gap:14px;flex-wrap:wrap">
-              <template x-for="v in dvDetailVocab" :key="v">
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;padding:5px 10px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page)"
-                       :class="!dvDetail.enabled ? 'is-disabled' : ''">
-                  <input type="checkbox"
-                         :checked="isDvDetailValueAllowed(v)"
-                         @change="toggleDvDetailValue(v)"
-                         :disabled="!dvDetail.enabled"
-                         style="accent-color:var(--accent-blue)">
-                  <code x-text="v"></code>
-                </label>
-              </template>
-            </div>
-
-            <label style="margin-top:14px;display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
-              <input type="checkbox" x-model="dvDetail.removeOrphanedTags" @change="saveDvDetail()" style="accent-color:var(--accent-blue)">
-              <span>Remove orphaned DV-detail tags on Apply
-                <span style="color:var(--text-secondary)">— off by default; scoped to DV-detail labels only.</span>
-              </span>
-            </label>
+          <!-- Bucket-config edit moved into the wizard 2026-05-07.
+               Click Run Tag DV Details above; the wizard's DV detail
+               step carries the full edit surface (profile / layer /
+               cm-version allow-list, prefix, Remove orphaned DV-detail
+               tags toggle). Settings persist to globals on each
+               successful run, so next open pre-fills with your last
+               picks. The DV cache panel below is unrelated to bucket
+               config and stays here. -->
+          <div style="margin-top:16px;padding:14px 18px;background:var(--bg-page);border:1px dashed var(--border-subtle);border-radius:8px;font-size:13px;color:var(--text-secondary);line-height:1.55">
+            DV-detail bucket config (profile / layer / cm-version allow-list, prefix, remove-orphaned) lives inside the wizard now. Click <strong>Run Tag DV Details</strong> above, configure on the DV detail step, fire — your last picks become the new default.
           </div>
 
           <!-- DV detail result panel. -->
@@ -4500,12 +4400,17 @@
     <div class="section-subtitle">Receive Sonarr / Radarr Connect events. Today's mode is <strong>logging only</strong> — every event lands in the Recent activity panel so you can verify your Connect setup and inspect the JSON. Per-event tagging functions (release-group, DV, audio/video, qBit episode/season, grab rename) land in subsequent sessions.</div>
 
     <div class="settings-layout">
-      <!-- Sidebar -->
+      <!-- Sidebar — two sub-tabs only.
+           2026-05-07: dropped placeholder Grab / Import / Delete
+           sub-tabs that suggested per-event-type GLOBAL settings.
+           Real architecture is per-instance: each Sonarr/Radarr
+           instance has its own enabled toggles for which functions
+           fire on which events, configured inside the wizard's
+           Choices step. No per-event-type page-level surface
+           needed — sub-tabs were leftover wireframe from before
+           the foundation landed. -->
       <div class="settings-sidebar">
         <div class="settings-nav" :class="webhookSection === 'setup' && 'settings-nav-active'" @click="webhookSection = 'setup'">Setup</div>
-        <div class="settings-nav" :class="webhookSection === 'grab' && 'settings-nav-active'" @click="webhookSection = 'grab'">On Grab</div>
-        <div class="settings-nav" :class="webhookSection === 'import' && 'settings-nav-active'" @click="webhookSection = 'import'">On Import / Upgrade</div>
-        <div class="settings-nav" :class="webhookSection === 'delete' && 'settings-nav-active'" @click="webhookSection = 'delete'">On File Delete</div>
         <div class="settings-nav" :class="webhookSection === 'activity' && 'settings-nav-active'" @click="webhookSection = 'activity'">Recent activity</div>
       </div>
 
@@ -4551,21 +4456,20 @@
                   <span style="font-size:12px;color:var(--text-muted-secondary)" x-text="webhookLastReceivedLabel(inst.id)"></span>
                 </div>
 
-                <!-- Configured: show URL + actions -->
+                <!-- Configured: actions only — the URL contains a
+                     bearer token in its path, so we don't render it
+                     into the page. Copy button + Regenerate are the
+                     only ways the user needs to interact with it. -->
                 <template x-if="webhookConfigs[inst.id] && webhookConfigs[inst.id].token">
-                  <div>
-                    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-                      <input class="input" readonly :value="webhookConfigs[inst.id].url" style="flex:1;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:12px" @click="$event.target.select()">
-                      <button class="btn btn-sm" @click="copyWebhookUrl(inst.id)" title="Copy to clipboard">Copy</button>
-                    </div>
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px">
-                      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-body)">
-                        <input type="checkbox" :checked="webhookConfigs[inst.id].loggingEnabled" @change="toggleWebhookLogging(inst.id, $event.target.checked)" style="accent-color:var(--accent-blue)">
-                        <span>Enable logging <span style="color:var(--text-secondary)">— append received events to Recent activity below</span></span>
-                      </label>
-                      <div style="flex:1"></div>
-                      <button class="btn btn-sm" @click="confirmRegenerateWebhookToken(inst.id, inst.name)" title="Generate a new token. The old URL stops working — you'll need to paste the new URL into Sonarr/Radarr.">Regenerate URL</button>
-                    </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px">
+                    <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-body)">
+                      <input type="checkbox" :checked="webhookConfigs[inst.id].loggingEnabled" @change="toggleWebhookLogging(inst.id, $event.target.checked)" style="accent-color:var(--accent-blue)">
+                      <span>Enable logging <span style="color:var(--text-secondary)">— append received events to Recent activity below</span></span>
+                    </label>
+                    <div style="flex:1"></div>
+                    <button class="btn btn-sm" @click="copyWebhookUrl(inst.id)" title="Copy this instance's webhook URL to the clipboard for pasting into Sonarr/Radarr → Connect.">Copy webhook URL</button>
+                    <button class="btn btn-sm" @click="confirmRegenerateWebhookToken(inst.id, inst.name)" title="Generate a new token. The old URL stops working — you'll need to paste the new URL into Sonarr/Radarr.">Regenerate URL</button>
+                    <button class="btn btn-sm btn-danger" @click="confirmDeleteWebhook(inst.id, inst.name)" title="Remove the webhook configuration. The current URL stops working immediately. Recent activity log is kept (clear it from the Activity tab if you also want to wipe events).">Delete</button>
                   </div>
                 </template>
 
@@ -4577,74 +4481,6 @@
                 </template>
               </div>
             </template>
-          </div>
-        </div>
-
-        <!-- ===== On Grab ===== -->
-        <div x-show="webhookSection === 'grab'" x-cloak>
-          <div class="settings-section-title">On Grab</div>
-          <div class="settings-section-desc">Fires when Radarr / Sonarr sends a release to qBittorrent. Used to preserve tokens that exist in the indexer's release title but might be missing from the qBit torrent name (which Arr reads at import time for CF scoring), and to tag the torrent in qBit so backlogs stay organized. Files on disk are untouched — the rename is metadata-only.</div>
-
-          <!-- Rename criteria -->
-          <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;margin-top:16px;opacity:0.6;max-width:820px">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-              <div style="font-size:14px;font-weight:600;color:var(--text-primary)">Rename criteria</div>
-              <span class="app-badge app-both">Radarr / Sonarr</span>
-            </div>
-            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px">When to apply the qBit torrent rename. Idempotent — skips when the qBit name already matches what tagarr would set.</div>
-            <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span>Append release-group token (<code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">-FLUX</code>, <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">-NTb</code>, etc.) when missing from qBit torrent name</span></label>
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span>Preserve Sonarr source tokens (<code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">AMZN</code>, <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">NF</code>, <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">DSNP</code>, <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">HMAX</code>) — user-defined regex list</span></label>
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span>Skip when release-group is in user blocklist (e.g. unwanted-rename groups)</span></label>
-            </div>
-          </div>
-
-          <!-- qBit season/episode tagging -->
-          <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;margin-top:12px;opacity:0.6;max-width:820px">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-              <div style="font-size:14px;font-weight:600;color:var(--text-primary)">qBit season / episode tagging</div>
-              <span class="app-badge app-sonarr">Sonarr only</span>
-              <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 7px;border-radius:8px;font-weight:500">M7</span>
-            </div>
-            <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px">While the Grab handler has the qBit torrent open for the rename, also tag it with the season/episode it belongs to. Use the <em>Run backlog scan</em> button under Settings → qBittorrent to apply the same tags to existing torrents.</div>
-            <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span>Tag full season packs (<code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">S01</code>, <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">S02</code>)</span></label>
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span>Tag single episodes (<code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">S01E05</code>)</span></label>
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span>Tag multi-episode releases (<code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">S01E05E06</code>)</span></label>
-            </div>
-          </div>
-        </div>
-
-        <!-- ===== On Import / Upgrade ===== -->
-        <div x-show="webhookSection === 'import'" x-cloak>
-          <div class="settings-section-title">On Import / On Upgrade</div>
-          <div class="settings-section-desc">Apply tags right after Radarr / Sonarr finishes importing a file, or re-evaluate them when an upgrade replaces an existing file (release group may have changed).</div>
-          <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;margin-top:16px;opacity:0.6;max-width:820px">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-              <div style="font-size:14px;font-weight:600;color:var(--text-primary)">Per-event toggles</div>
-              <span class="app-badge app-both">Radarr / Sonarr</span>
-            </div>
-            <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span><strong>On Import</strong> (Radarr eventtype <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">Download</code>) — apply Active groups + Extra tags to the just-imported file</span></label>
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span><strong>On Upgrade</strong> — same flow, triggered when Radarr / Sonarr replaces an older file</span></label>
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span>Recover missing release-group from grab history <span class="app-badge app-sonarr">Sonarr only</span> — episodefile patch + optional rename</span></label>
-            </div>
-          </div>
-        </div>
-
-        <!-- ===== On File Delete ===== -->
-        <div x-show="webhookSection === 'delete'" x-cloak>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-            <div class="settings-section-title" style="margin:0">On Movie File Delete</div>
-            <span class="app-badge app-radarr">Radarr only</span>
-          </div>
-          <div class="settings-section-desc">Strip managed tags from a movie when Radarr removes its file. Sonarr doesn't fire equivalent episode-delete events at present, so this section only shows for Radarr instances.</div>
-          <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;margin-top:16px;opacity:0.6;max-width:820px">
-            <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span>Strip managed tags on <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">MovieFileDelete</code> (file manually deleted)</span></label>
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span>Strip managed tags on <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">MovieFileDeleteForUpgrade</code> (file replaced by upgrade — tags re-apply on the next On Import event)</span></label>
-              <label style="display:flex;align-items:flex-start;gap:8px;color:var(--text-secondary)"><input type="checkbox" disabled style="margin-top:2px"><span>Mirror to secondary Radarr (when sync is enabled)</span></label>
-            </div>
           </div>
         </div>
 
@@ -4702,21 +4538,38 @@
 
           <!-- Event cards. Hidden during a refresh so the user
                doesn't see stale cards + spinner simultaneously
-               (the loading template above takes over). -->
+               (the loading template above takes over).
+               Layout: CSS grid with fixed column widths so the
+               event-type pill, title block, timestamp, and expand
+               caret all line up across rows regardless of which
+               event-type filter is active. Title + subtitle are
+               on ONE LINE so card height stays constant. -->
           <template x-if="webhookActivityInstanceId && webhookEventsFiltered().length > 0 && !webhookEventsLoading">
-            <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <!-- Header row (column labels) — also CSS grid with the
+                   same template so labels sit over their columns. -->
+              <div style="display:grid;grid-template-columns:140px 1fr 170px 20px;gap:12px;align-items:center;padding:6px 14px;font-size:10px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-muted-secondary)">
+                <div>Event</div>
+                <div>Title</div>
+                <div>Received</div>
+                <div></div>
+              </div>
               <template x-for="ev in webhookEventsFiltered()" :key="ev.id">
                 <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
-                  <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;flex-wrap:wrap" @click="toggleWebhookEventExpanded(ev.id)">
-                    <span class="pill blue" style="font-size:11px;text-transform:none" x-text="ev.eventType"></span>
-                    <div style="flex:1;min-width:200px">
-                      <div style="font-size:13px;color:var(--text-primary);font-weight:500" x-text="ev.title || '(no title)'"></div>
+                  <div style="display:grid;grid-template-columns:140px 1fr 170px 20px;gap:12px;align-items:center;padding:10px 14px;cursor:pointer" @click="toggleWebhookEventExpanded(ev.id)">
+                    <!-- Column 1: event-type pill, fixed width -->
+                    <span class="pill blue" style="font-size:11px;text-transform:none;justify-self:start;white-space:nowrap" x-text="ev.eventType"></span>
+                    <!-- Column 2: title (+ inline subtitle), single line, ellipsis on overflow -->
+                    <div style="font-size:13px;color:var(--text-primary);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">
+                      <span x-text="ev.title || '(no title)'"></span>
                       <template x-if="ev.subtitle">
-                        <div style="font-size:12px;color:var(--text-secondary);margin-top:2px" x-text="ev.subtitle"></div>
+                        <span style="color:var(--text-secondary);font-weight:400;margin-left:6px" x-text="'(' + ev.subtitle + ')'"></span>
                       </template>
                     </div>
-                    <span style="font-size:11px;color:var(--text-muted-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace" x-text="formatDate(ev.receivedAt)"></span>
-                    <span style="font-size:14px;color:var(--text-muted-secondary)" x-text="webhookEventExpanded[ev.id] ? '▾' : '▸'"></span>
+                    <!-- Column 3: timestamp, fixed width -->
+                    <span style="font-size:11px;color:var(--text-muted-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="formatDate(ev.receivedAt)"></span>
+                    <!-- Column 4: expand caret, fixed width -->
+                    <span style="font-size:14px;color:var(--text-muted-secondary);justify-self:center" x-text="webhookEventExpanded[ev.id] ? '▾' : '▸'"></span>
                   </div>
                   <template x-if="webhookEventExpanded[ev.id]">
                     <div style="background:var(--bg-page);border-top:1px solid var(--border-subtle);padding:12px 14px">
@@ -4729,6 +4582,106 @@
           </template>
         </div>
 
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== qBit instance Add/Edit modal =====
+       Shared between create + edit; qbitInstanceModal.id distinguishes
+       (empty = create, set = edit). Password preservation: empty/masked
+       on edit keeps the stored value, real value replaces it. Test
+       Connection runs the inline-creds probe before save so the user
+       can verify creds without committing to disk. -->
+  <div class="modal-overlay" x-show="qbitInstanceModal.open" x-cloak @click.self="closeQbitInstanceModal()" @keydown.escape.window="if (qbitInstanceModal.open) closeQbitInstanceModal()">
+    <div class="modal" style="width:540px;max-width:95vw">
+      <div class="modal-title" x-text="qbitInstanceModal.id ? 'Edit qBittorrent instance' : 'Add qBittorrent instance'"></div>
+      <div class="form-group">
+        <label class="label">Name</label>
+        <input class="input" x-model="qbitInstanceModal.name" placeholder="qbt-main" autocomplete="off">
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">Whatever helps you identify this connection — used in webhook configs and the backlog scan picker.</div>
+      </div>
+      <div class="form-group">
+        <label class="label">URL</label>
+        <input class="input" x-model="qbitInstanceModal.url" placeholder="http://192.168.1.100:8080" autocomplete="off">
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;line-height:1.5">
+          Three URL forms accepted:<br>
+          • Direct: <code>http://192.168.1.100:8080</code><br>
+          • Reverse-proxied: <code>https://qbit.example.com/qbit</code><br>
+          • <strong>qui client proxy</strong>: <code>http://qui-host:7476/proxy/&lt;long-hex-token&gt;</code> — leave Username + Password blank below; qui handles qBit auth downstream.
+        </div>
+      </div>
+      <!-- qui-proxy detection — when URL looks like
+           http(s)://host:port/proxy/<hex>, the long token is the auth
+           (qui handles qBit creds internally). Show a clarifying
+           banner so users don't fill in credentials thinking they're
+           required. -->
+      <template x-if="/\/proxy\/[a-f0-9*]{4,}/i.test(qbitInstanceModal.url || '')">
+        <div style="margin-bottom:14px;padding:8px 12px;background:var(--alpha-blue);border:1px solid var(--accent-blue-strong);border-radius:6px;font-size:12px;color:var(--accent-sky);line-height:1.5">
+          ℹ Looks like a <strong>qui client proxy URL</strong>. Leave Username + Password blank — qui authenticates against qBit on your behalf, the URL token is the only credential resolvarr needs.
+        </div>
+      </template>
+      <div class="form-group">
+        <label class="label">Username <span style="color:var(--text-secondary);font-weight:400">— leave blank for qui proxy or LocalHostAuth-disabled setups</span></label>
+        <input class="input" x-model="qbitInstanceModal.username" placeholder="admin" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="label">Password</label>
+        <input class="input" x-model="qbitInstanceModal.password" :placeholder="qbitInstanceModal.id ? '•••••••• (saved — leave blank to keep)' : 'qBit password'" type="password" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+          <input type="checkbox" x-model="qbitInstanceModal.trustedCerts" style="accent-color:var(--accent-blue)">
+          <span>Skip TLS verification <span style="color:var(--text-secondary)">— only for self-signed reverse-proxy setups</span></span>
+        </label>
+        <!-- MITM warning when TLS verification is disabled. Reads only
+             on https:// targets — http:// has no TLS to skip, so the
+             checkbox is a no-op there and the warning would be noise. -->
+        <template x-if="qbitInstanceModal.trustedCerts && /^https:/i.test(qbitInstanceModal.url || '')">
+          <div style="margin-top:8px;padding:8px 12px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;font-size:12px;color:var(--accent-red);line-height:1.5">
+            ⚠ <strong>Man-in-the-middle risk.</strong> With TLS verification off, anyone on the network path between this container and qBit can intercept or modify the connection — including the password and the qui token. Only safe when qBit is on the same host (loopback) or a trusted LAN segment you fully control. Prefer fixing the cert chain over disabling verification.
+          </div>
+        </template>
+      </div>
+
+      <!-- Inline test result banner — populated by Test Connection -->
+      <template x-if="qbitInstanceModal.testResult">
+        <div :style="qbitInstanceModal.testOk ? 'background:var(--alpha-green);border:1px solid var(--accent-green);color:var(--accent-green)' : 'background:var(--accent-red-bg);border:1px solid var(--accent-red);color:var(--accent-red)'"
+             style="padding:8px 12px;border-radius:6px;font-size:12px;line-height:1.4;margin-bottom:12px"
+             x-text="qbitInstanceModal.testResult"></div>
+      </template>
+
+      <div class="modal-actions">
+        <button class="btn" @click="closeQbitInstanceModal()" :disabled="qbitInstanceModal.busy">Cancel</button>
+        <button class="btn" @click="testQbitInstanceModal()" :disabled="qbitInstanceModal.busy || !qbitInstanceModal.url">
+          <span x-show="!qbitInstanceModal.testing">Test Connection</span>
+          <span x-show="qbitInstanceModal.testing">Testing…</span>
+        </button>
+        <div style="flex:1"></div>
+        <button class="btn btn-primary" @click="saveQbitInstanceModal()" :disabled="qbitInstanceModal.busy || !qbitInstanceModal.name || !qbitInstanceModal.url">
+          <span x-show="!qbitInstanceModal.busy">Save</span>
+          <span x-show="qbitInstanceModal.busy">Saving…</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== qBit instance delete confirm =====
+       Same shape as the Arr instance delete modal — names the target
+       so users don't blast away the wrong row. -->
+  <div class="modal-overlay" x-show="deleteQbitTarget" x-cloak @click.self="deleteQbitTarget = null" @keydown.escape.window="deleteQbitTarget = null">
+    <div class="modal" style="width:480px">
+      <div class="modal-title">Delete qBittorrent instance</div>
+      <div style="font-size:13px;color:var(--text-body);line-height:1.5;margin-bottom:14px">
+        Remove <code style="background:var(--bg-muted);padding:1px 6px;border-radius:3px" x-text="deleteQbitTarget && deleteQbitTarget.name"></code>?
+        <div style="margin-top:6px;color:var(--text-secondary)">Webhook configs pairing with this instance will lose their qBit link. The qBit instance itself is untouched (this just removes resolvarr's record of it).</div>
+      </div>
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <button class="btn" @click="deleteQbitTarget = null" :disabled="deleteQbitBusy">Cancel</button>
+        <button class="btn btn-danger" @click="deleteQbitInstance()" :disabled="deleteQbitBusy">
+          <span x-show="!deleteQbitBusy">Delete</span>
+          <span x-show="deleteQbitBusy">Deleting…</span>
+        </button>
       </div>
     </div>
   </div>
@@ -5512,18 +5465,45 @@
             </div>
           </template>
 
-          <div class="form-group">
-            <label class="label">Primary instance</label>
-            <select class="input" x-model="editingRule.instanceId" @change="ruleEditorOnInstanceChange()">
-              <template x-for="inst in ruleEditorInstancesAvailable()" :key="inst.id">
-                <option :value="inst.id" x-text="inst.name"></option>
-              </template>
-            </select>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
-              <span x-text="'Only ' + (ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instances are listed — this rule is locked to the app type you picked in the Library scan header.'"></span>
-              <span style="color:var(--accent-sky)">Primary vs Secondary?</span> See the primer on <strong>Settings → Instances</strong>.
+          <!-- Per-action auto-tag wizards (Tag Audio / Video / DV
+               Details) get a unified Instance picker that includes
+               a "Both instances" option — primary vs secondary has
+               no semantic meaning for these phases (each instance
+               reads its own mediaInfo independently). The legacy
+               "Primary instance" picker + per-bucket target picker
+               are kept for QFA + Create rule + Recover where head
+               phases (tag/discover/recover) have real primary
+               semantics. -->
+          <template x-if="isPerActionAutoTag()">
+            <div class="form-group">
+              <label class="label" x-text="(ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance'"></label>
+              <select class="input" :value="perActionInstanceSelectorValue()" @change="setPerActionInstance($event.target.value); ruleEditorOnInstanceChange()">
+                <template x-for="inst in ruleEditorInstancesAvailable()" :key="inst.id">
+                  <option :value="inst.id" x-text="inst.name"></option>
+                </template>
+                <template x-if="ruleEditorInstancesAvailable().length >= 2">
+                  <option value="__both__">Both instances</option>
+                </template>
+              </select>
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
+                <span x-text="ruleEditorInstancesAvailable().length >= 2 ? 'Pick a single instance, or run on both — each instance reads its own files independently.' : 'The scan walks every movie/series on this instance.'"></span>
+              </div>
             </div>
-          </div>
+          </template>
+          <template x-if="!isPerActionAutoTag()">
+            <div class="form-group">
+              <label class="label">Primary instance</label>
+              <select class="input" x-model="editingRule.instanceId" @change="ruleEditorOnInstanceChange()">
+                <template x-for="inst in ruleEditorInstancesAvailable()" :key="inst.id">
+                  <option :value="inst.id" x-text="inst.name"></option>
+                </template>
+              </select>
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
+                <span x-text="'Only ' + (ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instances are listed — this rule is locked to the app type you picked in the Library scan header.'"></span>
+                <span style="color:var(--accent-sky)">Primary vs Secondary?</span> See the primer on <strong>Settings → Instances</strong>.
+              </div>
+            </div>
+          </template>
 
           <template x-if="editingRule.mode === 'tag' || editingRule.mode === 'combined'">
             <div class="form-group">
@@ -5858,12 +5838,13 @@
             Per-rule snapshot of the Audio tags config. Empty prefix = bare-value tags (<code>truehd</code>, <code>5-1</code>, <code>atmos</code>); set a prefix like <code>audio-</code> for namespacing.
           </div>
 
-          <!-- Target picker — only when 2+ same-type instances. Picks
-               which instance(s) the audio-tag phase runs on. With one
-               instance the picker is hidden (implicit primary). The
-               token allow-list below applies to whichever instance(s)
-               the phase fires on. -->
-          <template x-if="ruleHasSecondary()">
+          <!-- Target picker — hidden for per-action audio wizards
+               (the unified Instance picker on Basics handles
+               primary/secondary/both via setPerActionInstance).
+               Shown for QFA + Create rule where the chain has
+               head phases with real primary semantics. With one
+               instance the picker also hides (implicit primary). -->
+          <template x-if="ruleHasSecondary() && !isPerActionAutoTag()">
             <div style="margin-bottom:14px;padding:12px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
               <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">Run audio tags on</div>
               <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--text-primary)">
@@ -5890,7 +5871,7 @@
                 <input type="checkbox" x-model="editingRule.audioTags.audio.enabled" style="accent-color:var(--accent-blue)">
                 <span>Audio tagging <span style="color:var(--text-secondary);font-weight:400">(codec / channels / atmos)</span></span>
               </label>
-              <input class="input" type="text" x-model="editingRule.audioTags.audio.prefix" placeholder="prefix (optional)" style="width:160px;font-size:12px" :disabled="!editingRule.audioTags.audio.enabled">
+              <input class="input" type="text" x-model="editingRule.audioTags.audio.prefix" placeholder="prefix (optional)" style="width:160px;font-size:12px" :disabled="!editingRule.audioTags.audio.enabled" :class="!/^[a-z0-9-]*$/.test(editingRule.audioTags.audio.prefix || '') ? 'input-invalid' : ''" title="Allowed characters: a-z, 0-9, hyphen. Empty = bare values like 'truehd', 'atmos'.">
             </div>
             <div :class="!editingRule.audioTags.audio.enabled && 'value-cluster-disabled'" style="margin-top:10px">
               <div class="value-cluster-section">
@@ -6006,8 +5987,10 @@
             Per-rule snapshot of the Video tags config. Three buckets read from <code>mediaInfo</code>: resolution, codec + bit depth, HDR / Dolby Vision (base flag).
           </div>
 
-          <!-- Target picker — only when 2+ same-type instances. -->
-          <template x-if="ruleHasSecondary()">
+          <!-- Target picker — hidden for per-action video wizards
+               (unified Instance picker on Basics handles primary/
+               secondary/both). Shown for QFA + Create rule. -->
+          <template x-if="ruleHasSecondary() && !isPerActionAutoTag()">
             <div style="margin-bottom:14px;padding:12px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
               <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">Run video tags on</div>
               <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--text-primary)">
@@ -6035,7 +6018,7 @@
                   <input type="checkbox" x-model="editingRule.videoTags[bucketKey].enabled" style="accent-color:var(--accent-blue)">
                   <span x-text="bucketKey === 'resolution' ? 'Resolution' : bucketKey === 'codec' ? 'Codec + bit depth' : 'HDR / Dolby Vision'"></span>
                 </label>
-                <input class="input" type="text" x-model="editingRule.videoTags[bucketKey].prefix" placeholder="prefix (optional)" style="width:160px;font-size:12px" :disabled="!editingRule.videoTags[bucketKey].enabled">
+                <input class="input" type="text" x-model="editingRule.videoTags[bucketKey].prefix" placeholder="prefix (optional)" style="width:160px;font-size:12px" :disabled="!editingRule.videoTags[bucketKey].enabled" :class="!/^[a-z0-9-]*$/.test(editingRule.videoTags[bucketKey].prefix || '') ? 'input-invalid' : ''" title="Allowed characters: a-z, 0-9, hyphen. Empty = bare values.">
               </div>
               <div class="value-cluster" :class="!editingRule.videoTags[bucketKey].enabled && 'value-cluster-disabled'" style="margin-top:8px">
                 <template x-for="value in videoVocab[bucketKey]" :key="'rule-v-' + bucketKey + '-' + value">
@@ -6105,8 +6088,10 @@
             Per-rule snapshot of the DV detail config. Layers profile / layer / CM-version tags on top of the base <code>dv</code> tag emitted by Video tags → HDR.
           </div>
 
-          <!-- Target picker — only when 2+ same-type instances. -->
-          <template x-if="ruleHasSecondary()">
+          <!-- Target picker — hidden for per-action DV wizards
+               (unified Instance picker on Basics handles primary/
+               secondary/both). Shown for QFA + Create rule. -->
+          <template x-if="ruleHasSecondary() && !isPerActionAutoTag()">
             <div style="margin-bottom:14px;padding:12px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
               <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">Run DV detail on</div>
               <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--text-primary)">
@@ -6133,7 +6118,7 @@
                 <input type="checkbox" x-model="editingRule.dvDetail.enabled" style="accent-color:var(--accent-blue)">
                 <span>DV detail tagging <span style="color:var(--text-secondary);font-weight:400">(profile / layer / CM-version)</span></span>
               </label>
-              <input class="input" type="text" x-model="editingRule.dvDetail.prefix" placeholder="prefix (optional)" style="width:160px;font-size:12px" :disabled="!editingRule.dvDetail.enabled">
+              <input class="input" type="text" x-model="editingRule.dvDetail.prefix" placeholder="prefix (optional)" style="width:160px;font-size:12px" :disabled="!editingRule.dvDetail.enabled" :class="!/^[a-z0-9-]*$/.test(editingRule.dvDetail.prefix || '') ? 'input-invalid' : ''" title="Allowed characters: a-z, 0-9, hyphen. Empty = bare values.">
             </div>
             <div class="value-cluster" :class="!editingRule.dvDetail.enabled && 'value-cluster-disabled'" style="margin-top:8px">
               <template x-for="value in dvDetailVocab" :key="'rule-dv-' + value">
@@ -6289,16 +6274,33 @@
             </div>
           </div>
 
-          <!-- ===== Target instance(s) ===== -->
+          <!-- ===== Target instance(s) =====
+               Per-action auto-tag wizards (Tag Audio / Video / DV)
+               with Both selected show a different label since
+               there's no primary-vs-secondary semantic — both
+               instances run independently. QFA + Create rule keep
+               the Primary/Secondary breakdown because head phases
+               (tag / discover / recover) DO have primary semantics. -->
           <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
             <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">Target</div>
             <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
-              <div>
-                <strong style="color:var(--text-body)">Primary:</strong>
-                <span x-text="(instances.find(i => i.id === editingRule.instanceId) || {}).name || editingRule.instanceId"></span>
-                <span style="color:var(--text-secondary)">(<span x-text="(instances.find(i => i.id === editingRule.instanceId) || {}).type || '?'"></span>)</span>
-              </div>
-              <template x-if="reviewSecondaryInstance()">
+              <template x-if="isPerActionAutoTag() && perActionInstanceSelectorValue() === '__both__'">
+                <div>
+                  <strong style="color:var(--text-body)">Both instances:</strong>
+                  <span x-text="(instances.find(i => i.id === editingRule.instanceId) || {}).name || editingRule.instanceId"></span>
+                  <span style="color:var(--text-secondary)"> + </span>
+                  <span x-text="(ruleSecondaryInstance() && ruleSecondaryInstance().name) || '?'"></span>
+                  <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">Each instance walks its own files independently — same allow-list, separate scan.</div>
+                </div>
+              </template>
+              <template x-if="!(isPerActionAutoTag() && perActionInstanceSelectorValue() === '__both__')">
+                <div>
+                  <strong style="color:var(--text-body)" x-text="isPerActionAutoTag() ? 'Instance:' : 'Primary:'"></strong>
+                  <span x-text="(instances.find(i => i.id === editingRule.instanceId) || {}).name || editingRule.instanceId"></span>
+                  <span style="color:var(--text-secondary)">(<span x-text="(instances.find(i => i.id === editingRule.instanceId) || {}).type || '?'"></span>)</span>
+                </div>
+              </template>
+              <template x-if="!isPerActionAutoTag() && reviewSecondaryInstance()">
                 <div>
                   <strong style="color:var(--text-body)">Secondary:</strong>
                   <span x-text="reviewSecondaryInstance().name"></span>
@@ -6414,7 +6416,7 @@
                   <span :style="editingRule.audioTags && editingRule.audioTags.removeOrphanedTags ? 'color:var(--accent-red);font-weight:500' : ''"
                         x-text="editingRule.audioTags && editingRule.audioTags.removeOrphanedTags ? 'yes — destructive cleanup' : 'no'"></span>
                 </div>
-                <template x-if="ruleHasSecondary()">
+                <template x-if="ruleHasSecondary() && !isPerActionAutoTag()">
                   <div>
                     <strong style="color:var(--text-body)">Runs on:</strong>
                     <span x-text="reviewTargetLabel(editingRule.options.audioTagsTarget)"></span>
@@ -6446,7 +6448,7 @@
                   <span :style="editingRule.videoTags && editingRule.videoTags.removeOrphanedTags ? 'color:var(--accent-red);font-weight:500' : ''"
                         x-text="editingRule.videoTags && editingRule.videoTags.removeOrphanedTags ? 'yes — destructive cleanup' : 'no'"></span>
                 </div>
-                <template x-if="ruleHasSecondary()">
+                <template x-if="ruleHasSecondary() && !isPerActionAutoTag()">
                   <div>
                     <strong style="color:var(--text-body)">Runs on:</strong>
                     <span x-text="reviewTargetLabel(editingRule.options.videoTagsTarget)"></span>
@@ -6470,7 +6472,7 @@
                   <span :style="editingRule.dvDetail && editingRule.dvDetail.removeOrphanedTags ? 'color:var(--accent-red);font-weight:500' : ''"
                         x-text="editingRule.dvDetail && editingRule.dvDetail.removeOrphanedTags ? 'yes — destructive cleanup' : 'no'"></span>
                 </div>
-                <template x-if="ruleHasSecondary()">
+                <template x-if="ruleHasSecondary() && !isPerActionAutoTag()">
                   <div>
                     <strong style="color:var(--text-body)">Runs on:</strong>
                     <span x-text="reviewTargetLabel(editingRule.options.dvDetailTarget)"></span>
