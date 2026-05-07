@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.3.10-dev — qBittorrent foundation + live status + secret hiding (2026-05-07)
+
+### What you get
+
+- **Settings → qBittorrent is live.** Add qBittorrent instances by
+  name. Direct URLs work, reverse-proxied URLs work, and qui
+  client-proxy URLs work too — for qui just leave Username +
+  Password blank, the URL token is the auth. Test Connection
+  before saving. Optional TLS-skip toggle for self-signed setups,
+  with a clear warning when it's risky to use.
+
+- **Live connection status on every row.** Sonarr / Radarr + qBit
+  pills now reflect the actual state, auto-refreshing in the
+  background every minute. No more "Connected" pill that's stale
+  from a test you ran three days ago. Manual Test button still
+  there when you want to force a check.
+
+- **URLs hidden after saving.** The configured-instance rows
+  (Sonarr / Radarr, qBittorrent, webhooks) no longer show URLs
+  on every page view. You already chose the name, and the
+  buttons cover everything you need to do. Open Edit if you
+  want to see or change the URL.
+
+- **qui tokens displayed safely after save.** The token in qui
+  proxy URLs is your password — qui never shows it again after
+  you create it. After save we display it as `http://qui:7476/proxy/602f...c33e`
+  so you can confirm you're looking at the right one without
+  the full secret being on screen.
+
+- **Webhook Delete button.** Removes a configured webhook entirely
+  (was only Regenerate + Logging-toggle before). The URL stops
+  working immediately, and the row goes back to "not configured".
+  Recent activity log is kept — use Clear log on the Activity
+  tab if you want both gone.
+
+- **"Last received" timestamp accurate everywhere.** Used to say
+  "Never received an event" on every webhook row except the one
+  you'd opened in the Activity dropdown — even when events had
+  arrived. Fixed.
+
+- **Copy buttons work on plain HTTP setups.** Browsers block
+  modern clipboard access unless you're on HTTPS or localhost.
+  Most people run resolvarr on a LAN HTTP URL where Copy was
+  silently failing. Falls back automatically now — webhook URL,
+  wizard URL, and API key copies all work.
+
 ## v0.3.9-dev — Webhook foundation + wizard-everywhere + filter honesty (2026-05-07)
 
 ### What you get

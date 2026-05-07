@@ -124,12 +124,25 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// into Sonarr/Radarr Connect carries the auth bit. The other
 	// endpoints are admin-side and live under the standard per-
 	// instance namespace so they share the auth middleware.
+	// qBittorrent instances — user-managed list, paired with Arr
+	// webhook configs via WebhookConfig.QbitInstanceID when functions
+	// land. Standalone CRUD + Test Connection. Backlog scan (Service B)
+	// targets one of these directly without going through any Arr.
+	mux.HandleFunc("GET /api/qbit-instances", s.handleListQbitInstances)
+	mux.HandleFunc("POST /api/qbit-instances", s.handleCreateQbitInstance)
+	mux.HandleFunc("PUT /api/qbit-instances/{id}", s.handleUpdateQbitInstance)
+	mux.HandleFunc("DELETE /api/qbit-instances/{id}", s.handleDeleteQbitInstance)
+	mux.HandleFunc("POST /api/qbit-instances/{id}/test", s.handleTestQbitInstance)
+	mux.HandleFunc("POST /api/qbit-instances/test", s.handleTestQbitInline)
+
 	mux.HandleFunc("POST /api/webhooks/{token}", s.handleWebhookReceive)
 	mux.HandleFunc("GET /api/instances/{id}/webhook", s.handleWebhookGet)
 	mux.HandleFunc("GET /api/instances/{id}/webhook/events", s.handleWebhookListEvents)
+	mux.HandleFunc("GET /api/instances/{id}/webhook/events/stream", s.handleWebhookEventsStream)
 	mux.HandleFunc("DELETE /api/instances/{id}/webhook/events", s.handleWebhookClearEvents)
 	mux.HandleFunc("POST /api/instances/{id}/webhook/rotate", s.handleWebhookRotateToken)
 	mux.HandleFunc("PUT /api/instances/{id}/webhook/logging", s.handleWebhookSetLogging)
+	mux.HandleFunc("DELETE /api/instances/{id}/webhook", s.handleWebhookDelete)
 }
 
 // RegisterAuthRoutes wires the setup wizard, login/logout, and

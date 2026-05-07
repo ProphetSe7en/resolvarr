@@ -274,6 +274,37 @@ type Config struct {
 	// Restored to the scan list via the "Show excluded" panel + per-row
 	// Include-again button.
 	RecoverExclusions map[string]RecoverExclusion `json:"recoverExclusions,omitempty"`
+
+	// QbitInstances is a user-named list of qBittorrent instances. Kept
+	// standalone (not 1:1 paired with Arr instances) so a single qBit
+	// can be referenced from multiple Arr webhook configs without
+	// duplicating credentials. The pairing happens per-Arr inside
+	// WebhookConfig.QbitInstanceID — see internal/api/qbit_handlers.go
+	// + dev/analysis/M-webhook.md § "qBit pairing model".
+	//
+	// Backlog scan (Service B) targets a QbitInstance directly without
+	// going through any Arr instance.
+	QbitInstances []QbitInstance `json:"qbitInstances,omitempty"`
+}
+
+// QbitInstance is one user-configured qBittorrent connection.
+// User picks the Name (any string they want — "qbt-main",
+// "qbt-remux", whatever fits their setup); ID is auto-generated
+// on create and stable thereafter so cross-references in
+// WebhookConfig.QbitInstanceID survive name edits.
+//
+// URL accepts direct (http://192.168.1.100:8080) AND
+// reverse-proxy-fronted forms (https://qbit.example.com/qbit) —
+// the qbit client treats it as a base URL and joins API paths
+// onto it preserving any subpath. TrustedCerts skips TLS
+// verification when on, off by default.
+type QbitInstance struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	URL          string `json:"url"`
+	Username     string `json:"username,omitempty"`
+	Password     string `json:"password,omitempty"`
+	TrustedCerts bool   `json:"trustedCerts,omitempty"`
 }
 
 // RecoverExclusion is the per-instance skip list. Movies (Radarr) is

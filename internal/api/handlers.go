@@ -248,6 +248,15 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.Instances[i].Webhook.Token = maskSentinel
 		}
 	}
+	// qBit passwords masked for the same reason as Arr API keys —
+	// bearer credentials must not appear in plaintext on /api/config.
+	// The dedicated /api/qbit-instances surface also masks; this
+	// covers any consumer still reading the broader config endpoint.
+	for i := range cfg.QbitInstances {
+		if cfg.QbitInstances[i].Password != "" {
+			cfg.QbitInstances[i].Password = maskSentinel
+		}
+	}
 	cfg.Discord.WebhookURL = maskSecret(cfg.Discord.WebhookURL, maskedDiscordWebhook)
 	// Mask credentials inside notification agents so the legacy /api/config
 	// endpoint can't leak webhook URLs/tokens. The dedicated
