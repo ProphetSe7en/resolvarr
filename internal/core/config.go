@@ -243,6 +243,7 @@ type Config struct {
 	VideoTags     VideoTagsConfig `json:"videoTags"`           // M4 Video tags — resolution / codec / HDR from mediaInfo (rask, ingen install)
 	DvDetail      DvDetailConfig  `json:"dvDetail"`            // M4b DV detail — opt-in Dolby Vision profile/CM tags, requires ffmpeg+dovi_tool
 	Schedules     []ScheduledJob  `json:"schedules,omitempty"` // saved Scan workflows — cron + options snapshots
+	WebhookRules  []WebhookRule   `json:"webhookRules,omitempty"` // saved M-Webhook rules — fired by Connect events on the per-instance webhook URL
 
 	// NotificationAgents is the multi-agent config replacing the legacy
 	// flat Discord field. Each entry is one provider configuration
@@ -773,6 +774,17 @@ func (s *ConfigStore) Load() error {
 			fmt.Fprintf(os.Stderr, "tagarr: notification agent %q (%s) has masked-placeholder credentials in storage — re-enter the real credential via Settings → Notifications. Notifications from this agent will fail until fixed.\n", a.Name, a.Type)
 		}
 	}
+
+	// Migrate legacy GrabRenameCriteria fields → new TriggerOn* flags
+	// for webhook rules saved before the trigger-based model landed.
+	// Idempotent — MigrateLegacyTriggerFlags is a no-op when a rule
+	// already has any new-style flag set.
+	for i := range s.cfg.WebhookRules {
+		if s.cfg.WebhookRules[i].GrabRename != nil {
+			s.cfg.WebhookRules[i].GrabRename.MigrateLegacyTriggerFlags()
+		}
+	}
+
 	return nil
 }
 
@@ -923,6 +935,23 @@ func (s *ConfigStore) migrateSchedulesToRules() bool {
 			sched.Options.AutoTagsRunOnSecondary = false
 			migrated = true
 		}
+
+		// Filter-only tag-mode validation. TagSource clamps to known
+		// values; FilterOnlyTag gets a sensible default when empty so
+		// a UI bug or hand-edit can't leave a filter-only rule unable
+		// to run. Default reflects the OOTB filter (MA/Play WEB-DL +
+		// lossless audio); user can rename anytime via the wizard.
+		switch sched.Options.TagSource {
+		case "", "active", "discover", "filter-only":
+			// OK
+		default:
+			sched.Options.TagSource = ""
+			migrated = true
+		}
+		if sched.Options.TagSource == "filter-only" && sched.Options.FilterOnlyTag == "" {
+			sched.Options.FilterOnlyTag = "lossless-web"
+			migrated = true
+		}
 	}
 	return migrated
 }
@@ -1001,6 +1030,60 @@ func (s *ConfigStore) Get() Config {
 			}
 		}
 	}
+	// WebhookRules — same deep-copy pattern as Schedules. Each rule
+	// embeds a History slice + per-rule snapshot pointers + nested
+	// criteria structs (GrabRename / QbitSe). A caller mutating the
+	// returned rule's slices would otherwise share backing arrays with
+	// the store — same header-aliasing class as Schedules + the
+	// NotificationAgents.AppriseURLs incident.
+	if len(s.cfg.WebhookRules) > 0 {
+		out.WebhookRules = make([]WebhookRule, len(s.cfg.WebhookRules))
+		for i, r := range s.cfg.WebhookRules {
+			out.WebhookRules[i] = r
+			out.WebhookRules[i].Functions = append([]WebhookFunction(nil), r.Functions...)
+			out.WebhookRules[i].History = append([]WebhookRuleRun(nil), r.History...)
+			if r.Filters != nil {
+				f := *r.Filters
+				out.WebhookRules[i].Filters = &f
+			}
+			if r.AudioTags != nil {
+				at := *r.AudioTags
+				at.Audio.AllowedValues = append([]string(nil), r.AudioTags.Audio.AllowedValues...)
+				out.WebhookRules[i].AudioTags = &at
+			}
+			if r.VideoTags != nil {
+				vt := *r.VideoTags
+				vt.Resolution.AllowedValues = append([]string(nil), r.VideoTags.Resolution.AllowedValues...)
+				vt.Codec.AllowedValues = append([]string(nil), r.VideoTags.Codec.AllowedValues...)
+				vt.HDR.AllowedValues = append([]string(nil), r.VideoTags.HDR.AllowedValues...)
+				out.WebhookRules[i].VideoTags = &vt
+			}
+			if r.DvDetail != nil {
+				dd := *r.DvDetail
+				dd.AllowedValues = append([]string(nil), r.DvDetail.AllowedValues...)
+				out.WebhookRules[i].DvDetail = &dd
+			}
+			if r.ReleaseGroupIDs != nil {
+				out.WebhookRules[i].ReleaseGroupIDs = append([]string(nil), r.ReleaseGroupIDs...)
+			}
+			if r.GrabRename != nil {
+				gr := *r.GrabRename
+				if r.GrabRename.AppendReleaseGroup != nil {
+					b := *r.GrabRename.AppendReleaseGroup
+					gr.AppendReleaseGroup = &b
+				}
+				gr.SourceTokens = append([]string(nil), r.GrabRename.SourceTokens...)
+				gr.MovieVersionTokens = append([]string(nil), r.GrabRename.MovieVersionTokens...)
+				gr.GroupBlocklist = append([]string(nil), r.GrabRename.GroupBlocklist...)
+				gr.CustomTokens = append([]GrabRenameCustomToken(nil), r.GrabRename.CustomTokens...)
+				out.WebhookRules[i].GrabRename = &gr
+			}
+			if r.QbitSe != nil {
+				qs := *r.QbitSe
+				out.WebhookRules[i].QbitSe = &qs
+			}
+		}
+	}
 	// Deep-copy NotificationAgents — each agent's Config struct embeds
 	// AppriseURLs []string. The shallow append-copy at the agent-slice
 	// level is enough today (handlers replace .Config wholesale via
@@ -1019,6 +1102,19 @@ func (s *ConfigStore) Get() Config {
 				out.NotificationAgents[i].Config.AppriseURLs = append([]string(nil), a.Config.AppriseURLs...)
 			}
 		}
+	}
+	// Deep-copy QbitInstances. Each entry's struct holds only string +
+	// bool fields (no nested slices), so a slice-of-struct copy is
+	// enough — callers (qbit_se_backlog, webhook_grab_rename, etc.)
+	// take *QbitInstance pointers via findQbitInstanceByID and read
+	// URL / Username / Password immutably. Without this copy, a
+	// concurrent ConfigStore.Update that does `c.QbitInstances =
+	// append(c.QbitInstances[:i], c.QbitInstances[i+1:]...)` (the
+	// standard delete-by-shift) would mutate the backing array under
+	// the reader, race-detector flag + potentially torn (ptr,len)
+	// reads on string fields under tight GC timing.
+	if len(s.cfg.QbitInstances) > 0 {
+		out.QbitInstances = append([]QbitInstance(nil), s.cfg.QbitInstances...)
 	}
 	// Deep-copy AllowedValues slices on every auto-tag bucket — same
 	// header-aliasing class as NotificationAgents.AppriseURLs above.
@@ -1165,6 +1261,7 @@ func defaultConfig() Config {
 			Sonarr: engine.DefaultFilterConfig(),
 		},
 		Schedules:              []ScheduledJob{},
+		WebhookRules:           []WebhookRule{},
 		Authentication:         "forms",
 		AuthenticationRequired: "disabled_for_local_addresses",
 		SessionTTLDays:         30,

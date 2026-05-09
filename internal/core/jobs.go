@@ -88,6 +88,17 @@ type JobOptions struct {
 	CleanupUnusedTags      bool     `json:"cleanupUnusedTags,omitempty"`
 	RunForGroups           []string `json:"runForGroups,omitempty"` // empty = all configured
 
+	// TagSource picks which decision engine the tag phase uses:
+	//   "" or "active"   — match Active-list release groups (legacy default)
+	//   "discover"       — Discover→Tag chain (find new groups, then tag)
+	//   "filter-only"    — ignore release group entirely; tag every movie
+	//                      passing the quality + audio filter with FilterOnlyTag
+	// Filter-only mode is the architecturally clean replacement for the
+	// "shared tag across multiple groups" pattern that used to flap on
+	// every alternating run. See dev/analysis/filter-only-tag.md.
+	TagSource     string `json:"tagSource,omitempty"`
+	FilterOnlyTag string `json:"filterOnlyTag,omitempty"` // only meaningful when TagSource == "filter-only"
+
 	// Per-bucket instance targets for the auto-tag phases. Each is one
 	// of: "primary" (default) | "secondary" | "both". Drives the
 	// "A-chain → B-chain" execution model — the head phases (discover/

@@ -143,6 +143,21 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/instances/{id}/webhook/rotate", s.handleWebhookRotateToken)
 	mux.HandleFunc("PUT /api/instances/{id}/webhook/logging", s.handleWebhookSetLogging)
 	mux.HandleFunc("DELETE /api/instances/{id}/webhook", s.handleWebhookDelete)
+
+	// Webhook rules — saved-rule objects fired by Connect events.
+	// Architectural twin of /api/schedules. CRUD only; the dispatch
+	// path lives inside handleWebhookReceive.
+	mux.HandleFunc("GET /api/webhook-rules", s.handleListWebhookRules)
+	mux.HandleFunc("POST /api/webhook-rules", s.handleCreateWebhookRule)
+	mux.HandleFunc("GET /api/webhook-rules/_meta", s.handleWebhookRulesMeta)
+	mux.HandleFunc("GET /api/webhook-rules/{id}", s.handleGetWebhookRule)
+	mux.HandleFunc("PUT /api/webhook-rules/{id}", s.handleUpdateWebhookRule)
+	mux.HandleFunc("DELETE /api/webhook-rules/{id}", s.handleDeleteWebhookRule)
+
+	// qBit S/E backlog-fix — wizard step 3c "Run backlog fix" button.
+	// Preview returns proposed tags; apply runs the same scan + writes.
+	mux.HandleFunc("POST /api/webhook-rules/qbit-se-backlog/preview", s.handleQbitSeBacklogPreview)
+	mux.HandleFunc("POST /api/webhook-rules/qbit-se-backlog/apply", s.handleQbitSeBacklogApply)
 }
 
 // RegisterAuthRoutes wires the setup wizard, login/logout, and

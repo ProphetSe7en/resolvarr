@@ -105,11 +105,23 @@ func (s *Server) handleAddGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for _, g := range s.App.Config.Get().ReleaseGroups {
+	cfg := s.App.Config.Get()
+	for _, g := range cfg.ReleaseGroups {
 		if strings.EqualFold(g.Tag, req.Tag) {
 			writeError(w, 409, "tag name already exists")
 			return
 		}
+	}
+	// Symmetric collision check: a saved filter-only schedule rule
+	// reserves its tag too. Without this, adding a group whose Tag
+	// matches an existing filter-only schedule's FilterOnlyTag goes
+	// through silently and the schedule then 409s on next fire from
+	// runTagFilterOnly's runtime guard. Same end-state, both authored
+	// by the same user — the inverse asymmetry baseline §15.6b warned
+	// about.
+	if msg := scheduleFilterOnlyCollision(cfg, req.Tag, req.Type); msg != "" {
+		writeError(w, 409, msg)
+		return
 	}
 
 	enabled := true
@@ -149,7 +161,8 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	current := s.App.Config.Get().ReleaseGroups
+	cfg := s.App.Config.Get()
+	current := cfg.ReleaseGroups
 	idx := -1
 	for i, g := range current {
 		if g.ID == id {
@@ -163,6 +176,11 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	if idx < 0 {
 		writeError(w, 404, "group not found")
+		return
+	}
+	// Same filter-only schedule collision check as handleAddGroup.
+	if msg := scheduleFilterOnlyCollision(cfg, req.Tag, req.Type); msg != "" {
+		writeError(w, 409, msg)
 		return
 	}
 
@@ -418,4 +436,38 @@ func validateVideoTagsConfig(cfg core.VideoTagsConfig) error {
 		return err
 	}
 	return nil
+}
+
+// scheduleFilterOnlyCollision returns an empty string when the
+// supplied (tag, instanceType) is free of filter-only schedule
+// reservations, or a user-facing error message naming the
+// conflicting schedule when it collides. Used by handleAddGroup /
+// handleUpdateGroup as the symmetric inverse of runTagFilterOnly's
+// per-group collision guard. instanceType filtering uses the
+// schedule's primary instance type — a Sonarr filter-only schedule
+// doesn't reserve a Radarr group's tag namespace and vice versa,
+// matching the per-Arr tag-inventory model Arr instances use.
+func scheduleFilterOnlyCollision(cfg core.Config, tag, instanceType string) string {
+	for _, sj := range cfg.Schedules {
+		if sj.Options.TagSource != "filter-only" {
+			continue
+		}
+		if !strings.EqualFold(sj.Options.FilterOnlyTag, tag) {
+			continue
+		}
+		// Resolve the schedule's primary instance type — only the
+		// matching-type collision is meaningful.
+		var schedType string
+		for _, inst := range cfg.Instances {
+			if inst.ID == sj.InstanceID {
+				schedType = inst.Type
+				break
+			}
+		}
+		if schedType != "" && instanceType != "" && !strings.EqualFold(schedType, instanceType) {
+			continue
+		}
+		return "tag name " + tag + " is already reserved by filter-only schedule " + sj.Name + " — pick a different tag or remove that schedule first"
+	}
+	return ""
 }

@@ -62,6 +62,16 @@ type scanRunRequest struct {
 	CleanupUnusedTags     bool     `json:"cleanupUnusedTags,omitempty"`     // tag-mode chain: after apply, delete managed tags with 0 movies (bash CLEANUP_UNUSED_TAGS=true parity)
 	CleanupLabels         []string `json:"cleanupLabels,omitempty"`         // cleanup-action only: when non-empty, restrict apply-mode deletes to these labels (intersection with candidates set)
 
+	// Tag-mode source selector. Empty / "active" = match Active-list
+	// release groups (legacy default). "discover" = Discover→Tag chain.
+	// "filter-only" = ignore release group; tag every movie passing the
+	// quality+audio filter with FilterOnlyTag. Filter-only mode replaces
+	// the broken "shared tag across multiple groups" pattern (which
+	// flapped on every alternating run) with a clean single-tag rule.
+	// See dev/analysis/filter-only-tag.md.
+	TagSource     string `json:"tagSource,omitempty"`
+	FilterOnlyTag string `json:"filterOnlyTag,omitempty"`
+
 	// Recover-action fields (M3c). Bash tagarr_recover.sh parity for the
 	// per-movie release-group recovery flow.
 	RecoverRename     bool  `json:"recoverRename,omitempty"`     // apply-only: trigger RenameFiles after a successful patch (bash RENAME=true default)

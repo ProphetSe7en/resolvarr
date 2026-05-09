@@ -143,6 +143,178 @@ func ParseReleaseGroupFromFilename(relativePath string) (string, bool, FilenameR
 	return candidate, true, ""
 }
 
+// filenameYearRE matches a 4-digit year token like "2024" — used by the
+// tolerant parser's blacklist to reject "Movie - 2024" patterns where
+// the "rg candidate" is actually the year.
+var filenameYearRE = regexp.MustCompile(`^(19[0-9]{2}|20[0-9]{2})$`)
+
+// mediaExtRE strips known media extensions for the tolerant parser.
+// filepath.Ext is unsafe here — it walks back to the last "." which
+// for a release-title like "DTS-HD MA 5.1 DoVi - SumVision" returns
+// ".1 DoVi - SumVision" because the last dot is in "5.1" and there's
+// no path separator to bound the search. Strict parser only ever sees
+// real filenames so its filepath.Ext call is safe; tolerant parser's
+// callers pass both filenames AND release-titles (sourceTitle field on
+// history records, indexer release-titles on grab events), so the
+// targeted regex catches only ".mkv" / ".mp4" / etc.
+var mediaExtRE = regexp.MustCompile(`(?i)\.(mkv|mp4|avi|m4v|mov|wmv|flv|webm|ts|mpg|mpeg)$`)
+
+// tolerantParserSourceBlacklist extends the strict parser's reject set
+// for the tolerant fallback path. Real release-groups never use these
+// names; anything matching here is a source/format token in disguise.
+//
+// Strict parser doesn't have these because its multi-token-reject
+// already catches "Movie.2024.WEB.mkv" (no hyphen before WEB → no rg
+// candidate at all). Tolerant parser splits on " - " which can land on
+// "Movie - WEB" → candidate="WEB" → without this blacklist would be
+// returned as rg.
+var tolerantParserSourceBlacklist = map[string]bool{
+	"web":     true,
+	"webdl":   true,
+	"webrip":  true,
+	"bluray":  true,
+	"bdrip":   true,
+	"brrip":   true,
+	"dvdrip":  true,
+	"dvd":     true,
+	"hdtv":    true,
+	"hdrip":   true,
+	"tv":      true,
+	"proper":  true,
+	"repack":  true,
+	"limited": true,
+	"extended": true,
+	"unrated": true,
+	"theatrical": true,
+	"hybrid":  true,
+	"imax":    true,
+	"remaster": true,
+	"remastered": true,
+}
+
+// ParseReleaseGroupTolerant is a fallback over ParseReleaseGroupFromFilename
+// that handles the " - <RG>" pattern (space-dash-space-rgname) some
+// indexers emit. The strict parser rejects this pattern as multi-token
+// because the candidate after the last hyphen has a leading space.
+// Examples that the strict parser misses but this one catches:
+//
+//   "Rango 2011 ... DoVi - SumVision"  → "SumVision"
+//   "Movie 2024 ... HEVC - GROUPNAME"  → "GROUPNAME"
+//
+// Algorithm:
+//   1. Try the strict parser first (bash-parity, well-tested).
+//   2. If strict succeeds → return it.
+//   3. If strict rejected with anything other than multi-token →
+//      no fallback (rejected for codec / resolution / no-hyphen
+//      reasons; the tolerant parser would have rejected too).
+//   4. If strict rejected with multi-token AND the input contains " - ",
+//      split on " - " and take the trailing segment trimmed. Re-apply
+//      the same rejection rules as the strict parser (codec / resolution
+//      blacklists + new year blacklist + multi-token reject).
+//
+// False-positive defenses (caught by the second-pass blacklist):
+//
+//   "Movie - 2024"               → rejected (year)
+//   "Movie - WEB"                → rejected (codec/source)
+//   "Movie - Director's Cut"     → rejected (multi-token, contains space)
+//   "Movie 2024 - 1080p"         → rejected (resolution)
+//   "Movie - 1080p - GROUP"      → "GROUP" via split-on-last; passes
+//
+// Used by:
+//   - Recover adapter's findRecoveryGroupByDownloadID fallback
+//     (when grab event's data.releaseGroup is empty but data.sourceTitle
+//     contains the rg in " - <RG>" form).
+//   - Grab Rename adapter's release-group resolution (when Connect
+//     event's release.releaseGroup is empty but release.releaseTitle
+//     has the rg in trailing position).
+func ParseReleaseGroupTolerant(input string) (string, bool) {
+	if rg, ok, _ := ParseReleaseGroupFromFilename(input); ok {
+		return rg, true
+	}
+	// Strict parser failed. Apply tolerant fallback ONLY for the
+	// space-dash-space pattern. Strip path + media-extension first.
+	// Use mediaExtRE (not filepath.Ext) because callers pass release-
+	// titles like "Movie 5.1 - SumVision" where filepath.Ext would
+	// return ".1 - SumVision" — see the doc-comment on mediaExtRE.
+	base := filepath.Base(input)
+	base = mediaExtRE.ReplaceAllString(base, "")
+
+	// Split on " - " (space-dash-space). Take trailing segment.
+	idx := strings.LastIndex(base, " - ")
+	if idx < 0 {
+		return "", false
+	}
+	candidate := strings.TrimSpace(base[idx+3:])
+	if candidate == "" {
+		return "", false
+	}
+
+	// Same rejection rules as strict parser, plus year blacklist
+	// (the strict parser doesn't need this because last-hyphen on
+	// "Movie 2024" wouldn't produce "2024" — bash regex catches
+	// resolution tokens but not bare years).
+	if strings.ContainsAny(candidate, ". ") {
+		// Multi-word like "Director's Cut" → reject
+		return "", false
+	}
+	lower := strings.ToLower(candidate)
+	if filenameRejectExact[lower] {
+		return "", false
+	}
+	if filenameResolutionRE.MatchString(lower) {
+		return "", false
+	}
+	if filenameYearRE.MatchString(candidate) {
+		return "", false
+	}
+	if tolerantParserSourceBlacklist[lower] {
+		return "", false
+	}
+	return candidate, true
+}
+
+// NormalizeRgSegment produces a parser-friendly variant of the indexer
+// release-title for use as a qBit rename target. Combines two transforms
+// on the trailing rg-segment:
+//
+//   1. Strip indexer-appended garbage after "-<RG>" (preserves the
+//      existing bash fix for "-126811 x ATM05 @HDT18" patterns).
+//   2. Normalize " - <RG>" / "- <RG>" / " -<RG>" to "-<RG>" (new — fixes
+//      the Rango/Matilda failure mode where Radarr's strict filename
+//      parser rejects "- SumVision" as multi-token even though bash's
+//      lax presence regex matched).
+//
+// Single regex handles both. Anchored to end-of-string so middle-of-
+// title hyphens are untouched.
+//
+// Examples (rg = the parsed/extracted release-group):
+//
+//   "Movie ... -126811 x ATM05 @HDT18", rg="126811"   → "Movie ... -126811"
+//   "Rango 2011 ... DoVi - SumVision", rg="SumVision" → "Rango 2011 ... DoVi-SumVision"
+//   "Movie ... -FLUX [MEGUSTA]",        rg="FLUX"     → "Movie ... -FLUX"
+//   "Movie ... -FLUX",                  rg="FLUX"     → "Movie ... -FLUX" (no-op)
+//   "Movie ... DoVi-SumVision",         rg="SumVision"→ "Movie ... DoVi-SumVision" (no-op)
+//   "Movie 2024 - SumVision",           rg="SumVision"→ "Movie 2024-SumVision"
+//
+// Returns input unchanged when rg is empty or the rg-segment isn't at
+// the trailing position (no-op semantics; caller decides whether
+// rename is needed via separate parser-friendly check).
+func NormalizeRgSegment(grabTitle, rg string) string {
+	if rg == "" || grabTitle == "" {
+		return grabTitle
+	}
+	// Match: optional whitespace + "-" + optional whitespace + <RG> +
+	// optional non-alnum suffix, anchored to end-of-string. The
+	// (?:[^a-zA-Z0-9].*)? captures trailing garbage that should be
+	// stripped (indexer-appended IDs, brackets, status flags).
+	re := regexp.MustCompile(`\s?-\s?` + regexp.QuoteMeta(rg) + `(?:[^a-zA-Z0-9].*)?$`)
+	loc := re.FindStringIndex(grabTitle)
+	if loc == nil {
+		return grabTitle // rg not at trailing position; leave alone
+	}
+	return grabTitle[:loc[0]] + "-" + rg
+}
+
 // ============================================================================
 // History walking
 // ============================================================================
@@ -274,10 +446,10 @@ func FindImportedGrabGroup(history []HistoryRecord, title string, year int) (str
 
 		// Strategy A — downloadId match. Strongest signal.
 		if ev.DownloadID != "" && newestImportDLID != "" && ev.DownloadID == newestImportDLID {
-			if ev.ReleaseGroup == "" {
-				return "", RecoverVerifiedEmpty
+			if rg := extractGrabReleaseGroup(ev); rg != "" {
+				return rg, RecoverFound
 			}
-			return ev.ReleaseGroup, RecoverFound
+			return "", RecoverVerifiedEmpty
 		}
 
 		// If this grab's downloadId is non-empty AND points at a *different*
@@ -307,15 +479,43 @@ func FindImportedGrabGroup(history []HistoryRecord, title string, year int) (str
 		// Both invalid → verified stays false (no grab can match).
 
 		if verified {
-			if ev.ReleaseGroup == "" {
-				return "", RecoverVerifiedEmpty
+			if rg := extractGrabReleaseGroup(ev); rg != "" {
+				return rg, RecoverFound
 			}
-			return ev.ReleaseGroup, RecoverFound
+			return "", RecoverVerifiedEmpty
 		}
 	}
 
 	// Walked all grabs, none verified.
 	return "", RecoverNoVerified
+}
+
+// extractGrabReleaseGroup pulls the release-group from a Grab history
+// record with two fallback layers:
+//
+//  1. ev.ReleaseGroup — Arr's pre-parsed value (data.releaseGroup OR
+//     data.ReleaseGroup; coalesce already done by the arr.HistoryRecord
+//     adapter at fetch-time).
+//  2. ParseReleaseGroupTolerant(ev.SourceTitle) — when (1) is empty
+//     because Arr's parser bombed on " - <RG>" patterns (Rango/Matilda
+//     class). The indexer release-title still has rg in extractable
+//     form via the tolerant parser.
+//
+// Returns "" only when both layers fail. Mirrors the same fallback
+// pattern findRecoveryGroupByDownloadID uses on the webhook side —
+// single-source-of-truth for "trust Arr's parse first, fall back to
+// our own when missing".
+func extractGrabReleaseGroup(ev HistoryRecord) string {
+	if ev.ReleaseGroup != "" {
+		return ev.ReleaseGroup
+	}
+	if ev.SourceTitle == "" {
+		return ""
+	}
+	if rg, ok := ParseReleaseGroupTolerant(ev.SourceTitle); ok {
+		return rg
+	}
+	return ""
 }
 
 // isImport — bash: `case "$event_type" in

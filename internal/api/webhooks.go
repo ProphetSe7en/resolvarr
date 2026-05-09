@@ -183,18 +183,13 @@ func (s *Server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "not found")
 		return
 	}
-	// Logging-only today: only persist when LoggingEnabled is on.
-	// When functions land, this gate splits per-function — logging
-	// can stay on without firing functions. The receiver still
-	// returns 200 either way so Sonarr/Radarr doesn't retry.
-	if !inst.Webhook.LoggingEnabled {
-		writeJSON(w, map[string]any{"status": "ok", "logged": false})
-		return
-	}
 
 	// Read body with cap. Sonarr/Radarr send ~1-50 KB; 1 MiB ceiling
-	// is paranoid but cheap. ContentLength check first so an
-	// honest oversize request rejects without buffering.
+	// is paranoid but cheap. ContentLength check first so an honest
+	// oversize request rejects without buffering. Body is read even
+	// when LoggingEnabled is off — webhook RULES fire on the dispatcher
+	// path independent of logging, so we always need the parsed
+	// envelope.
 	if r.ContentLength > webhookBodyMaxBytes {
 		writeError(w, 413, "body too large")
 		return
@@ -234,21 +229,37 @@ func (s *Server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
 	}
 	title, subtitle := summariseEvent(&env)
 
-	ev := WebhookEvent{
-		ID:         genID(),
-		InstanceID: inst.ID,
-		ReceivedAt: time.Now().UTC(),
-		EventType:  env.EventType,
-		Title:      title,
-		Subtitle:   subtitle,
-		Raw:        rawForStorage,
+	// Logging persists when LoggingEnabled is on. The dispatcher path
+	// runs on every event regardless — rules are independent of the
+	// raw-event log.
+	logged := false
+	logCount := 0
+	if inst.Webhook.LoggingEnabled {
+		ev := WebhookEvent{
+			ID:         genID(),
+			InstanceID: inst.ID,
+			ReceivedAt: time.Now().UTC(),
+			EventType:  env.EventType,
+			Title:      title,
+			Subtitle:   subtitle,
+			Raw:        rawForStorage,
+		}
+		logCount = s.WebhookLog.append(ev)
+		logged = true
 	}
-	count := s.WebhookLog.append(ev)
+
+	// Rule dispatch — walks Config.WebhookRules for the resolved
+	// instance and fires matching rules' enabled functions. Today's
+	// adapters are stubs (see webhook_dispatch.go); real engine
+	// calls land per-function in the upcoming tasks.
+	rulesFired := s.dispatchWebhookRules(r.Context(), inst, &env, body)
+
 	writeJSON(w, map[string]any{
-		"status":    "ok",
-		"logged":    true,
-		"eventType": env.EventType,
-		"count":     count,
+		"status":     "ok",
+		"logged":     logged,
+		"eventType":  env.EventType,
+		"count":      logCount,
+		"rulesFired": rulesFired,
 	})
 }
 

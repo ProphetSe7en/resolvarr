@@ -131,11 +131,24 @@ func (r *schedulerRunner) runTagSchedule(ctx context.Context, cfg core.Config, i
 		Action:            "tag",
 		RunGroups:         job.Options.RunForGroups,
 		CleanupUnusedTags: job.Options.CleanupUnusedTags,
+		TagSource:         job.Options.TagSource,
+		FilterOnlyTag:     job.Options.FilterOnlyTag,
 	}
 	if job.Options.SyncToSecondary {
 		req.SyncToInstanceID = resolveSyncTarget(cfg, inst, appType, job.Options.SyncToInstanceID)
 	}
-	resp, apiErr := r.server.runTag(ctx, cfg, inst, appType, filterCfg, req)
+	// Filter-only branches to runTagFilterOnly; everything else stays
+	// on the per-group runTag path. Same dispatch as the live HTTP
+	// handler at scan_tag.go:handleScanTag.
+	var (
+		resp   *scanResponse
+		apiErr *apiError
+	)
+	if req.TagSource == "filter-only" {
+		resp, apiErr = r.server.runTagFilterOnly(ctx, cfg, inst, appType, filterCfg, req)
+	} else {
+		resp, apiErr = r.server.runTag(ctx, cfg, inst, appType, filterCfg, req)
+	}
 	r.server.auditScan("schedule:"+job.ID, "tag", inst, req, resp, errMsgOf(apiErr))
 	if apiErr != nil {
 		return core.RunSummary{}, apiErr
@@ -689,11 +702,22 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 			Action:            "tag",
 			RunGroups:         job.Options.RunForGroups,
 			CleanupUnusedTags: job.Options.CleanupUnusedTags,
+			TagSource:         job.Options.TagSource,
+			FilterOnlyTag:     job.Options.FilterOnlyTag,
 		}
 		if job.Options.SyncToSecondary {
 			tagReq.SyncToInstanceID = resolveSyncTarget(cfg, inst, appType, job.Options.SyncToInstanceID)
 		}
-		resp, apiErr := r.server.runTag(ctx, cfg, inst, appType, filterCfg, tagReq)
+		// Same filter-only branch as runTagSchedule.
+		var (
+			resp   *scanResponse
+			apiErr *apiError
+		)
+		if tagReq.TagSource == "filter-only" {
+			resp, apiErr = r.server.runTagFilterOnly(ctx, cfg, inst, appType, filterCfg, tagReq)
+		} else {
+			resp, apiErr = r.server.runTag(ctx, cfg, inst, appType, filterCfg, tagReq)
+		}
 		r.server.auditScan("schedule:"+job.ID, "tag", inst, tagReq, resp, errMsgOf(apiErr))
 		if apiErr != nil {
 			phaseErr = apiErr

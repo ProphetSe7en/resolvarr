@@ -347,7 +347,7 @@ func TestMaskQbitURL(t *testing.T) {
 		{
 			name: "qui_proxy_long_token",
 			in:   "http://192.168.86.22:7476/proxy/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			want: "http://192.168.86.22:7476/proxy/602f" + repeat56Stars() + "c33e",
+			want: "http://192.168.86.22:7476/proxy/0123" + repeat56Stars() + "cdef",
 		},
 		{
 			name: "qui_proxy_uppercase_hex",

@@ -69,6 +69,41 @@
           </div>
         </div>
 
+        <!-- Promote-to-apply strip (top mirror) — preview-only.
+             Mirrors the bottom strip below so users with long result
+             lists don't have to scroll all the way down to apply.
+             Same markup, same gates — clicking either button opens
+             the same confirm modal. -->
+        <template x-if="scanResults.tag.mode === 'preview'">
+          <div style="margin-bottom:12px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;display:flex;align-items:center;gap:16px">
+            <div style="flex:1;font-size:13px;color:var(--text-secondary);line-height:1.6">
+              <template x-if="(scanResults.tag.totals.toAdd + scanResults.tag.totals.toRemove + (scanResults.tag.totals.secondaryToAdd || 0) + (scanResults.tag.totals.secondaryToRemove || 0)) === 0">
+                <span>No changes would be applied — already in sync.</span>
+              </template>
+              <template x-if="(scanResults.tag.totals.toAdd + scanResults.tag.totals.toRemove + (scanResults.tag.totals.secondaryToAdd || 0) + (scanResults.tag.totals.secondaryToRemove || 0)) > 0">
+                <div>
+                  <div>
+                    <strong x-text="scanResults.tag.instance.name"></strong>:
+                    <strong style="color:var(--accent-green)" x-text="scanResults.tag.totals.toAdd"></strong> add(s),
+                    <strong style="color:var(--accent-red)" x-text="scanResults.tag.totals.toRemove"></strong> removal(s).
+                  </div>
+                  <template x-if="scanResults.tag.totals.secondaryToAdd || scanResults.tag.totals.secondaryToRemove || scanResults.tag.totals.secondaryToKeep || scanResults.tag.totals.secondaryMissing">
+                    <div>
+                      <strong x-text="instances.find(i => i.id !== scanResults.tag.instance.id && i.type === 'radarr')?.name || 'Secondary'"></strong>:
+                      <strong style="color:var(--accent-green)" x-text="scanResults.tag.totals.secondaryToAdd || 0"></strong> add(s),
+                      <strong style="color:var(--accent-red)" x-text="scanResults.tag.totals.secondaryToRemove || 0"></strong> removal(s)<template x-if="scanResults.tag.totals.secondaryOrphans > 0"><span> (incl. <strong x-text="scanResults.tag.totals.secondaryOrphans"></strong> orphan cleanup<span x-show="scanResults.tag.totals.secondaryOrphans !== 1">s</span>)</span></template>.
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+            <button class="btn btn-primary"
+                    @click="openScanApplyConfirm()"
+                    :disabled="(scanResults.tag.totals.toAdd + scanResults.tag.totals.toRemove + (scanResults.tag.totals.secondaryToAdd || 0) + (scanResults.tag.totals.secondaryToRemove || 0)) === 0 || isHistoricalForAction('tag')"
+                    :title="isHistoricalForAction('tag') ? 'Run a fresh Tag preview before applying — this is a saved snapshot, not live data.' : ''">Apply now</button>
+          </div>
+        </template>
+
         <!-- Per-movie detail — visible in BOTH preview AND apply mode.
              Apply mode is just retrospective ("these movies got the tag");
              without it the user sees only totals on QFA / direct-apply runs.

@@ -6,6 +6,160 @@ import (
 )
 
 // ============================================================================
+// ParseReleaseGroupTolerant — fallback for " - <RG>" pattern
+// ============================================================================
+
+// TestParseReleaseGroupTolerant covers the " - <RG>" fallback pattern
+// (space-dash-space-rgname) bash and the strict parser miss.
+//
+// Real-world cases that motivated this:
+//   "Rango 2011 ... DoVi - SumVision"      → "SumVision"
+//   "Roald Dahls Matilda 2022 ... DoVi - SumVision" → "SumVision"
+// Both stuck in Radarr's queue with no-rlsgrp because import parser
+// failed on "- SumVision" (multi-token reject); bash grab-rename's
+// presence-check mistakenly matched the visual rg → no rename trigger.
+// TestFindImportedGrabGroup_RangoMatildaTolerantFallback locks the
+// engine.extractGrabReleaseGroup helper added so Library scan's M3c
+// Recover can salvage rg from sourceTitle when Arr's pre-parsed
+// data.releaseGroup is empty (Rango/Matilda " - SumVision" class).
+//
+// Without this fix, FindImportedGrabGroup would return RecoverVerifiedEmpty
+// even though sourceTitle clearly contains "SumVision" at the end.
+func TestFindImportedGrabGroup_RangoMatildaTolerantFallback(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name        string
+		sourceTitle string
+		wantRG      string
+	}{
+		{"Rango",
+			"Rango 2011 Hybrid Theatrical 2160p WEB-DL HEVC DTS-HD MA 5.1 DoVi - SumVision",
+			"SumVision"},
+		{"Matilda",
+			"Roald Dahls Matilda the Musical 2022 Hybrid 2160p WEB-DL HEVC TrueHD Atmos 7.1 DoVi - SumVision",
+			"SumVision"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			history := []HistoryRecord{
+				{
+					EventType:  HistoryEventDownloadFolderImported,
+					Date:       now,
+					DownloadID: "ABC",
+				},
+				{
+					EventType:   HistoryEventGrabbed,
+					Date:        now.Add(-time.Hour),
+					DownloadID:  "ABC",
+					SourceTitle: c.sourceTitle,
+					ReleaseGroup: "", // Arr's parser bombed on " - SumVision"
+				},
+			}
+			rg, status := FindImportedGrabGroup(history, c.name, 2011)
+			if status != RecoverFound {
+				t.Errorf("status = %v, want RecoverFound — tolerant fallback should salvage from sourceTitle", status)
+			}
+			if rg != c.wantRG {
+				t.Errorf("rg = %q, want %q", rg, c.wantRG)
+			}
+		})
+	}
+}
+
+func TestParseReleaseGroupTolerant(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+		ok    bool
+	}{
+		{"Rango — space-dash-space-rgname",
+			"Rango 2011 Hybrid Theatrical 2160p WEB-DL HEVC DTS-HD MA 5.1 DoVi - SumVision.mkv",
+			"SumVision", true},
+		{"Matilda — same pattern with apostrophes elsewhere",
+			"Roald Dahls Matilda the Musical 2022 Hybrid 2160p WEB-DL HEVC TrueHD Atmos 7.1 DoVi - SumVision.mkv",
+			"SumVision", true},
+		{"standard -RG no space (fallthrough to strict parser)",
+			"Movie.2024.1080p.WEB-DL-FLUX.mkv", "FLUX", true},
+		{"standard -RG with directory",
+			"Movie (2024)/Movie.2024.1080p.WEB-DL-NTb.mkv", "NTb", true},
+		{"trailing year — must reject", "Movie - 2024.mkv", "", false},
+		{"trailing codec — must reject", "Movie - WEB.mkv", "", false},
+		{"trailing resolution — must reject", "Movie 2024 - 1080p.mkv", "", false},
+		{"multi-word trailing (Director's Cut style) — must reject",
+			"Movie 2024 - Director's Cut.mkv", "", false},
+		{"no hyphen at all", "Movie.2024.mkv", "", false},
+		{"multiple ' - ' segments — last wins",
+			"Movie 2024 - 1080p - GROUP.mkv", "GROUP", true},
+		{"empty input", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := ParseReleaseGroupTolerant(c.input)
+			if got != c.want || ok != c.ok {
+				t.Errorf("ParseReleaseGroupTolerant(%q) = (%q, %v), want (%q, %v)",
+					c.input, got, ok, c.want, c.ok)
+			}
+		})
+	}
+}
+
+// TestNormalizeRgSegment locks the dual fix:
+// 1. Strip indexer-appended garbage after "-<RG>" (existing bash fix
+//    for "-126811 x ATM05 @HDT18" patterns).
+// 2. Normalize " - <RG>" / "- <RG>" / " -<RG>" to "-<RG>" so the qBit
+//    rename target passes Radarr's import filename parser.
+func TestNormalizeRgSegment(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		rg    string
+		want  string
+	}{
+		{"126811 with trailing garbage (preserves bash fix)",
+			"Movie 2024 1080p WEB-DL-126811 x ATM05 @HDT18", "126811",
+			"Movie 2024 1080p WEB-DL-126811"},
+		{"FLUX with bracketed indexer suffix",
+			"Movie 2024 1080p-FLUX [MEGUSTA]", "FLUX",
+			"Movie 2024 1080p-FLUX"},
+		{"Rango — space-dash-space",
+			"Rango 2011 Hybrid Theatrical 2160p WEB-DL HEVC DTS-HD MA 5.1 DoVi - SumVision",
+			"SumVision",
+			"Rango 2011 Hybrid Theatrical 2160p WEB-DL HEVC DTS-HD MA 5.1 DoVi-SumVision"},
+		{"dash-space (no leading space)",
+			"Movie 2024- SumVision", "SumVision",
+			"Movie 2024-SumVision"},
+		{"space-dash (no trailing space)",
+			"Movie 2024 -SumVision", "SumVision",
+			"Movie 2024-SumVision"},
+		{"already parser-friendly -RG",
+			"Movie 2024 1080p-FLUX", "FLUX",
+			"Movie 2024 1080p-FLUX"},
+		{"already parser-friendly DoVi-SumVision",
+			"Movie 2024 ... DoVi-SumVision", "SumVision",
+			"Movie 2024 ... DoVi-SumVision"},
+		{"rg not at end — no-op",
+			"FLUX-Movie-2024", "FLUX",
+			"FLUX-Movie-2024"},
+		{"empty grab title", "", "FLUX", ""},
+		{"empty rg", "Movie 2024-FLUX", "",
+			"Movie 2024-FLUX"},
+		{"space + trailing junk together",
+			"Movie 2024 - SumVision [DV]", "SumVision",
+			"Movie 2024-SumVision"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := NormalizeRgSegment(c.input, c.rg)
+			if got != c.want {
+				t.Errorf("NormalizeRgSegment(%q, %q) = %q, want %q",
+					c.input, c.rg, got, c.want)
+			}
+		})
+	}
+}
+
+// ============================================================================
 // ParseReleaseGroupFromFilename
 // ============================================================================
 
