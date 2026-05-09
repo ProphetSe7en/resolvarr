@@ -272,10 +272,27 @@ type Torrent struct {
 	State    string `json:"state"`
 }
 
+// listTorrentsMaxBytes caps the response decode for ListTorrents.
+// 50 MiB is generous for honest libraries (10k torrents × ~500 bytes/
+// entry ≈ 5 MB; 50 MiB is 10× headroom) but bounds attacker-controlled
+// or compromised qBit endpoints from streaming arbitrarily large
+// payloads into our memory.
+//
+// getTorrentMaxBytes is the per-hash variant — single-torrent response
+// from /torrents/info?hashes=N is bounded by qBit returning at most
+// one entry, so 64 KiB is plenty.
+const (
+	listTorrentsMaxBytes = 50 << 20 // 50 MiB
+	getTorrentMaxBytes   = 64 << 10 // 64 KiB
+)
+
 // ListTorrents fetches every torrent matching the optional filter.
 // Pass empty string for filter to get all torrents (typical Test
 // Connection use case — the test just needs to confirm we got a
 // 200 response with parseable JSON, not the full payload).
+//
+// Body capped at 50 MiB via http.MaxBytesReader to bound memory use
+// against misconfigured / hostile / compromised qBit endpoints.
 func (c *Client) ListTorrents(ctx context.Context, filter string) ([]Torrent, error) {
 	path := "/api/v2/torrents/info"
 	if filter != "" {
@@ -291,10 +308,139 @@ func (c *Client) ListTorrents(ctx context.Context, filter string) ([]Torrent, er
 		return nil, fmt.Errorf("listTorrents HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var list []Torrent
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, listTorrentsMaxBytes)).Decode(&list); err != nil {
 		return nil, fmt.Errorf("decode listTorrents response: %w", err)
 	}
 	return list, nil
+}
+
+// GetTorrent fetches a single torrent's metadata by hash. Returns
+// (torrent, true, nil) on hit, (zero, false, nil) when the hash isn't
+// in qBit's library, (zero, false, err) on real failures (auth /
+// network / 5xx).
+//
+// Bash equivalent (tagarr_import.sh:217-225) retries with backoff
+// because qBit may not have indexed the torrent yet right after
+// /torrents/add returns. Adapter does that retry; this client method
+// is the single round-trip primitive.
+//
+// Hash comparison is case-insensitive on qBit's side — the API
+// accepts mixed-case hex. We pass it through verbatim and let qBit
+// match.
+func (c *Client) GetTorrent(ctx context.Context, hash string) (Torrent, bool, error) {
+	if hash == "" {
+		return Torrent{}, false, fmt.Errorf("hash is required")
+	}
+	path := "/api/v2/torrents/info?hashes=" + url.QueryEscape(hash)
+	resp, err := c.Do(ctx, "GET", path, nil, nil)
+	if err != nil {
+		return Torrent{}, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return Torrent{}, false, fmt.Errorf("getTorrent HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var list []Torrent
+	if err := json.NewDecoder(io.LimitReader(resp.Body, getTorrentMaxBytes)).Decode(&list); err != nil {
+		return Torrent{}, false, fmt.Errorf("decode getTorrent response: %w", err)
+	}
+	if len(list) == 0 {
+		return Torrent{}, false, nil
+	}
+	return list[0], true, nil
+}
+
+// RenameTorrent updates the qBit torrent's display name (the "Name"
+// field shown in the qBit UI; what Radarr/Sonarr's import parser
+// reads via the qBit API for re-scoring at import time). Files on
+// disk are NOT touched — qBit just relabels the torrent entry.
+//
+// Used by the M-Webhook Grab Rename adapter to fix display-names
+// that the indexer-supplied torrent name strips. Idempotent — qBit
+// returns 200 even when the new name equals the old.
+//
+// API: POST /api/v2/torrents/rename with form-encoded
+// `hash=<hash>&name=<newName>`. qBit returns 200 OK on success;
+// 404 when the hash isn't in the client; 409 when newName is
+// invalid (non-empty whitespace-only is the typical reject case
+// — qBit's filename sanitiser).
+func (c *Client) RenameTorrent(ctx context.Context, hash, newName string) error {
+	if hash == "" {
+		return fmt.Errorf("hash is required")
+	}
+	if newName == "" {
+		return fmt.Errorf("newName is required")
+	}
+	form := url.Values{}
+	form.Set("hash", hash)
+	form.Set("name", newName)
+	body := strings.NewReader(form.Encode())
+	resp, err := c.Do(ctx, "POST", "/api/v2/torrents/rename", body, func(h http.Header) {
+		h.Set("Content-Type", "application/x-www-form-urlencoded")
+	})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 200 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	snippet := strings.TrimSpace(string(bodyBytes))
+	switch resp.StatusCode {
+	case 404:
+		return fmt.Errorf("renameTorrent: hash not found in qBit (HTTP 404): %s", snippet)
+	case 409:
+		return fmt.Errorf("renameTorrent: name rejected by qBit (HTTP 409): %s", snippet)
+	}
+	if snippet == "" {
+		return fmt.Errorf("renameTorrent HTTP %d", resp.StatusCode)
+	}
+	return fmt.Errorf("renameTorrent HTTP %d: %s", resp.StatusCode, snippet)
+}
+
+// AddTags adds one or more tags to the given torrent hashes. qBit
+// auto-creates tags that don't exist yet. Idempotent — re-applying
+// an already-present tag is a no-op (qBit returns 200 either way).
+//
+// API: POST /api/v2/torrents/addTags with form-encoded
+// `hashes=<h1>|<h2>&tags=<t1>,<t2>`. Hash separator is `|`, tag
+// separator is `,` — qBit's documented convention.
+//
+// Used by:
+//   - M-Webhook qBit S/E adapter on Sonarr Grab
+//   - Backlog-fix scan in the wizard step 3c flow
+//
+// Empty hashes or empty tags → no-op (returns nil without contacting
+// qBit). Surface clean rejection at the call site if the user
+// misconfigures.
+func (c *Client) AddTags(ctx context.Context, hashes []string, tags []string) error {
+	if len(hashes) == 0 || len(tags) == 0 {
+		return nil
+	}
+	form := url.Values{}
+	form.Set("hashes", strings.Join(hashes, "|"))
+	form.Set("tags", strings.Join(tags, ","))
+	body := strings.NewReader(form.Encode())
+	resp, err := c.Do(ctx, "POST", "/api/v2/torrents/addTags", body, func(h http.Header) {
+		h.Set("Content-Type", "application/x-www-form-urlencoded")
+	})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 200 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	snippet := strings.TrimSpace(string(bodyBytes))
+	if snippet == "" {
+		return fmt.Errorf("addTags HTTP %d", resp.StatusCode)
+	}
+	return fmt.Errorf("addTags HTTP %d: %s", resp.StatusCode, snippet)
 }
 
 // Ping is the cheapest health-check call — used by the Settings →

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"resolvarr/internal/arr"
 	"resolvarr/internal/core"
@@ -558,11 +559,22 @@ func (s *Server) runTag(ctx context.Context, cfg core.Config, inst *core.Instanc
 	return &resp, nil
 }
 
-// handleScanTag is the HTTP wrapper around runTag.
+// handleScanTag is the HTTP wrapper around runTag / runTagFilterOnly.
+// Routes by req.TagSource: "filter-only" → runTagFilterOnly, anything
+// else (empty / "active" / "discover") → the per-group runTag path.
+// Validation of TagSource happened upstream in handleScanRun.
 func (s *Server) handleScanTag(w http.ResponseWriter, r *http.Request, cfg core.Config, inst *core.Instance, appType string, filterCfg engine.FilterConfig, req scanRunRequest) {
 	ctx, cancel := context.WithTimeout(r.Context(), scanTimeout)
 	defer cancel()
-	resp, apiErr := s.runTag(ctx, cfg, inst, appType, filterCfg, req)
+	var (
+		resp   *scanResponse
+		apiErr *apiError
+	)
+	if req.TagSource == "filter-only" {
+		resp, apiErr = s.runTagFilterOnly(ctx, cfg, inst, appType, filterCfg, req)
+	} else {
+		resp, apiErr = s.runTag(ctx, cfg, inst, appType, filterCfg, req)
+	}
 	if apiErr != nil {
 		s.auditScan(req.auditSource(), "tag", inst, req, nil, apiErr.Message)
 		writeAPIError(w, apiErr)
@@ -571,4 +583,412 @@ func (s *Server) handleScanTag(w http.ResponseWriter, r *http.Request, cfg core.
 	s.auditScan(req.auditSource(), "tag", inst, req, resp, "")
 	s.dumpScanJSON("tag", resp)
 	writeJSON(w, resp)
+}
+
+// runTagFilterOnly is the filter-only tag-mode pipeline. Tags every
+// movie passing the active quality + audio filter with one user-named
+// tag — release group is ignored entirely. Replaces the broken
+// "shared tag across multiple groups" pattern that flapped on every
+// alternating run (different group's ShouldHave=false would queue a
+// remove for the same shared tag the next run).
+//
+// Architecturally simpler than runTag: one tag, one decision per
+// movie, no per-group iteration. Sync/orphan/apply machinery mirrors
+// runTag's so secondary mirroring works identically — only the
+// decision pass differs.
+//
+// See dev/analysis/filter-only-tag.md for the full design rationale.
+func (s *Server) runTagFilterOnly(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, filterCfg engine.FilterConfig, req scanRunRequest) (*scanResponse, *apiError) {
+	// Defense-in-depth tag-name validation. handleScanRun validates
+	// FilterOnlyTag for live HTTP calls, but the schedule path calls
+	// this function directly via scheduler_runner.go without going
+	// through the dispatcher. Without this guard, a hand-edited config
+	// surviving Config.Load could reach Arr's CreateTag with a malformed
+	// label and surface as a confusing 502. Also normalises whitespace.
+	tag := strings.TrimSpace(req.FilterOnlyTag)
+	if tag == "" {
+		return nil, newAPIError(400, "filterOnlyTag is required for tagSource=filter-only")
+	}
+	if !reTagName.MatchString(tag) {
+		return nil, newAPIError(400, "filterOnlyTag must be lowercase letters, digits, underscores, or dashes")
+	}
+	// Conflict check: filter-only's tag must not collide with an
+	// existing per-group rule's Tag (regardless of group's enabled
+	// state, since disable→enable would re-introduce the conflict).
+	// Symmetric with the API-level uniqueness check on /api/groups.
+	for _, g := range cfg.ReleaseGroups {
+		if g.Type == appType && strings.EqualFold(g.Tag, tag) {
+			return nil, newAPIError(409, fmt.Sprintf("filterOnlyTag %q collides with an Active group rule (group: %q). Pick a different name or remove the conflicting group.", tag, g.Display))
+		}
+	}
+
+	client := s.arrClientFor(inst)
+	items, err := client.ListItems(ctx, appType)
+	if err != nil {
+		return nil, newAPIError(502, "arr list items: "+err.Error())
+	}
+	tagDetails, err := client.ListTagDetails(ctx)
+	if err != nil {
+		return nil, newAPIError(502, "arr list tags: "+err.Error())
+	}
+	labelToID := make(map[string]int, len(tagDetails))
+	for _, t := range tagDetails {
+		labelToID[t.Label] = t.ID
+	}
+
+	resp := scanResponse{
+		Mode:   req.Mode,
+		Action: "tag",
+		Instance: scanInstanceInfo{
+			ID:   inst.ID,
+			Name: inst.Name,
+			Type: inst.Type,
+		},
+		Totals: scanTotals{
+			Items:  len(items),
+			Groups: 0, // filter-only has no group concept
+		},
+	}
+
+	// Single-tag accumulators. Same shape as runTag's per-tag maps so
+	// the apply phase can reuse the same lazy-create + batch-PUT path.
+	addByTag := make(map[string]map[int]struct{})
+	removeByTag := make(map[string]map[int]struct{})
+	ensureSet := func(m map[string]map[int]struct{}, k string) map[int]struct{} {
+		if m[k] == nil {
+			m[k] = make(map[int]struct{})
+		}
+		return m[k]
+	}
+
+	// Secondary-sync setup — identical to runTag's. Mirroring works the
+	// same way: filter passes/fails per movie on the secondary side
+	// (since it walks its own files), and orphan-cleanup uses
+	// primaryTagStatus[tmdbId:tag] keyed by the single filter-only tag.
+	var (
+		syncEnabled       bool
+		secondary         *core.Instance
+		secondaryClient   *arr.Client
+		secondaryItems    []arr.Item
+		secondaryByTmdb   map[int]arr.Item
+		secondaryTagToID  map[string]int
+		secAddByTag       map[string]map[int]struct{}
+		secRemoveByTag    map[string]map[int]struct{}
+		primaryTagStatus  map[string]string
+		secOrphansRemoved int
+	)
+	if req.SyncToInstanceID != "" {
+		for i := range cfg.Instances {
+			if cfg.Instances[i].ID == req.SyncToInstanceID {
+				secondary = &cfg.Instances[i]
+				break
+			}
+		}
+		if secondary == nil {
+			return nil, newAPIError(404, "syncToInstanceId not found")
+		}
+		if secondary.Type != appType {
+			return nil, newAPIError(400, "syncToInstanceId must be the same type as instanceId")
+		}
+		if secondary.ID == inst.ID {
+			return nil, newAPIError(400, "syncToInstanceId cannot be the same as instanceId")
+		}
+		secondaryClient = s.arrClientFor(secondary)
+		var secErr error
+		secondaryItems, secErr = secondaryClient.ListItems(ctx, appType)
+		if secErr != nil {
+			return nil, newAPIError(502, "secondary list items: "+secErr.Error())
+		}
+		secTagDetails, secErr := secondaryClient.ListTagDetails(ctx)
+		if secErr != nil {
+			return nil, newAPIError(502, "secondary list tags: "+secErr.Error())
+		}
+		secondaryByTmdb = make(map[int]arr.Item, len(secondaryItems))
+		for _, it := range secondaryItems {
+			if it.TmdbID > 0 {
+				secondaryByTmdb[it.TmdbID] = it
+			}
+		}
+		secondaryTagToID = make(map[string]int, len(secTagDetails))
+		for _, t := range secTagDetails {
+			secondaryTagToID[t.Label] = t.ID
+		}
+		secAddByTag = make(map[string]map[int]struct{})
+		secRemoveByTag = make(map[string]map[int]struct{})
+		primaryTagStatus = make(map[string]string)
+		syncEnabled = true
+	}
+
+	// Per-movie decision pass.
+	for _, item := range items {
+		hasFile := item.MovieFile != nil
+		var combined string
+		if hasFile {
+			// Same combined-string construction as engine.DecideTag —
+			// space-joined to prevent two fields' tokens from bleeding
+			// into a false match (e.g. "MA" + "WEB" → "MAWEB").
+			rel := strings.ToLower(item.MovieFile.RelativePath)
+			scene := strings.ToLower(item.MovieFile.SceneName)
+			rg := strings.ToLower(item.MovieFile.ReleaseGroup)
+			combined = rel + " " + scene + " " + rg
+		} else {
+			resp.Totals.NoFile++
+		}
+		hasTagID := make(map[int]struct{}, len(item.Tags))
+		for _, tid := range item.Tags {
+			hasTagID[tid] = struct{}{}
+		}
+
+		// Per-movie missing-in-secondary count. Same semantics as runTag.
+		if syncEnabled && item.TmdbID > 0 {
+			if _, found := secondaryByTmdb[item.TmdbID]; !found {
+				resp.Totals.SecondaryMissing++
+			}
+		}
+
+		// Filter pass. Empty combined (no-file movie) → both filters
+		// return false → ShouldHave=false → "remove" if tag present,
+		// "skip" otherwise. Symmetric with runTag's no-file handling.
+		shouldHave := false
+		var qualityResult, qualityDetail, audioResult, audioDetail string
+		if hasFile {
+			qOK := engine.CheckQuality(filterCfg, combined)
+			aOK := engine.CheckAudio(filterCfg, combined)
+			if qOK {
+				qualityResult = engine.ResultPass
+				qualityDetail = engine.QualityDetailPass(combined)
+			} else {
+				qualityResult = engine.ResultFail
+				qualityDetail = engine.QualityDetailFail(combined)
+			}
+			if aOK {
+				audioResult = engine.ResultPass
+				audioDetail = engine.AudioDetailPass(combined)
+			} else {
+				audioResult = engine.ResultFail
+				audioDetail = engine.AudioDetailFail(combined)
+			}
+			shouldHave = qOK && aOK
+		} else {
+			qualityResult = engine.ResultNA
+			audioResult = engine.ResultNA
+		}
+
+		currentID, existsInArr := labelToID[tag]
+		hasTagOnItem := existsInArr
+		if hasTagOnItem {
+			_, hasTagOnItem = hasTagID[currentID]
+		}
+		action := composeAction(shouldHave, hasTagOnItem)
+
+		switch action {
+		case "add":
+			ensureSet(addByTag, tag)[item.ID] = struct{}{}
+			resp.Totals.ToAdd++
+		case "remove":
+			ensureSet(removeByTag, tag)[item.ID] = struct{}{}
+			resp.Totals.ToRemove++
+		case "keep":
+			resp.Totals.ToKeep++
+		}
+
+		// Secondary mirror — same composeAction(shouldHave, secondaryHasTag).
+		var secondaryAction string
+		var secondaryHasTag bool
+		if syncEnabled && item.TmdbID > 0 {
+			primaryStatusKey := fmt.Sprintf("%d:%s", item.TmdbID, tag)
+			if shouldHave {
+				primaryTagStatus[primaryStatusKey] = "true"
+			} else {
+				primaryTagStatus[primaryStatusKey] = "false"
+			}
+			secMovie, secMovieFound := secondaryByTmdb[item.TmdbID]
+			if !secMovieFound {
+				secondaryAction = "missing"
+			} else {
+				secTagID, secTagExists := secondaryTagToID[tag]
+				if secTagExists {
+					for _, tid := range secMovie.Tags {
+						if tid == secTagID {
+							secondaryHasTag = true
+							break
+						}
+					}
+				}
+				secondaryAction = composeAction(shouldHave, secondaryHasTag)
+				switch secondaryAction {
+				case "add":
+					ensureSet(secAddByTag, tag)[secMovie.ID] = struct{}{}
+					resp.Totals.SecondaryToAdd++
+				case "remove":
+					ensureSet(secRemoveByTag, tag)[secMovie.ID] = struct{}{}
+					resp.Totals.SecondaryToRemove++
+				case "keep":
+					resp.Totals.SecondaryToKeep++
+				}
+			}
+		}
+
+		// Per-decision detail row. Filter-only emits ONE decision per
+		// movie (no group fan-out). Reason follows the per-group format
+		// so the existing UI drill-down renders without changes.
+		var reason string
+		if !shouldHave && hasFile {
+			qOK := qualityResult == engine.ResultPass
+			aOK := audioResult == engine.ResultPass
+			switch {
+			case !qOK && !aOK:
+				reason = "Failed quality & audio"
+			case !qOK:
+				reason = "Failed quality"
+			case !aOK:
+				reason = "Failed audio"
+			}
+		}
+		row := scanItem{
+			ID:          item.ID,
+			TmdbID:      item.TmdbID,
+			Title:       item.Title,
+			Year:        item.Year,
+			CurrentTags: item.Tags,
+			Decisions: []scanDecision{{
+				GroupID:         "", // filter-only — no group identity
+				GroupTag:        tag,
+				GroupDisplay:    tag,
+				ShouldHave:      shouldHave,
+				HasTag:          hasTagOnItem,
+				Action:          action,
+				Matched:         shouldHave, // filter pass acts as the "match" verdict
+				MatchLocation:   "",
+				Quality:         qualityResult,
+				QualityDetail:   qualityDetail,
+				Audio:           audioResult,
+				AudioDetail:     audioDetail,
+				Reason:          reason,
+				SecondaryAction: secondaryAction,
+				SecondaryHasTag: secondaryHasTag,
+			}},
+		}
+		if hasFile {
+			row.ReleaseGroup = item.MovieFile.ReleaseGroup
+			row.SceneName = item.MovieFile.SceneName
+			row.RelativePath = item.MovieFile.RelativePath
+		}
+		resp.Items = append(resp.Items, row)
+	}
+
+	// Orphan-cleanup pass — identical mechanics to runTag, scoped to
+	// the single filter-only tag. Walks secondary; removes the tag
+	// from any sec-movie whose primary counterpart said "false" or
+	// whose primary doesn't exist at all (movie deleted from primary).
+	if syncEnabled {
+		for _, secItem := range secondaryItems {
+			if secItem.TmdbID == 0 {
+				continue
+			}
+			secTagID, secTagExists := secondaryTagToID[tag]
+			if !secTagExists {
+				continue
+			}
+			hasTag := false
+			for _, tid := range secItem.Tags {
+				if tid == secTagID {
+					hasTag = true
+					break
+				}
+			}
+			if !hasTag {
+				continue
+			}
+			primaryStatus := primaryTagStatus[fmt.Sprintf("%d:%s", secItem.TmdbID, tag)]
+			if primaryStatus == "true" {
+				continue
+			}
+			existing := secRemoveByTag[tag]
+			if existing == nil {
+				existing = make(map[int]struct{})
+				secRemoveByTag[tag] = existing
+			}
+			if _, already := existing[secItem.ID]; !already {
+				existing[secItem.ID] = struct{}{}
+				secOrphansRemoved++
+				resp.Totals.SecondaryToRemove++
+				resp.Totals.SecondaryOrphans++
+			}
+		}
+	}
+
+	if req.Mode == "preview" {
+		return &resp, nil
+	}
+
+	// Apply phase — lazy-create + batch PUT. Same machinery runTag uses.
+	applied := scanApplied{}
+	if _, ok := labelToID[tag]; !ok && len(addByTag[tag]) > 0 {
+		created, err := client.CreateTag(ctx, tag)
+		if err != nil {
+			return nil, newAPIError(502, fmt.Sprintf("create tag %q: %v", tag, err))
+		}
+		labelToID[tag] = created.ID
+		applied.TagsCreated = append(applied.TagsCreated, tag)
+	}
+	if ids := addByTag[tag]; len(ids) > 0 {
+		idList := setToSlice(ids)
+		if err := client.EditorApplyTags(ctx, appType, idList, []int{labelToID[tag]}, "add"); err != nil {
+			return nil, newAPIError(502, fmt.Sprintf("apply add %q: %v", tag, err))
+		}
+		applied.ItemsAdded += len(idList)
+	}
+	if ids := removeByTag[tag]; len(ids) > 0 {
+		if tid, ok := labelToID[tag]; ok {
+			idList := setToSlice(ids)
+			if err := client.EditorApplyTags(ctx, appType, idList, []int{tid}, "remove"); err != nil {
+				return nil, newAPIError(502, fmt.Sprintf("apply remove %q: %v", tag, err))
+			}
+			applied.ItemsRemoved += len(idList)
+		}
+	}
+
+	// Secondary apply — same lazy-create + batch pattern, scoped to
+	// the secondary instance's tag inventory and secondary movie IDs.
+	if syncEnabled && (len(secAddByTag) > 0 || len(secRemoveByTag) > 0) {
+		secApplied := &scanSecondaryApplied{
+			InstanceID:     secondary.ID,
+			InstanceName:   secondary.Name,
+			OrphansRemoved: secOrphansRemoved,
+		}
+		if _, ok := secondaryTagToID[tag]; !ok && len(secAddByTag[tag]) > 0 {
+			created, err := secondaryClient.CreateTag(ctx, tag)
+			if err != nil {
+				return nil, newAPIError(502, fmt.Sprintf("secondary create tag %q: %v", tag, err))
+			}
+			secondaryTagToID[tag] = created.ID
+			secApplied.TagsCreated = append(secApplied.TagsCreated, tag)
+		}
+		if ids := secAddByTag[tag]; len(ids) > 0 {
+			idList := setToSlice(ids)
+			if err := secondaryClient.EditorApplyTags(ctx, appType, idList, []int{secondaryTagToID[tag]}, "add"); err != nil {
+				return nil, newAPIError(502, fmt.Sprintf("secondary apply add %q: %v", tag, err))
+			}
+			secApplied.ItemsAdded += len(idList)
+		}
+		if ids := secRemoveByTag[tag]; len(ids) > 0 {
+			if tid, ok := secondaryTagToID[tag]; ok {
+				idList := setToSlice(ids)
+				if err := secondaryClient.EditorApplyTags(ctx, appType, idList, []int{tid}, "remove"); err != nil {
+					return nil, newAPIError(502, fmt.Sprintf("secondary apply remove %q: %v", tag, err))
+				}
+				secApplied.ItemsRemoved += len(idList)
+			}
+		}
+		applied.Secondary = secApplied
+	}
+
+	// CleanupUnusedTags is a no-op in filter-only mode by design —
+	// the filter-only tag is governed by exactly one rule. Either it's
+	// in use (rule fires) or the user disabled the rule (tag lifecycle
+	// is their choice via Settings → Tag inventory). No tail-pass.
+
+	resp.Applied = &applied
+	return &resp, nil
 }

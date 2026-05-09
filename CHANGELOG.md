@@ -1,5 +1,83 @@
 # Changelog
 
+## v0.4.0-dev — Filter-only tag mode + Apply-now polish (2026-05-09)
+
+### What you get
+
+- **New "Use filter only" mode for Tag release groups.** Pick this on
+  the Run Tag wizard / Quick fix-all / Create rule and resolvarr tags
+  every movie passing your quality + audio filter — release group
+  ignored. One tag for everything that meets your bar, no per-group
+  bookkeeping. Default tag name `lossless-web` reflects the out-of-
+  the-box filter (MA/Play WEB-DL + lossless audio); rename it if you
+  customise the filter. Best when you don't care which group made the
+  file — only that it meets your quality threshold. New high-quality
+  groups get tagged automatically without any config changes.
+
+- **Apply-now buttons on Audio, Video, and DV detail result panels.**
+  After running a preview, scroll up OR down and click Apply now —
+  same confirm modal as the wizard's Apply, no need to re-walk the
+  wizard. The button sits at both the top and bottom of long result
+  lists so you don't have to scroll all the way to apply.
+
+- **Apply-now respects target=both.** If you ran the wizard against
+  both instances, Apply re-fires once per instance — covers everything
+  the preview showed. The variant switcher in the result modal stays
+  read-only (just for reading the result); Apply hits whatever the
+  wizard's target choice was.
+
+- **Run-mode result panels stay scoped.** Run Quick fix-all on Radarr,
+  flip to Sonarr in the picker, the Radarr result hides. Flip back,
+  it's still there. No more cross-contamination of result panels
+  between Arr types.
+
+- **Tag Library help-panel rewrite.** Removed false claims about
+  shared-tag mode and "scoring custom formats based on tag" — Custom
+  Formats score releases (downloads), not movies. Replaced with the
+  actual disk-savings use case (tag your WEB-DL Radarr → mirror to
+  Remux Radarr → cleanup tool reclaims 3-6 TB on overlapping titles)
+  written tool-agnostic so you can pick whichever cleanup tool you
+  trust.
+
+- **Recover apply-from-preview works correctly.** Open Run Recover,
+  see the would-fix list, tick what to apply, click Apply selected
+  fixes. No more "I marked the rows but nothing happened" — the
+  preview path now applies against the same instance the preview ran
+  on, surfaces errors visibly, and the auto-selection of would-fix
+  rows actually populates so the Apply button isn't disabled by
+  default.
+
+### Why these matter
+
+The "shared tag" pattern previously documented for tagarr scripts
+(multiple groups → same tag like `premium`) silently flapped on every
+alternate run because each group's decision is independent — `flux`
+group says "tag", `sic` group says "remove" (no match), and Apply does
+both. Filter-only mode is the architecturally clean replacement: one
+rule, one tag, evaluated once per movie. No flapping, and broader
+coverage (catches every passing movie regardless of group).
+
+### Behind the scenes
+
+- New `runTagFilterOnly` engine path mirrors the existing per-group
+  path's sync-to-secondary + orphan-cleanup machinery. Single tag
+  decision per movie, no group iteration.
+- Tag-name conflicts (filter-only's tag matches an existing Active
+  group) are blocked at API time with a clear error pointing at the
+  conflicting group, plus a symmetric reverse check when you add a
+  group whose tag matches an existing filter-only schedule.
+- Multi-agent code review pass before push: 4 blockers + 8 concerns
+  landed across schedule validation, defensive guards, modal apply
+  states, and variant-switcher consistency.
+
+### Upgrade notes
+
+Existing rules without `tagSource` set keep using the per-group path
+(legacy behaviour, no change). Schedules saved with garbage TagSource
+get clamped to "" at next config Load.
+
+---
+
 ## v0.3.10-dev — qBittorrent foundation + live status + secret hiding (2026-05-07)
 
 ### What you get

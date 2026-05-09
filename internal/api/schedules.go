@@ -87,6 +87,25 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 	if req.Options.RunMode != "" && req.Options.RunMode != "preview" && req.Options.RunMode != "apply" {
 		return newAPIError(400, "options.runMode must be preview or apply")
 	}
+	// Tag-source validation — mirrors handleScanRun's filter-only path
+	// at scan.go so a schedule POST/PUT can't persist garbage that
+	// would only get cleaned up at next process restart via Config.Load
+	// migration. Validates closed enum + filter-only's tag-name shape
+	// against the same regex Active groups use.
+	switch req.Options.TagSource {
+	case "", "active", "discover", "filter-only":
+		// OK
+	default:
+		return newAPIError(400, `options.tagSource must be "" / "active" / "discover" / "filter-only"`)
+	}
+	if req.Options.TagSource == "filter-only" {
+		if req.Options.FilterOnlyTag == "" {
+			return newAPIError(400, "options.filterOnlyTag is required when tagSource is filter-only")
+		}
+		if !reTagName.MatchString(req.Options.FilterOnlyTag) {
+			return newAPIError(400, "options.filterOnlyTag must be lowercase letters, digits, underscores, or dashes")
+		}
+	}
 	return nil
 }
 

@@ -108,6 +108,14 @@ function app() {
     // destructive, opt-in. Affects primary + secondary symmetrically
     // when sync is on (per scan_tag.go:520-543).
     scanCleanupUnusedTags: false,
+    // Filter-only tag-mode state. "" / "active" / "discover" mean the
+    // legacy per-group code path; "filter-only" routes the request to
+    // runTagFilterOnly on the backend with scanFilterOnlyTag as the
+    // single tag emitted for every movie passing the quality + audio
+    // filter. Set via the wizard's filter-only branch; cleared on a
+    // standalone Run that doesn't go through the wizard.
+    scanTagSource: '',
+    scanFilterOnlyTag: '',
     // Mini-wizard state for the new "Tag release groups" launcher on
     // the Tag Release Groups sub-tab. 4 steps:
     //   Choices → Filter → Active groups → Review.
@@ -118,8 +126,9 @@ function app() {
     tagRgWizard: {
       open: false,
       step: 0,
-      source: 'active',           // 'active' | 'discover'
+      source: 'active',           // 'active' | 'discover' | 'filter-only'
       discoverAdd: 'enabled',     // 'disabled' | 'enabled' (only when source==='discover')
+      filterOnlyTag: 'lossless-web', // only when source==='filter-only' — matches the OOTB MA/Play WEB-DL + lossless filter; user can rename
       syncToSecondary: false,
       cleanupUnusedTags: false,
       runMode: 'preview',         // 'preview' | 'apply'
@@ -1434,6 +1443,26 @@ function app() {
         this.scanResults.videoTags = null;
         this.scanResults.dvDetail = null;
       }
+      // Variant switcher pills (qfaDetailVariants) live alongside
+      // every result modal that opens via viewPhaseDetails — when
+      // ANY of those modals is being replaced, the variant set is
+      // stale by definition. The next opener (chain runner / single-
+      // instance scan) repopulates from its fresh response. Without
+      // this clear, opening an audio-history row after a chain Both
+      // run would render the OLD pills with the chain's instance
+      // labels. Recover dismiss + standalone Recover already clear
+      // these on their own paths; this catches every other surface.
+      if (except !== 'tag' && except !== 'recover' && except !== 'audio' && except !== 'video' && except !== 'dv') {
+        this.qfaDetailVariants = [];
+        this.qfaDetailVariantIdx = 0;
+      } else if (except === 'audio' || except === 'video' || except === 'dv') {
+        // Within the auto-tag modal family, swapping between audio /
+        // video / dv views means the variants from the previous view
+        // are stale (different phase). Clear unless the new modal
+        // re-populates immediately (which the standard flow does).
+        // Chain-driven re-opens replace the variants array wholesale
+        // anyway, so the clear-then-repopulate is idempotent.
+      }
       // historicalRunInfo lives across modals — clear only when the new
       // trigger doesn't itself set it (the caller sets it after, if relevant).
       this.historicalRunInfo = null;
@@ -1475,6 +1504,12 @@ function app() {
       // re-fetches via loadRecoverExclusions so stale data from a
       // previous instance can't flash before the GET resolves.
       this.recoverExclusions = { instanceId: '', movies: [], series: [], seasons: [] };
+      // Variant switcher state lives in qfaDetailVariants but also serves
+      // the Recover modal when target='both' fired two passes. Clear it
+      // here so a future single-instance Recover doesn't render a stale
+      // switcher with primary+secondary pills from the previous run.
+      this.qfaDetailVariants = [];
+      this.qfaDetailVariantIdx = 0;
       if (this.historicalRunInfo && this.historicalRunInfo.kind === 'recover') {
         this.historicalRunInfo = null;
       }
@@ -1794,6 +1829,7 @@ function app() {
         step: 0,
         source: 'active',
         discoverAdd: 'enabled',
+        filterOnlyTag: 'lossless-web',
         syncToSecondary: !!this.scanSyncToSecondary,
         cleanupUnusedTags: !!this.scanCleanupUnusedTags,
         runMode: 'preview',
@@ -1816,12 +1852,37 @@ function app() {
     },
 
     // Steps the wizard renders. Active-groups step skipped on Use
-    // Discover (the list will be augmented by Discover at run-time).
+    // Discover (the list will be augmented by Discover at run-time)
+    // and on Use filter only (no group list applies — every passing
+    // movie gets the single filter-only tag).
     tagRgWizardVisibleSteps() {
       const steps = ['Choices', 'Filter'];
       if (this.tagRgWizard.source === 'active') steps.push('Active groups');
       steps.push('Review');
       return steps;
+    },
+
+    // Filter-only collision check — true when the user-typed tag
+    // matches any existing Active-group's Tag for this instance type.
+    // Backend rejects the request with 409 in this state; the inline
+    // warning + Run-button gate let the user fix it before clicking.
+    // Case-insensitive to mirror the backend's strings.EqualFold.
+    tagRgWizardFilterOnlyCollides() {
+      const t = (this.tagRgWizard.filterOnlyTag || '').toLowerCase().trim();
+      if (!t) return false;
+      const appType = this.scanAppType === 'sonarr' ? 'sonarr' : 'radarr';
+      return (this.groups || []).some(g => g.type === appType && g.tag && g.tag.toLowerCase() === t);
+    },
+    // Same collision check for the rule editor (QFA / Create Rule
+    // wizards) — reads filterOnlyTag off editingRule.options instead
+    // of the standalone tag-rg wizard. App-type comes from the rule's
+    // primary instance.
+    ruleEditorFilterOnlyCollides() {
+      if (!this.editingRule || !this.editingRule.options) return false;
+      const t = (this.editingRule.options.filterOnlyTag || '').toLowerCase().trim();
+      if (!t) return false;
+      const appType = this.ruleEditorInstanceType() || 'radarr';
+      return (this.groups || []).some(g => g.type === appType && g.tag && g.tag.toLowerCase() === t);
     },
 
     // Clamp the current step to the new visibleSteps length. Called
@@ -1851,6 +1912,16 @@ function app() {
         // one-click switch.
         if (this.tagRgWizard.source === 'active' && this.groupsFilteredByInstanceType().length === 0) {
           return false;
+        }
+        // Hard gate: filter-only requires a non-empty, non-colliding
+        // tag name. Empty would 400 at the backend; colliding would
+        // 409. The inline collision warning shows the state inline;
+        // an empty input shows the placeholder + the user just hasn't
+        // filled it yet.
+        if (this.tagRgWizard.source === 'filter-only') {
+          const t = (this.tagRgWizard.filterOnlyTag || '').trim();
+          if (!t) return false;
+          if (this.tagRgWizardFilterOnlyCollides()) return false;
         }
         return true;
       }
@@ -1909,6 +1980,20 @@ function app() {
           return;
         }
       }
+      // Filter-only validation — defense in depth. Empty and
+      // collision states are also blocked at the Choices step's
+      // Next-button, but a programmatic call could bypass that.
+      if (this.tagRgWizard.source === 'filter-only') {
+        const t = (this.tagRgWizard.filterOnlyTag || '').trim();
+        if (!t) {
+          this.showToast('Enter a tag name for filter-only mode.', 'error');
+          return;
+        }
+        if (this.tagRgWizardFilterOnlyCollides()) {
+          this.showToast('Tag name collides with an Active group rule. Pick a different name.', 'error');
+          return;
+        }
+      }
       // Filter gate — defense in depth. The wizard already blocks
       // advance from the Filter step, but a programmatic call could
       // bypass that.
@@ -1932,6 +2017,17 @@ function app() {
       this.scanCleanupUnusedTags = this.tagRgWizard.source === 'active'
         ? !!this.tagRgWizard.cleanupUnusedTags
         : false;
+      // Filter-only pass-through. runTagInternal reads these to add
+      // tagSource + filterOnlyTag to the /api/scan/run body. For
+      // active / discover modes leave scanTagSource empty so the
+      // backend's per-group runTag fires (legacy default).
+      if (this.tagRgWizard.source === 'filter-only') {
+        this.scanTagSource = 'filter-only';
+        this.scanFilterOnlyTag = (this.tagRgWizard.filterOnlyTag || '').trim();
+      } else {
+        this.scanTagSource = '';
+        this.scanFilterOnlyTag = '';
+      }
       // Discover add-behavior (only meaningful when source==='discover').
       // runLibraryScan reads scanMode + scanModes; the discover-add
       // semantics are applied via the existing addDiscoveredSearches
@@ -2117,6 +2213,21 @@ function app() {
         if (this.scanCleanupUnusedTags || opts.cleanupUnusedTags) {
           body.cleanupUnusedTags = true;
         }
+        // Filter-only mode pass-through. Backend's runTagFilterOnly
+        // takes over when tagSource === "filter-only"; the per-group
+        // runTag handler ignores both fields when tagSource is empty
+        // or "active". scanFilterOnlyTag carries the user-typed tag
+        // (default "lossless-web" — see scan_types.go).
+        if (this.scanTagSource) {
+          body.tagSource = this.scanTagSource;
+          if (this.scanTagSource === 'filter-only') {
+            body.filterOnlyTag = this.scanFilterOnlyTag;
+            // Cleanup-tail is a no-op in filter-only mode by design
+            // (single-rule, single-tag) — strip the flag if a stale
+            // value snuck in via opts.cleanupUnusedTags.
+            delete body.cleanupUnusedTags;
+          }
+        }
         const resp = await this.apiFetch('/api/scan/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2175,6 +2286,12 @@ function app() {
 
     async confirmScanApply() {
       this.showScanApplyConfirm = false;
+      // Function-boundary re-entry guard — the modal Apply button
+      // already :disabled-gates on scanLoading, but a programmatic
+      // call (keyboard shortcut, browser back/forward, Alpine error
+      // recovery cycles) could otherwise bypass that and double-fire
+      // a 5+ second apply against the same instance.
+      if (this.scanLoading) return;
       // Defense in depth — same reasoning as runRecoverApply.
       if (this.isHistoricalForAction('tag')) {
         this.showToast('Run a fresh Tag preview before applying — current panel is a snapshot.', 'error');
@@ -2589,6 +2706,11 @@ function app() {
       this.recoverSeriesExpanded = {};
       this.recoverSeasonExpanded = {};
       this.recoverFilter = 'all';
+      // Standalone Run Recover targets a single instance — drop any
+      // wizard-driven variant set so the switcher doesn't render
+      // stale primary/secondary pills from an earlier Both run.
+      this.qfaDetailVariants = [];
+      this.qfaDetailVariantIdx = 0;
       // Fresh recover replaces any historical-run banner that was tied
       // to an earlier replay.
       if (this.historicalRunInfo && this.historicalRunInfo.kind === 'recover') {
@@ -2641,6 +2763,9 @@ function app() {
 
     async runRecoverApply() {
       if (!this.recoverResults) return;
+      // Function-boundary re-entry guard — same rationale as
+      // confirmScanApply.
+      if (this.recoverApplying) return;
       // Defense in depth — the partial's Apply button is :disabled when
       // viewing a snapshot, but a programmatic call (keyboard shortcut,
       // future code path, replayed event) could otherwise bypass that
@@ -2652,6 +2777,13 @@ function app() {
       }
       const ids = Object.keys(this.recoverApplySelected).filter(k => !!this.recoverApplySelected[k]).map(k => parseInt(k, 10));
       if (ids.length === 0) return;
+      // Apply against the SAME instance the preview ran on, not the
+      // Library-scan-global selector. The result panel can be opened by
+      // the standalone Run Recover button, the wizard chain, or a
+      // History replay — only the wizard path is guaranteed to have a
+      // matching scanInstanceId. Reading the id off the response object
+      // makes apply correct regardless of trigger.
+      const applyInstanceId = (this.recoverResults.instance && this.recoverResults.instance.id) || this.scanInstanceId;
       this.recoverApplying = true;
       this.recoverError = '';
       try {
@@ -2659,7 +2791,7 @@ function app() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            instanceId: this.scanInstanceId,
+            instanceId: applyInstanceId,
             action: 'recover',
             mode: 'apply',
             recoverRename: this.recoverRename,
@@ -2671,6 +2803,9 @@ function app() {
           let msg = body;
           try { msg = JSON.parse(body).error || body; } catch {}
           this.recoverError = msg || ('HTTP ' + resp.status);
+          // Toast too — the inline error banner is hidden behind the
+          // modal overlay; without a toast the user sees nothing happen.
+          this.showToast('Recover apply failed: ' + this.recoverError, 'error');
           return;
         }
         // Replace the result wholesale — apply-mode response includes the
@@ -2707,6 +2842,7 @@ function app() {
         else this.recoverFilter = 'all';
       } catch (e) {
         this.recoverError = e.message || 'Recover apply failed';
+        this.showToast('Recover apply failed: ' + this.recoverError, 'error');
       } finally {
         this.recoverApplying = false;
       }
@@ -4194,8 +4330,10 @@ function app() {
       }
     },
 
-    async runDvDetailScan(mode, bypassOverride) {
-      if (!this.scanInstanceId) return;
+    async runDvDetailScan(mode, bypassOverride, instanceIdOverride = '') {
+      // instanceIdOverride: same target=both fan-out as runAudioTagsScan.
+      const targetInstanceId = instanceIdOverride || this.scanInstanceId;
+      if (!targetInstanceId) return;
       // Defensive re-entry guard — same pattern as runQuickFixChain.
       // The Run-button gates on scanLoading at the UI layer; this
       // is the function-level safety net.
@@ -4204,13 +4342,16 @@ function app() {
       // captured before resetting dvBypassCache. Falsy → fall back to
       // the live state (Preview path).
       const bypassDvCache = bypassOverride !== undefined ? !!bypassOverride : !!this.dvBypassCache;
-      this.closeAllResultModals('dv');
-      this.scanLoading = true;
-      this.scanResults.dvDetail = null;
-      // Fresh scan supersedes any historical replay that was on screen.
-      if (this.historicalRunInfo && this.historicalRunInfo.kind === 'dvdetail') {
-        this.historicalRunInfo = null;
+      const isFirstPass = !instanceIdOverride;
+      if (isFirstPass) {
+        this.closeAllResultModals('dv');
+        this.scanResults.dvDetail = null;
+        this.scanError = '';
+        if (this.historicalRunInfo && this.historicalRunInfo.kind === 'dvdetail') {
+          this.historicalRunInfo = null;
+        }
       }
+      this.scanLoading = true;
       // Reset progress + start polling. The scan is slow enough
       // (~1-3s per file × N files) that the user needs both a
       // current-file label and a way to cancel. Poll runs every 1.2s
@@ -4223,7 +4364,7 @@ function app() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            instanceId: this.scanInstanceId,
+            instanceId: targetInstanceId,
             action: 'dvdetail',
             mode,
             bypassDvCache,
@@ -4231,6 +4372,12 @@ function app() {
         });
         if (!r.ok) {
           const err = await r.json().catch(() => ({}));
+          // Set scanError too — confirmDvDetailApply's target=both
+          // fan-out reads it to short-circuit the loop after a failed
+          // pass. Without this the loop silently continues to the
+          // secondary instance and fires a false success toast. Audio
+          // and Video already do this; this matches their pattern.
+          this.scanError = err.error || ('HTTP ' + r.status);
           this.showToast('DV detail scan failed: ' + (err.error || r.status), 'error');
           return;
         }
@@ -4243,6 +4390,7 @@ function app() {
         this.showToast((mode === 'apply' ? 'DV detail applied — ' : 'DV detail preview ready — ') + summary, 'success');
         this.viewPhaseDetails({ phase: 'dvdetail', response: this.scanResults.dvDetail });
       } catch (e) {
+        this.scanError = e.message || 'DV detail scan failed';
         this.showToast('DV detail scan failed: ' + e.message, 'error');
       } finally {
         this.scanLoading = false;
@@ -4320,13 +4468,43 @@ function app() {
 
     async confirmDvDetailApply() {
       this.showDvDetailApplyConfirm = false;
+      // Re-entry guard — see confirmScanApply for rationale.
+      // Especially important for DV: target=both fan-out + slow
+      // ffmpeg+dovi_tool means a double-fire would queue two long
+      // scans against the same instance and snapshot dvBypassCache
+      // in inconsistent states.
+      if (this.scanLoading) return;
       // Reset Skip cache before Apply so a destructive write doesn't
       // silently inherit a Preview's bypass setting. Snapshot first
       // so the actual run uses whatever the user had ticked.
       const bypass = !!this.dvBypassCache;
       this.dvBypassCache = false;
-      // runDvDetailScan handles its own scanLoading flag.
-      await this.runDvDetailScan('apply', bypass);
+      // Same target=both fan-out as confirmAudioTagsApply. See its
+      // header comment for the design rationale. Both runs honor the
+      // same bypassDvCache snapshot so a fresh-cache pass is fresh
+      // for both instances.
+      const variants = (this.qfaDetailVariants || []).filter(v => v && v.instanceId);
+      if (variants.length > 1) {
+        const totals = { added: 0, removed: 0 };
+        for (const v of variants) {
+          await this.runDvDetailScan('apply', bypass, v.instanceId);
+          if (this.scanError) break;
+          // Refresh variant response — see confirmAudioTagsApply.
+          if (this.scanResults.dvDetail) {
+            v.response = this.scanResults.dvDetail;
+          }
+          const a = this.scanResults.dvDetail && this.scanResults.dvDetail.applied;
+          if (a) {
+            totals.added += a.itemsAdded || 0;
+            totals.removed += a.itemsRemoved || 0;
+          }
+        }
+        if (!this.scanError) {
+          this.showToast('DV detail applied across ' + variants.length + ' instances: ' + totals.added + ' added, ' + totals.removed + ' removed', 'success');
+        }
+      } else {
+        await this.runDvDetailScan('apply', bypass);
+      }
     },
 
     // --- Groups ---
@@ -4946,23 +5124,35 @@ function app() {
       }
     },
 
-    async runAudioTagsScan(mode = 'preview') {
-      if (!this.scanInstanceId) { this.showToast('Pick an instance first', 'error'); return; }
+    async runAudioTagsScan(mode = 'preview', instanceIdOverride = '') {
+      // instanceIdOverride lets Apply-now target a specific instance
+      // (used by confirmAudioTagsApply when target=both produced two
+      // variants — each variant's instance gets its own apply pass).
+      // Empty string falls back to the page-level scanInstanceId for
+      // legacy single-instance flows.
+      const targetInstanceId = instanceIdOverride || this.scanInstanceId;
+      if (!targetInstanceId) { this.showToast('Pick an instance first', 'error'); return; }
       if (!this.anyAudioTagsBucketEnabled()) { this.showToast('Enable Audio bucket first', 'error'); return; }
-      this.closeAllResultModals('audio');
+      // Modal-close + state-reset only on the first pass when the
+      // caller didn't pass an override. Apply-now-against-variants
+      // does multiple successive runs and must NOT close the modal
+      // between them or reset historical state.
+      const isFirstPass = !instanceIdOverride;
+      if (isFirstPass) {
+        this.closeAllResultModals('audio');
+        this.autoTagRowExpanded = {};
+        this.scanResults.audioTags = null;
+        if (this.historicalRunInfo && this.historicalRunInfo.kind === 'audiotags') {
+          this.historicalRunInfo = null;
+        }
+      }
       this.scanLoading = true;
       this.scanError = '';
-      this.autoTagRowExpanded = {};
-      this.scanResults.audioTags = null;
-      // Fresh scan supersedes any historical replay that was on screen.
-      if (this.historicalRunInfo && this.historicalRunInfo.kind === 'audiotags') {
-        this.historicalRunInfo = null;
-      }
       try {
         const resp = await this.apiFetch('/api/scan/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ instanceId: this.scanInstanceId, action: 'audiotags', mode }),
+          body: JSON.stringify({ instanceId: targetInstanceId, action: 'audiotags', mode }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -4990,6 +5180,43 @@ function app() {
       if (!r || !r.totals) return 0;
       return (r.totals.toAdd || 0) + (r.totals.toRemove || 0);
     },
+    // Apply-now tooltip helper. Renders a context-aware hint per
+    // action, for buttons in the result panels' top + bottom strips.
+    // Three states:
+    //   1. Historical snapshot   → "Run a fresh preview" warning
+    //   2. target=both was used  → "Writes to <pri> + <sec>" clarifier
+    //   3. Single instance       → empty (no tooltip needed)
+    // Action arg: 'tag' | 'audiotags' | 'videotags' | 'dvdetail' | 'recover'.
+    // Recover is intentionally scope-narrowing: each instance has its
+    // own per-row selection set (vs. audio/video/dv's "every decision
+    // applies"), so apply hits only the currently-viewed variant.
+    applyNowTooltip(action) {
+      if (this.isHistoricalForAction(action)) {
+        const labels = { tag: 'Tag', audiotags: 'Audio', videotags: 'Video', dvdetail: 'DV', recover: 'Recover' };
+        return 'Run a fresh ' + (labels[action] || 'scan') + ' preview before applying — this is a saved snapshot, not live data.';
+      }
+      const variants = (this.qfaDetailVariants || []).filter(v => v && v.instanceId);
+      if (variants.length > 1) {
+        if (action === 'recover') {
+          // Recover's per-row selection is variant-specific — applies
+          // only to the instance whose result is currently displayed.
+          // Switch variant to apply on the other one. This differs
+          // from audio/video/dv which fan-out across every variant.
+          return 'Applies to the currently-viewed instance only. Switch variant above to apply on the other one — Recover selections are per-instance.';
+        }
+        const names = variants.map(v => v.label || (v.instanceId === this.scanInstanceId ? 'Primary' : 'Secondary')).join(' + ');
+        return 'Writes to ' + names + '.';
+      }
+      return '';
+    },
+    // Same helper but for the in-modal info banner. Empty on
+    // single-instance runs so the banner doesn't render.
+    applyNowMultiInstanceLabel() {
+      const variants = (this.qfaDetailVariants || []).filter(v => v && v.instanceId);
+      if (variants.length <= 1) return '';
+      const names = variants.map(v => v.label || (v.instanceId === this.scanInstanceId ? 'Primary' : 'Secondary')).join(' + ');
+      return 'Writes to ' + names + '.';
+    },
     openAudioTagsApplyConfirm() {
       // Don't gate on count — when the user picks Apply mode without
       // running Preview first, the count is 0 (no scanResults yet)
@@ -5000,7 +5227,42 @@ function app() {
     },
     async confirmAudioTagsApply() {
       this.showAudioTagsApplyConfirm = false;
-      await this.runAudioTagsScan('apply');
+      // Re-entry guard — see confirmScanApply for rationale.
+      if (this.scanLoading) return;
+      // When the wizard ran with target=both the preview produced two
+      // variants (one per instance). Apply must hit BOTH — that's what
+      // the user picked. Variant switcher is for reading the result,
+      // not for narrowing apply scope. If the user wanted apply to one
+      // instance only, they'd have picked primary or secondary in
+      // step 1. Single-variant case falls through to legacy single-
+      // instance flow against scanInstanceId.
+      const variants = (this.qfaDetailVariants || []).filter(v => v && v.instanceId);
+      if (variants.length > 1) {
+        const totals = { added: 0, removed: 0 };
+        for (const v of variants) {
+          await this.runAudioTagsScan('apply', v.instanceId);
+          if (this.scanError) break;
+          // Refresh the variant entry's response so the pill switcher
+          // shows post-apply state (mode chip flips Preview → Applied,
+          // counts reflect what was written) instead of the stale
+          // preview response. Without this, clicking a pill after
+          // fan-out re-displays the original preview which is
+          // confusing and looks like the apply didn't take.
+          if (this.scanResults.audioTags) {
+            v.response = this.scanResults.audioTags;
+          }
+          const a = this.scanResults.audioTags && this.scanResults.audioTags.applied;
+          if (a) {
+            totals.added += a.itemsAdded || 0;
+            totals.removed += a.itemsRemoved || 0;
+          }
+        }
+        if (!this.scanError) {
+          this.showToast('Audio tags applied across ' + variants.length + ' instances: ' + totals.added + ' added, ' + totals.removed + ' removed', 'success');
+        }
+      } else {
+        await this.runAudioTagsScan('apply');
+      }
     },
     audioTagMoviesFor(tag, action) {
       const r = this.scanResults && this.scanResults.audioTags;
@@ -5120,23 +5382,27 @@ function app() {
       }
     },
 
-    async runVideoTagsScan(mode = 'preview') {
-      if (!this.scanInstanceId) { this.showToast('Pick an instance first', 'error'); return; }
+    async runVideoTagsScan(mode = 'preview', instanceIdOverride = '') {
+      // instanceIdOverride: same target=both fan-out as runAudioTagsScan.
+      const targetInstanceId = instanceIdOverride || this.scanInstanceId;
+      if (!targetInstanceId) { this.showToast('Pick an instance first', 'error'); return; }
       if (!this.anyVideoTagsBucketEnabled()) { this.showToast('Enable at least one Video bucket first', 'error'); return; }
-      this.closeAllResultModals('video');
+      const isFirstPass = !instanceIdOverride;
+      if (isFirstPass) {
+        this.closeAllResultModals('video');
+        this.autoTagRowExpanded = {};
+        this.scanResults.videoTags = null;
+        if (this.historicalRunInfo && this.historicalRunInfo.kind === 'videotags') {
+          this.historicalRunInfo = null;
+        }
+      }
       this.scanLoading = true;
       this.scanError = '';
-      this.autoTagRowExpanded = {};
-      this.scanResults.videoTags = null;
-      // Fresh scan supersedes any historical replay that was on screen.
-      if (this.historicalRunInfo && this.historicalRunInfo.kind === 'videotags') {
-        this.historicalRunInfo = null;
-      }
       try {
         const resp = await this.apiFetch('/api/scan/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ instanceId: this.scanInstanceId, action: 'videotags', mode }),
+          body: JSON.stringify({ instanceId: targetInstanceId, action: 'videotags', mode }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -5168,7 +5434,33 @@ function app() {
     },
     async confirmVideoTagsApply() {
       this.showVideoTagsApplyConfirm = false;
-      await this.runVideoTagsScan('apply');
+      // Re-entry guard — see confirmScanApply for rationale.
+      if (this.scanLoading) return;
+      // Same target=both fan-out as confirmAudioTagsApply. See its
+      // header comment for the design rationale.
+      const variants = (this.qfaDetailVariants || []).filter(v => v && v.instanceId);
+      if (variants.length > 1) {
+        const totals = { added: 0, removed: 0 };
+        for (const v of variants) {
+          await this.runVideoTagsScan('apply', v.instanceId);
+          if (this.scanError) break;
+          // Refresh variant response to apply state — see
+          // confirmAudioTagsApply for rationale.
+          if (this.scanResults.videoTags) {
+            v.response = this.scanResults.videoTags;
+          }
+          const a = this.scanResults.videoTags && this.scanResults.videoTags.applied;
+          if (a) {
+            totals.added += a.itemsAdded || 0;
+            totals.removed += a.itemsRemoved || 0;
+          }
+        }
+        if (!this.scanError) {
+          this.showToast('Video tags applied across ' + variants.length + ' instances: ' + totals.added + ' added, ' + totals.removed + ' removed', 'success');
+        }
+      } else {
+        await this.runVideoTagsScan('apply');
+      }
     },
     videoTagMoviesFor(tag, action) {
       const r = this.scanResults && this.scanResults.videoTags;
@@ -7495,6 +7787,14 @@ function app() {
           audioTagsTarget: 'primary',
           videoTagsTarget: 'primary',
           dvDetailTarget:  'primary',
+          recoverTarget:   'primary',
+          // Tag-mode source. Empty / "active" = legacy default
+          // (per-group decisions). "discover" = Discover→Tag chain.
+          // "filter-only" = ignore release group; tag every movie
+          // passing the filter with FilterOnlyTag. See
+          // dev/analysis/filter-only-tag.md.
+          tagSource: '',
+          filterOnlyTag: 'lossless-web',
         },
         filters:         this.snapshotGlobalFilters(),
         audioTags:       this.snapshotGlobalAudioTags(),
@@ -7581,6 +7881,14 @@ function app() {
           audioTagsTarget: 'primary',
           videoTagsTarget: 'primary',
           dvDetailTarget:  'primary',
+          recoverTarget:   'primary',
+          // Tag-mode source. Empty / "active" = legacy default
+          // (per-group decisions). "discover" = Discover→Tag chain.
+          // "filter-only" = ignore release group; tag every movie
+          // passing the filter with FilterOnlyTag. See
+          // dev/analysis/filter-only-tag.md.
+          tagSource: '',
+          filterOnlyTag: 'lossless-web',
         },
         filters:         this.snapshotGlobalFilters(),
         audioTags:       this.snapshotGlobalAudioTags(),
@@ -7674,15 +7982,20 @@ function app() {
       if (fa === 'audiotags') return 'audioTagsTarget';
       if (fa === 'videotags') return 'videoTagsTarget';
       if (fa === 'dvdetail')  return 'dvDetailTarget';
+      if (fa === 'recover')   return 'recoverTarget';
       return '';
     },
     // True when the current per-action wizard supports the unified
-    // picker (i.e. fixedAction is one of the auto-tag phases).
-    // Used to gate markup that shows the unified picker vs the
-    // legacy primary-instance-only picker on Basics.
+    // primary/secondary/both picker. Auto-tag phases (audiotags /
+    // videotags / dvdetail) walk per-instance media independently —
+    // primary vs secondary has no semantic meaning. Recover joined
+    // 2026-05-09 because each instance has its own movie/episode files
+    // with their own missing-releaseGroup history; "primary only" was
+    // an artificial restriction. Used to gate the unified-picker markup
+    // vs the legacy primary-instance-only picker on Basics step.
     isPerActionAutoTag() {
       const fa = (this.ruleEditor && this.ruleEditor.fixedAction) || '';
-      return fa === 'audiotags' || fa === 'videotags' || fa === 'dvdetail';
+      return fa === 'audiotags' || fa === 'videotags' || fa === 'dvdetail' || fa === 'recover';
     },
     perActionInstanceSelectorValue() {
       if (!this.editingRule || !this.editingRule.options) return '';
@@ -7813,6 +8126,14 @@ function app() {
           audioTagsTarget: 'primary',
           videoTagsTarget: 'primary',
           dvDetailTarget:  'primary',
+          recoverTarget:   'primary',
+          // Tag-mode source. Empty / "active" = legacy default
+          // (per-group decisions). "discover" = Discover→Tag chain.
+          // "filter-only" = ignore release group; tag every movie
+          // passing the filter with FilterOnlyTag. See
+          // dev/analysis/filter-only-tag.md.
+          tagSource: '',
+          filterOnlyTag: 'lossless-web',
         },
         filters:         this.snapshotGlobalFilters(),
         audioTags:       this.snapshotGlobalAudioTags(),
@@ -7963,6 +8284,8 @@ function app() {
         recoverIncludeSecondary: false, recoverIncludeSonarr: false, recoverSonarrSecondary: false,
         recoverTestItemId: 0, debugTrace: false, bypassDvCache: false,
         audioTagsTarget: 'primary', videoTagsTarget: 'primary', dvDetailTarget: 'primary',
+        recoverTarget: 'primary',
+        tagSource: '', filterOnlyTag: 'lossless-web',
       }, copy.options || {});
       // Migrate legacy autoTagsRunOnSecondary boolean → per-bucket
       // targets. true → audio + video both targets='both'; false →
@@ -7974,6 +8297,19 @@ function app() {
         if (copy.options.audioTagsTarget === 'primary') copy.options.audioTagsTarget = t;
         if (copy.options.videoTagsTarget === 'primary') copy.options.videoTagsTarget = t;
         delete copy.options.autoTagsRunOnSecondary;
+      }
+      // Migrate legacy recoverIncludeSecondary boolean → recoverTarget.
+      // true → 'both' (run primary AND secondary); false → 'primary'
+      // (default). recoverTarget defaulted to 'primary' above so an
+      // older rule without the flag stays primary-only. Keep the legacy
+      // key on the saved shape — backend's JobOptions.RecoverIncludeSecondary
+      // is still read by the scheduler runner; the new field is purely
+      // a wizard/chain-dispatcher concern. Drop only if the user
+      // explicitly toggled the new picker (handled inline via
+      // setPerActionInstance).
+      if (typeof copy.options.recoverIncludeSecondary === 'boolean' &&
+          copy.options.recoverTarget === 'primary') {
+        copy.options.recoverTarget = copy.options.recoverIncludeSecondary ? 'both' : 'primary';
       }
       // Migrate legacy single-mode rules to combined-mode shape so the
       // wizard's chain-checkbox UI can edit them. mode='tag' → mode=
@@ -8037,6 +8373,40 @@ function app() {
       const q = this.quickFixResults;
       return !!(q && q.runMode === 'preview' && q.ruleSnapshot && !this.ruleEditor.busy);
     },
+    // Tooltip for the QFA result panel's "⚡ Apply now" button. The
+    // chain reads per-phase targets from the saved snapshot — if any
+    // phase resolves to secondary (target='secondary' / 'both', or
+    // tag-mode syncToSecondary), the apply hits both instances.
+    // Otherwise it's primary only. Tells the user up-front rather
+    // than letting them assume the variant they're viewing is the
+    // only target.
+    applyQuickFixTooltip() {
+      const q = this.quickFixResults;
+      if (!q || !q.ruleSnapshot) return 'Re-fire the same chain in apply mode using these settings.';
+      const r = q.ruleSnapshot;
+      const opts = r.options || {};
+      const has = (m) => r.mode === m || (r.mode === 'combined' && (opts.combinedModes || []).includes(m));
+      const targets = [];
+      if (has('recover'))   targets.push(opts.recoverTarget   || 'primary');
+      if (has('audiotags')) targets.push(opts.audioTagsTarget || 'primary');
+      if (has('videotags')) targets.push(opts.videoTagsTarget || 'primary');
+      if (has('dvdetail'))  targets.push(opts.dvDetailTarget  || 'primary');
+      const tagHitsSecondary = has('tag') && !!opts.syncToSecondary;
+      const hitsSecondary = tagHitsSecondary || targets.some(t => t === 'secondary' || t === 'both');
+      if (!hitsSecondary) {
+        return 'Re-fires the chain in apply mode against this instance only.';
+      }
+      // Resolve concrete names — primary from rule.instanceId, secondary
+      // = first other-of-same-type. Falls back to "Primary"/"Secondary"
+      // if either lookup fails (e.g. instance was deleted post-preview).
+      const primary = (this.instances || []).find(i => i.id === r.instanceId);
+      const primaryName = primary ? primary.name : 'Primary';
+      const secondary = primary
+        ? (this.instances || []).find(i => i.type === primary.type && i.id !== primary.id)
+        : null;
+      const secondaryName = secondary ? secondary.name : 'Secondary';
+      return 'Re-fires the chain in apply mode. Writes to ' + primaryName + ' + ' + secondaryName + '.';
+    },
     async applyQuickFixFromPreview() {
       const q = this.quickFixResults;
       if (!q || !q.ruleSnapshot) return;
@@ -8068,6 +8438,30 @@ function app() {
         this.qfaDetailDv = v.response;
         this.qfaDetailDvStatusFilter = null;
         this.qfaDetailDvTagFilter = null;
+      } else if (this.recoverResults) {
+        // Recover lives in its own modal (recoverResults slot, not
+        // qfaDetail*) but reuses qfaDetailVariants for the switcher.
+        // Swapping the response means re-running viewPhaseDetails-
+        // recover's setup: hydrate, auto-select would-fix rows, pick
+        // a sensible filter chip default, and reload exclusions for
+        // the variant's instance.
+        this.recoverResults = v.response;
+        this.recoverError = '';
+        this.recoverExpanded = {};
+        this.recoverSeriesExpanded = {};
+        this.recoverSeasonExpanded = {};
+        const sel = {};
+        for (const it of (v.response.recover || [])) {
+          if (it.status === 'would-fix') sel[it.id] = true;
+        }
+        this.recoverApplySelected = sel;
+        const t = (v.response.totals || {});
+        if (t.recoverWouldFix) this.recoverFilter = 'would-fix';
+        else if (t.recoverFlagged) this.recoverFilter = 'flagged';
+        else this.recoverFilter = 'all';
+        if (v.response.instance && v.response.instance.id) {
+          this.loadRecoverExclusions(v.response.instance.id);
+        }
       }
       // Clear filters/expansions that were keyed off the prior
       // variant's data so the new variant renders cleanly.
@@ -8146,6 +8540,38 @@ function app() {
           this.scanResults.tag = p.response;
           this.scanGroupExpanded = {};
           this.scanRowExpanded = {};
+          // Hydrate the page-level scan-state that confirmScanApply →
+          // runTagInternal reads on Apply-now re-fire. Without this,
+          // a chain-driven Tag preview (target=both / filter-only /
+          // sync-on) would re-fire with stale page-level state and
+          // silently downgrade scope (e.g. drop syncToInstanceId).
+          // Source of truth in priority order:
+          //   1. quickFixResults.ruleSnapshot (chain context — full
+          //      rule state including tagSource + filterOnlyTag +
+          //      cleanup + sync settings)
+          //   2. p.response.instance.id (whichever instance the
+          //      preview actually ran against — covers History replay
+          //      and standalone runs).
+          // Standalone Tag-RG wizard already seeds these in
+          // runTagRgWizard, so steps below idempotently re-affirm.
+          const snap = (this.quickFixResults && this.quickFixResults.ruleSnapshot) || null;
+          if (snap && snap.instanceId) {
+            this.scanInstanceId = snap.instanceId;
+            const o = snap.options || {};
+            this.scanSyncToSecondary = !!o.syncToSecondary;
+            this.scanCleanupUnusedTags = !!o.cleanupUnusedTags;
+            this.scanTagSource = o.tagSource || '';
+            this.scanFilterOnlyTag = o.filterOnlyTag || '';
+          } else if (p.response.instance && p.response.instance.id) {
+            this.scanInstanceId = p.response.instance.id;
+            // No ruleSnapshot → can't recover sync intent. The
+            // confirm modal's secondary count comes from response
+            // totals, so if secondary deltas are present we know
+            // sync was on. Setting scanSyncToSecondary based on the
+            // observed deltas keeps the Apply re-fire honoring it.
+            const t = p.response.totals || {};
+            this.scanSyncToSecondary = !!(t.secondaryToAdd || t.secondaryToRemove || t.secondaryToKeep || t.secondaryMissing);
+          }
           const t = (p.response.totals || {});
           if ((t.toAdd || 0) + (t.secondaryToAdd || 0) > 0) this.scanFilter = 'add';
           else if ((t.toRemove || 0) + (t.secondaryToRemove || 0) > 0) this.scanFilter = 'remove';
@@ -8161,11 +8587,26 @@ function app() {
           // QFA-modal-only qfaDetailRecover; the modal pops up on
           // recoverResults being non-null.
           this.recoverResults = p.response;
-          this.recoverFilter = 'all';
-          this.recoverApplySelected = {};
+          this.recoverError = '';
           this.recoverExpanded = {};
           this.recoverSeriesExpanded = {};
           this.recoverSeasonExpanded = {};
+          // Auto-select would-fix rows + sensible filter default — same
+          // semantics as runRecoverCheck so a wizard-driven preview lands
+          // ready to Apply with one click. Without this the Apply button
+          // sits disabled and the user has to manually re-check every row
+          // they already implicitly approved by running the preview.
+          {
+            const sel = {};
+            for (const it of (this.recoverResults.recover || [])) {
+              if (it.status === 'would-fix') sel[it.id] = true;
+            }
+            this.recoverApplySelected = sel;
+            const t = this.recoverResults.totals || {};
+            if (t.recoverWouldFix) this.recoverFilter = 'would-fix';
+            else if (t.recoverFlagged) this.recoverFilter = 'flagged';
+            else this.recoverFilter = 'all';
+          }
           if (p.response && p.response.instance && p.response.instance.id) {
             this.loadRecoverExclusions(p.response.instance.id);
           }
@@ -8741,6 +9182,13 @@ function app() {
     //     flow — must not be blocked at the wizard.
     tagPhaseNeedsGroups() {
       if (!this.ruleAffectsTag()) return false;
+      // Filter-only tags every movie passing the quality+audio filter
+      // (release group ignored). The RG picker is moot for this path,
+      // so the save validator must not require it. Without this guard
+      // the user gets "Pick at least one Release Group..." even after
+      // explicitly choosing Use filter only on the tag-source step.
+      const tagSource = (this.editingRule && this.editingRule.options && this.editingRule.options.tagSource) || '';
+      if (tagSource === 'filter-only') return false;
       // Discover-in-chain bypasses the requirement entirely.
       // Rationale (2026-05-05): if user picks "Add + leave disabled"
       // Discover still augments the Active list (just with Enabled
@@ -8754,6 +9202,25 @@ function app() {
       // when Discover was already enabled with Add + disabled.
       if (this.ruleAffectsDiscover()) return false;
       return true;
+    },
+
+    // Inline action for the "no active groups + Discover not in rule"
+    // banner on the tag-source step. Adds Discover to the rule chain
+    // without forcing the user back to the Basics step. Mode flips to
+    // 'combined' when needed; tagSource flips to 'discover' so the
+    // freshly-enabled chain is the picked source.
+    enableDiscoverFromTagSourceBanner() {
+      const r = this.editingRule;
+      if (!r) return;
+      if (r.mode === 'tag') {
+        r.mode = 'combined';
+        r.options.combinedModes = ['tag', 'discover'];
+      } else if (r.mode === 'combined') {
+        if (!Array.isArray(r.options.combinedModes)) r.options.combinedModes = [];
+        if (!r.options.combinedModes.includes('discover')) r.options.combinedModes.push('discover');
+      }
+      this.ensureDiscoverDefaults();
+      r.options.tagSource = 'discover';
     },
     ruleAffectsRecover()   { const r = this.editingRule; if (!r) return false; return r.mode === 'recover' || (r.mode === 'combined' && (r.options.combinedModes || []).includes('recover')); },
     // ruleAffectsAutoTags: any of the three auto-tag sub-flows is
@@ -8860,15 +9327,35 @@ function app() {
         if (!this.ruleEditor.isQuickFix && !(r.name || '').trim()) {
           return 'Pick a name for the rule before continuing.';
         }
-        // Tag release groups requires either Discover (which adds
-        // groups at run-time) OR pre-existing active groups. Without
-        // either, the Tag pass would be a no-op. Same logic as the
-        // mini-wizard's failguard. Discover-only / Recover-only /
-        // Audio/Video/DV runs aren't affected.
-        if (this.ruleAffectsTag() && !this.ruleAffectsDiscover()) {
-          if (this.groupsFilteredByInstanceType().length === 0) {
-            return 'No active release groups for this instance — enable Discover above so the chain auto-finds groups, or close the wizard and add some via + Add on the Active groups list.';
+        // Tag-source picking now lives on the RG step (active /
+        // discover / filter-only radios). The Basics step deliberately
+        // doesn't pre-block on "no active groups" — that pushed the
+        // user into a dead-end loop after toggling Discover off in
+        // Basics (couldn't advance to RG step where filter-only is
+        // selectable). The RG-step gate below handles the no-groups
+        // case once the user is actually on the source-picker.
+      }
+      if (step === 'rg' && this.ruleAffectsTag()) {
+        const o = this.editingRule.options || {};
+        // Filter-only validates its own per-rule state: tag must be
+        // non-empty and must not collide with an existing Active
+        // group's Tag for this instance type. Backend would reject
+        // either with 4xx; the Next-button gate stops the user
+        // before they get there.
+        if (o.tagSource === 'filter-only') {
+          const t = (o.filterOnlyTag || '').trim();
+          if (!t) {
+            return 'Enter a tag name for filter-only mode before continuing.';
           }
+          if (this.ruleEditorFilterOnlyCollides()) {
+            return 'Tag name collides with an existing Active group rule. Pick a different name to continue.';
+          }
+        } else if (!this.ruleAffectsDiscover() && this.groupsFilteredByInstanceType().length === 0) {
+          // Use active groups picked (explicitly or by default) but
+          // there are no groups for this instance type and Discover
+          // isn't in the chain — Tag pass would be a no-op. Banner
+          // above shows the same options as actionable buttons.
+          return 'No active release groups yet — Switch to Use filter only above, Add Discover to this rule, or close the wizard and add some via + Add on the Active groups list.';
         }
       }
       if (step === 'filters' && this.ruleAffectsTag()) {
@@ -8966,6 +9453,14 @@ function app() {
       else arr.push(mode);
       this.editingRule.options.combinedModes = arr;
       if (mode === 'discover' && turningOn) this.ensureDiscoverDefaults();
+      // Discover just left the chain — clear any stale tagSource pick
+      // tied to Discover. Otherwise the RG step opens with the
+      // "Discover isn't part of this rule" auto-correct prompt firing
+      // on every open, and the validation surfaces a misleading
+      // Discover-related error.
+      if (mode === 'discover' && !turningOn && this.editingRule.options.tagSource === 'discover') {
+        this.editingRule.options.tagSource = '';
+      }
     },
     // ensureDiscoverDefaults seeds the Discover-add toggle pair to
     // "Add disabled" when the rule includes Discover but neither
@@ -9230,9 +9725,16 @@ function app() {
       if (r.videoTags) overlay.overlayVideoTags = JSON.parse(JSON.stringify(r.videoTags));
       if (r.dvDetail)  overlay.overlayDvDetail  = JSON.parse(JSON.stringify(r.dvDetail));
 
+      // primaryType resolves below the results object — pre-compute
+      // it here so the appType tag goes on the result up-front. Used
+      // by the result-panel's x-show to scope rendering to the
+      // currently-active scanAppType (Radarr results stay hidden
+      // when the user flips to Sonarr context, and vice versa).
+      const primaryType = (this.instances.find(i => i.id === r.instanceId) || {}).type;
       const results = {
         startedAt: new Date().toISOString(),
         instance: r.instanceId,
+        appType: primaryType, // 'radarr' | 'sonarr' | undefined
         phases: [],
         // Stash the rule snapshot used for this run so the result
         // panel's "Apply now" button can re-fire with the same
@@ -9246,7 +9748,8 @@ function app() {
       // Resolve secondary instance ID once — used by tag-sync AND
       // extratags-on-secondary. Same logic the backend uses when
       // syncToInstanceId is empty: pick the first other-of-same-type.
-      const primaryType = (this.instances.find(i => i.id === r.instanceId) || {}).type;
+      // primaryType already resolved above for the appType tag on
+      // the results object — reuse it.
       const secondaryTarget = r.options.syncToInstanceId ||
         (this.instances.find(i => i.type === primaryType && i.id !== r.instanceId) || {}).id;
 
@@ -9286,6 +9789,23 @@ function app() {
           body.cleanupUnusedTags = !!r.options.cleanupUnusedTags;
           if (r.options.syncToSecondary && secondaryTarget) {
             body.syncToInstanceId = secondaryTarget;
+          }
+          // Pass-through tag-source + filter-only tag so the backend
+          // routes to runTagFilterOnly when the user picked "Use
+          // filter only" on the RG step. Without this the request
+          // falls into runTag (per-group) and errors with
+          // "no release groups configured" when Active is empty.
+          // Empty / "active" / "discover" all hit the legacy runTag
+          // path — only "filter-only" branches.
+          if (r.options.tagSource) {
+            body.tagSource = r.options.tagSource;
+            if (r.options.tagSource === 'filter-only') {
+              body.filterOnlyTag = r.options.filterOnlyTag || '';
+              // Cleanup-tail is no-op in filter-only by design (one
+              // rule, one tag, no orphan candidates) — strip the
+              // flag so the backend doesn't try to compute it.
+              delete body.cleanupUnusedTags;
+            }
           }
         }
         if (phase === 'recover') body.recoverRename = true;
@@ -9332,13 +9852,41 @@ function app() {
       // button signal, valid for both flows.
       const isCancelled = () => this.chainCancelRequested || (!overrideRule && !this.editingRule);
       try {
-        // Phase 1 — head phases (discover / recover / tag) on primary.
-        // These never run against secondary directly; tag-sync mirrors
-        // tag decisions to secondary via TmdbID inside the tag phase.
+        // Phase 1 — head phases (discover / recover / tag).
+        // Discover and Tag run on primary only — both have one-instance
+        // semantics (Discover finds new groups, Tag-sync mirrors tag
+        // decisions to secondary via TmdbID inside the tag phase).
+        // Recover walks each instance's own movie/episode files
+        // independently — no shared state, no mirror — so it honors
+        // recoverTarget the same way auto-tag phases honor their per-
+        // bucket target. When target='both' (or 'secondary'), recover
+        // runs an additional pass on the secondary instance after the
+        // primary pass, before the tag phase. Result rows carry the
+        // per-pass instanceId so the variant switcher in the result
+        // modal can flip between them.
+        const recoverTarget = r.options.recoverTarget || 'primary';
         for (const phase of headPhases) {
           if (isCancelled()) break;
+          if (phase === 'recover') {
+            // Primary pass — fires when target includes primary.
+            if (recoverTarget === 'primary' || recoverTarget === 'both') {
+              const data = await fetchPhase(phase, r.instanceId);
+              results.phases.push({ phase, ok: true, response: data, instanceId: r.instanceId });
+            }
+            // Secondary pass — fires when target includes secondary
+            // AND a secondary instance is actually configured. Defence
+            // in depth: the wizard hides secondary/both options when
+            // none is available, so this guard catches legacy rules
+            // saved when a secondary existed and was later removed.
+            if ((recoverTarget === 'secondary' || recoverTarget === 'both') && secondaryTarget) {
+              if (isCancelled()) break;
+              const data = await fetchPhase(phase, secondaryTarget);
+              results.phases.push({ phase, ok: true, response: data, instanceId: secondaryTarget, instanceLabel: 'secondary' });
+            }
+            continue;
+          }
           const data = await fetchPhase(phase, r.instanceId);
-          results.phases.push({ phase, ok: true, response: data });
+          results.phases.push({ phase, ok: true, response: data, instanceId: r.instanceId });
 
           // Discover write-back wiring (apply mode): when this phase
           // added new release groups, fold their IDs into the overlay
@@ -9567,11 +10115,18 @@ function app() {
         if (data.dvDetail)           phases.push({ phase: 'dvdetail',  ok: true, response: data.dvDetail });
         if (data.dvDetailSecondary)  phases.push({ phase: 'dvdetail',  ok: true, response: data.dvDetailSecondary, instanceLabel: 'secondary' });
       }
+      // Resolve appType from the schedule's instance — used by the
+      // result panel's x-show to scope rendering to the active
+      // scanAppType so a Sonarr schedule's result doesn't bleed
+      // through Radarr context (and vice versa). Same pattern as
+      // quickFixResults.appType.
+      const inst = schedule && (this.instances || []).find(i => i.id === schedule.instanceId);
       return {
         startedAt: (run && run.startedAt) || new Date().toISOString(),
         scheduleName: schedule && schedule.name,
         scheduleId: schedule && schedule.id,
         instance: schedule && schedule.instanceId,
+        appType: inst ? inst.type : undefined,
         phases,
         ok: !run || run.status === 'ok',
         partial: run && run.status === 'partial',
@@ -9713,11 +10268,13 @@ function app() {
       // "Run started, waiting for result…" immediately rather than
       // an empty UI. The poll below replaces it once the real
       // result lands.
+      const placeholderInst = (this.instances || []).find(i => i.id === sj.instanceId);
       this.activityResults = {
         startedAt: new Date().toISOString(),
         scheduleName: sj.name,
         scheduleId: sj.id,
         instance: sj.instanceId,
+        appType: placeholderInst ? placeholderInst.type : undefined,
         phases: [],
         pending: true,
         partial: false,

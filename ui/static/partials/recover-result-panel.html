@@ -1,5 +1,19 @@
     <template x-if="recoverResults">
       <div style="margin-top:14px">
+        <!-- Inline error banner — Apply failures land here. The standalone
+             sub-tab area also renders recoverError, but that surface is
+             hidden behind the modal overlay when the result panel pops as
+             a modal (wizard chain / History replay / standalone Run all
+             route through the same modal now). Without this the user sees
+             nothing happen on a failed apply. -->
+        <template x-if="recoverError">
+          <div style="margin-bottom:10px;padding:10px 14px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;color:var(--accent-red);font-size:13px;display:flex;align-items:center;gap:10px">
+            <span style="flex:1" x-text="recoverError"></span>
+            <button class="icon-btn" @click="recoverError = ''" title="Dismiss">
+              <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M3 3l10 10 M13 3L3 13"/></svg>
+            </button>
+          </div>
+        </template>
         <template x-if="historicalRunInfo && historicalRunInfo.kind === 'recover'">
           <div title="Page state is a snapshot — re-run a Find for current data."
                style="margin-bottom:10px;padding:6px 12px;background:var(--alpha-blue-soft);border:1px solid var(--alpha-blue-border-strong);border-radius:6px;color:var(--accent-sky);font-size:12px;display:flex;align-items:center;gap:8px">
@@ -94,7 +108,17 @@
             <button class="btn btn-primary btn-sm"
                     @click="runRecoverApply()"
                     :disabled="recoverApplySelectedCount() === 0 || isHistoricalForAction('recover')"
-                    :title="isHistoricalForAction('recover') ? 'Run a fresh Recover before applying — this is a saved snapshot, not live data.' : ''">Apply selected fixes</button>
+                    :title="applyNowTooltip('recover')">Apply selected fixes</button>
+          </div>
+        </template>
+
+        <!-- Recover variant note — when target=both ran two passes,
+             selections are per-instance (each instance has its own
+             would-fix row set). Apply hits only the currently-viewed
+             variant; switch above to apply on the other one. -->
+        <template x-if="(qfaDetailVariants || []).length > 1 && recoverApplyableCount() > 0">
+          <div style="margin-bottom:12px;padding:8px 12px;background:var(--alpha-blue-soft);border:1px solid var(--alpha-blue-border-strong);border-radius:6px;font-size:12px;color:var(--accent-sky);line-height:1.5">
+            Recover selections are per-instance — Apply commits only the currently-viewed instance's fixes. Switch variant above to apply on the other instance.
           </div>
         </template>
 

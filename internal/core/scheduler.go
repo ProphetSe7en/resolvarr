@@ -76,7 +76,18 @@ const schedulerJobTimeout = 30 * time.Minute
 // files for runs beyond this cap are deleted from disk — the user can
 // see and replay the seven most-recent runs per schedule, older are
 // gone for good. Beyond seven, re-run the schedule.
-const maxInMemoryHistory = 7
+//
+// Hoisted as MaxInMemoryHistory so the webhook-rule dispatcher (which
+// renders fires alongside scheduler runs in the Activity tab) shares
+// a single cap. Bumping one without the other would render the two
+// rolling lists at different heights.
+const maxInMemoryHistory = MaxInMemoryHistory
+
+// MaxInMemoryHistory is the shared rolling-history cap for both
+// scheduled runs (jobs.go ScheduledJob) and webhook fires
+// (webhook_rules.go WebhookRule). Activity tab renders both lists
+// against this cap so they grow / trim symmetrically.
+const MaxInMemoryHistory = 7
 
 // Scheduler wires schedule data + cron loop + Runner. Constructed once
 // in main.go, started after http-server, stopped on ctx cancel.

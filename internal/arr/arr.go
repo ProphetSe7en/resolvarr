@@ -387,6 +387,98 @@ func (c *Client) ListItems(ctx context.Context, arrType string) ([]Item, error) 
 	return items, nil
 }
 
+// GetItemTags reads just the tag-IDs of one movie/series. Used by the
+// M-Webhook single-item adapters where ListItems would be O(library)
+// per fire — a Sonarr whole-season pack triggers 24 events back-to-
+// back, so a single 1500-row library walk per event scales poorly.
+//
+// Returns an empty slice when the item exists but carries no tags
+// (Arr's API is consistent here — the Tags array is always present,
+// just possibly empty). Returns a wrapped HTTP error on 4xx/5xx and
+// a domain "not found" sentinel on 404 so callers can distinguish
+// "item gone, nothing to do" from real server errors.
+//
+// arrType must be "radarr" or "sonarr"; itemID is the movie or series
+// ID returned by the Arr's own listing endpoints.
+func (c *Client) GetItemTags(ctx context.Context, arrType string, itemID int) ([]int, error) {
+	var path string
+	switch arrType {
+	case "radarr":
+		path = fmt.Sprintf("/api/v3/movie/%d", itemID)
+	case "sonarr":
+		path = fmt.Sprintf("/api/v3/series/%d", itemID)
+	default:
+		return nil, fmt.Errorf("unknown arr type: %s", arrType)
+	}
+	resp, err := c.do(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return nil, ErrItemNotFound
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	// Decode into the small subset we need — the full /api/v3/movie/{id}
+	// payload includes ~50 fields (statistics, alternative titles,
+	// addOptions, etc.) we don't care about here. Anonymous struct
+	// keeps the API tight; full Item shape stays in ListItems.
+	var row struct {
+		Tags []int `json:"tags"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&row); err != nil {
+		return nil, fmt.Errorf("parse tags: %w", err)
+	}
+	if row.Tags == nil {
+		row.Tags = []int{}
+	}
+	return row.Tags, nil
+}
+
+// ErrItemNotFound is returned by GetItemTags when the Arr returns 404
+// for the requested ID — typically because the user deleted the
+// movie/series between Connect-event receive and dispatcher fire. The
+// adapter that gets this error should treat the rule fire as a clean
+// skip ("item no longer in library"), not an error.
+var ErrItemNotFound = fmt.Errorf("arr: item not found")
+
+// GetMovieByTmdbID looks up a Radarr movie by TMDb ID. Used by the
+// M-Webhook Sync-to-secondary adapter to find the matching movie on
+// the secondary instance without walking ListItems (O(library) → O(1)
+// network round-trip). Radarr's `/api/v3/movie?tmdbId=N` returns a
+// JSON array (one element on hit, empty on miss).
+//
+// Returns (item, true, nil) on hit, (zero, false, nil) on miss
+// (movie not in this Radarr's library), and (zero, false, err) on
+// network / 5xx errors.
+func (c *Client) GetMovieByTmdbID(ctx context.Context, tmdbID int) (Item, bool, error) {
+	if tmdbID == 0 {
+		return Item{}, false, nil
+	}
+	path := fmt.Sprintf("/api/v3/movie?tmdbId=%d", tmdbID)
+	resp, err := c.do(ctx, "GET", path, nil)
+	if err != nil {
+		return Item{}, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return Item{}, false, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var items []Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return Item{}, false, fmt.Errorf("parse items: %w", err)
+	}
+	if len(items) == 0 {
+		return Item{}, false, nil
+	}
+	// Radarr never returns multiple movies for one TmdbID (TmdbID is
+	// unique per library). If the array has more than one, pick the
+	// first defensively + log to stderr — happens-never territory.
+	return items[0], true, nil
+}
+
 // EditorApplyTags calls /api/v3/{movie|series}/editor with applyTags add/remove.
 // arrType must be "radarr" or "sonarr"; action must be "add" or "remove".
 // itemIDs are movie or series IDs depending on type.

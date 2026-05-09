@@ -709,10 +709,13 @@
     </div>
 
     <!-- Quick fix-all result panel — renders below the launcher when
-         a run has completed. Visible for both Radarr and Sonarr now
-         that M-Sonarr unlocks audio/video on Sonarr — the chain shape
-         is just shorter on Sonarr (recover → audio → video). -->
-    <div x-show="quickFixResults" x-cloak style="border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px;margin-bottom:14px;background:var(--bg-page)">
+         a run has completed. Scoped to scanAppType so a Radarr run
+         doesn't bleed through when the user flips to Sonarr context
+         (and vice versa). The result stays in memory — flipping back
+         to its original context restores it. Pre-appType results
+         (legacy field undefined) render unconditionally so an old
+         in-memory result from before this fix isn't orphaned. -->
+    <div x-show="quickFixResults && (!quickFixResults.appType || quickFixResults.appType === scanAppType)" x-cloak style="border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px;margin-bottom:14px;background:var(--bg-page)">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
         <span style="font-size:15px;font-weight:600;color:var(--text-body)">⚡ Quick fix-all result</span>
         <span class="pill" :class="(quickFixResults || {}).ok ? 'green' : 'gray'" x-text="(quickFixResults || {}).ok ? 'ok' : (quickFixResults || {}).error ? 'failed' : 'partial'"></span>
@@ -725,7 +728,7 @@
              only after a Preview run; saves the user from re-walking
              the wizard to promote dry-run → live. -->
         <template x-if="canApplyQuickFixFromPreview()">
-          <button class="btn btn-sm btn-primary" @click="applyQuickFixFromPreview()" :disabled="ruleEditor.busy" title="Re-fire the same chain in apply mode using these settings">
+          <button class="btn btn-sm btn-primary" @click="applyQuickFixFromPreview()" :disabled="ruleEditor.busy" :title="applyQuickFixTooltip()">
             <span x-show="!ruleEditor.busy">⚡ Apply now</span>
             <span x-show="ruleEditor.busy">Applying…</span>
           </button>
@@ -792,7 +795,7 @@
          result-file land) or by the History modal's "View per-
          movie details" action. Same per-phase rows + drill-in
          modals — keeps the user on Run mode, no tab navigation. -->
-    <div x-show="activityResults" x-cloak style="border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px;margin-bottom:14px;background:var(--bg-page)">
+    <div x-show="activityResults && (!activityResults.appType || activityResults.appType === scanAppType)" x-cloak style="border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px;margin-bottom:14px;background:var(--bg-page)">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
         <span style="font-size:15px;font-weight:600;color:var(--text-body)">📋 Run result</span>
         <template x-if="activityResults && activityResults.pending">
@@ -1210,14 +1213,35 @@
 
             <div class="help-section">
               <h4>Why tag by release group?</h4>
-              <p>You can use the resulting tags in:</p>
+              <p>The tags themselves are just labels in Radarr. The value comes from what you do with them downstream:</p>
               <ul>
-                <li><strong>Quality Profiles</strong> — different upgrade rules per tag</li>
-                <li><strong>Custom Formats</strong> — score movies higher/lower based on tag</li>
-                <li><strong>Plex / Jellyfin collections</strong> — via Kometa or DAPS</li>
-                <li><strong>Tag-driven cleanup tools</strong> — auto-remove movies based on tag (third-party)</li>
+                <li><strong>Quality Profile per tag</strong> — Radarr supports assigning a Quality Profile to a tag (<em>Settings → Profiles → edit profile → Tags</em>). Tagged movies use that profile, so you can apply stricter upgrade rules to "trusted source" releases (e.g. no upgrades attempted once a movie is tagged with a premium-encode group).</li>
+                <li><strong>Library filtering / sorting</strong> — Radarr's Movies tab can filter and sort by tag, so you can audit at a glance "which of my movies are FLUX-released" or "show me everything still untagged".</li>
+                <li><strong>Plex / Jellyfin collections</strong> — Kometa or DAPS read Radarr tags and build automatic collections from them.</li>
+                <li><strong>Tag-driven cleanup tools</strong> — third-party tools that read Radarr tags and act on movies based on them (collection assignment, scheduled deletion, etc.) can use these tags as their input. The remux-cleanup use case below is the canonical example.</li>
               </ul>
-              <p>A common pattern is a shared <code>premium</code> tag across several groups (FLUX + SiC + TheFarm) so downstream automation just checks one tag.</p>
+              <p>If you want a single downstream gate covering several groups (e.g. "any of FLUX, SiC, TheFarm passing my filter"), use the wizard's <strong>Use filter only</strong> mode (one tag for everything passing the filter) — or match all the per-group tags with an OR condition at your downstream tool. Don't put the same tag name on two Active groups: the engine treats each row independently and the tag will flap off on alternating runs.</p>
+            </div>
+
+            <div class="help-section">
+              <h4>Three "Source of release groups" modes (in the wizard)</h4>
+              <ul>
+                <li><strong>Use active groups</strong> — match against the Active list below. Each enabled group = one tag with that group's name. Best when you want per-group identity tags (e.g. "I have a FLUX release of this movie").</li>
+                <li><strong>Use Discover</strong> — find new groups passing the filter, add them to Active, then tag. Use this to bootstrap or expand the Active list before tagging.</li>
+                <li><strong>Use filter only</strong> — ignore release group entirely. Every movie passing your quality + audio filter gets one tag (default <code>lossless-web</code>). Best when you don't care which group made the file — only that it meets your bar. One tag, no per-group bookkeeping; new high-quality groups get tagged automatically without config changes.</li>
+              </ul>
+            </div>
+
+            <div class="help-section">
+              <h4>Use case — disk savings via two-instance setup</h4>
+              <p>The most common reason to enable <strong>Mirror tag decisions to secondary</strong> is reclaiming disk space when you keep both a WEB-DL instance (smaller, lossless audio) and a Remux instance (much larger, also lossless audio).</p>
+              <ol>
+                <li>Run Tag (or filter-only Tag) against your <strong>WEB-DL Radarr</strong>. Movies passing your quality + audio bar (typically MA/Play WEB-DL with TrueHD/DTS-HD MA/Atmos) get tagged.</li>
+                <li>With Mirror enabled, the same tag is applied to the matching movie in your <strong>Remux Radarr</strong> via TmdbID lookup.</li>
+                <li>In your remux instance the tag now means "I already have this in lossless WEB-DL form — the remux is redundant."</li>
+                <li>Use a tag-driven cleanup tool of your choice on the remux side that targets movies with this tag — typically by adding them to a cleanup collection or queueing them for deletion. The actual deletion stays in your hands; resolvarr just provides the flag.</li>
+              </ol>
+              <p>Typical savings: 100 overlapping titles × 30-50 GB (remux) − 10-20 GB (WEB-DL) = 3-6 TB freed without losing audio quality. Resolvarr's job ends at step 2 — your downstream cleanup tool handles step 3-4.</p>
             </div>
 
             <div class="help-section">
@@ -1227,7 +1251,7 @@
 
             <div class="help-section">
               <h4>Mirror decisions to a secondary instance</h4>
-              <p>If you have a secondary Radarr (e.g. a 4K instance), tick <strong>Mirror tag decisions to secondary</strong> on step 1 of the wizard. Resolvarr matches movies by TMDb ID and applies the same tag decisions to the secondary. Orphan cleanup runs automatically when sync is on, so the secondary stays aligned with the primary.</p>
+              <p>Tick <strong>Mirror tag decisions to secondary</strong> on step 1 of the wizard. Resolvarr matches movies by TMDb ID and applies the same tag decisions to the secondary instance. Orphan cleanup runs automatically when sync is on — if a movie is removed from primary or stops qualifying, the matching tag on secondary is cleared in the same run. See "Use case — disk savings" above for the typical end-to-end flow.</p>
             </div>
           </div>
 
@@ -1737,6 +1761,39 @@
               </div>
             </div>
 
+            <!-- Promote-to-apply strip (top mirror) — preview-only.
+                 Mirrors the bottom strip below so users with long
+                 result lists don't have to scroll all the way down
+                 to apply. Same gates. -->
+            <template x-if="qfaDetailAutoActive() && qfaDetailAutoActive().mode === 'preview'">
+              <div style="margin-bottom:12px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;display:flex;align-items:center;gap:16px">
+                <div style="flex:1;font-size:13px;color:var(--text-secondary);line-height:1.6">
+                  <template x-if="((qfaDetailAutoActive().totals.toAdd || 0) + (qfaDetailAutoActive().totals.toRemove || 0)) === 0">
+                    <span>No changes would be applied — already in sync.</span>
+                  </template>
+                  <template x-if="((qfaDetailAutoActive().totals.toAdd || 0) + (qfaDetailAutoActive().totals.toRemove || 0)) > 0">
+                    <span>
+                      <strong x-text="qfaDetailAutoActive().instance && qfaDetailAutoActive().instance.name"></strong>:
+                      <strong style="color:var(--accent-green)" x-text="qfaDetailAutoActive().totals.toAdd || 0"></strong> add(s),
+                      <strong style="color:var(--accent-red)" x-text="qfaDetailAutoActive().totals.toRemove || 0"></strong> removal(s).
+                    </span>
+                  </template>
+                </div>
+                <template x-if="qfaDetail === 'audio'">
+                  <button class="btn btn-primary"
+                          @click="openAudioTagsApplyConfirm()"
+                          :disabled="((qfaDetailAutoActive().totals.toAdd || 0) + (qfaDetailAutoActive().totals.toRemove || 0)) === 0 || isHistoricalForAction('audiotags')"
+                          :title="applyNowTooltip('audiotags')">Apply now</button>
+                </template>
+                <template x-if="qfaDetail === 'video'">
+                  <button class="btn btn-primary"
+                          @click="openVideoTagsApplyConfirm()"
+                          :disabled="((qfaDetailAutoActive().totals.toAdd || 0) + (qfaDetailAutoActive().totals.toRemove || 0)) === 0 || isHistoricalForAction('videotags')"
+                          :title="applyNowTooltip('videotags')">Apply now</button>
+                </template>
+              </div>
+            </template>
+
             <!-- Per-tag rollup — collapsible. Closed by default since it
                  can grow tall on many-bucket scans; the per-movie list is
                  usually what the user opens the modal for. Each row is
@@ -1970,6 +2027,41 @@
                 </template>
               </div>
             </template>
+
+            <!-- Promote-to-apply strip — preview-only. Same pattern as
+                 tag-result-panel: count summary + Apply now button that
+                 opens the existing confirm modal (which has the verbose
+                 totals copy + the can't-undo warning). Apply-mode shows
+                 the result list above but no Apply-now button — you
+                 can't re-apply what's already done. -->
+            <template x-if="qfaDetailAutoActive() && qfaDetailAutoActive().mode === 'preview'">
+              <div style="margin-top:16px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;display:flex;align-items:center;gap:16px">
+                <div style="flex:1;font-size:13px;color:var(--text-secondary);line-height:1.6">
+                  <template x-if="((qfaDetailAutoActive().totals.toAdd || 0) + (qfaDetailAutoActive().totals.toRemove || 0)) === 0">
+                    <span>No changes would be applied — already in sync.</span>
+                  </template>
+                  <template x-if="((qfaDetailAutoActive().totals.toAdd || 0) + (qfaDetailAutoActive().totals.toRemove || 0)) > 0">
+                    <span>
+                      <strong x-text="qfaDetailAutoActive().instance && qfaDetailAutoActive().instance.name"></strong>:
+                      <strong style="color:var(--accent-green)" x-text="qfaDetailAutoActive().totals.toAdd || 0"></strong> add(s),
+                      <strong style="color:var(--accent-red)" x-text="qfaDetailAutoActive().totals.toRemove || 0"></strong> removal(s).
+                    </span>
+                  </template>
+                </div>
+                <template x-if="qfaDetail === 'audio'">
+                  <button class="btn btn-primary"
+                          @click="openAudioTagsApplyConfirm()"
+                          :disabled="((qfaDetailAutoActive().totals.toAdd || 0) + (qfaDetailAutoActive().totals.toRemove || 0)) === 0 || isHistoricalForAction('audiotags')"
+                          :title="applyNowTooltip('audiotags')">Apply now</button>
+                </template>
+                <template x-if="qfaDetail === 'video'">
+                  <button class="btn btn-primary"
+                          @click="openVideoTagsApplyConfirm()"
+                          :disabled="((qfaDetailAutoActive().totals.toAdd || 0) + (qfaDetailAutoActive().totals.toRemove || 0)) === 0 || isHistoricalForAction('videotags')"
+                          :title="applyNowTooltip('videotags')">Apply now</button>
+                </template>
+              </div>
+            </template>
           </div>
         </template>
 
@@ -2017,6 +2109,31 @@
                 <span><span style="color:var(--text-secondary)" x-text="qfaDetailDv.mode === 'apply' ? 'Kept' : 'To keep'"></span> <strong x-text="qfaDetailDv.totals.toKeep || 0"></strong></span>
               </div>
             </div>
+
+            <!-- Promote-to-apply strip (top mirror) — preview-only.
+                 Mirrors the bottom strip below so users with long
+                 result lists don't have to scroll all the way down
+                 to apply. -->
+            <template x-if="qfaDetailDv && qfaDetailDv.mode === 'preview'">
+              <div style="margin-bottom:12px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;display:flex;align-items:center;gap:16px">
+                <div style="flex:1;font-size:13px;color:var(--text-secondary);line-height:1.6">
+                  <template x-if="((qfaDetailDv.totals.toAdd || 0) + (qfaDetailDv.totals.toRemove || 0)) === 0">
+                    <span>No changes would be applied — already in sync.</span>
+                  </template>
+                  <template x-if="((qfaDetailDv.totals.toAdd || 0) + (qfaDetailDv.totals.toRemove || 0)) > 0">
+                    <span>
+                      <strong x-text="qfaDetailDv.instance && qfaDetailDv.instance.name"></strong>:
+                      <strong style="color:var(--accent-green)" x-text="qfaDetailDv.totals.toAdd || 0"></strong> add(s),
+                      <strong style="color:var(--accent-red)" x-text="qfaDetailDv.totals.toRemove || 0"></strong> removal(s).
+                    </span>
+                  </template>
+                </div>
+                <button class="btn btn-primary"
+                        @click="openDvDetailApplyConfirm()"
+                        :disabled="((qfaDetailDv.totals.toAdd || 0) + (qfaDetailDv.totals.toRemove || 0)) === 0 || isHistoricalForAction('dvdetail')"
+                        :title="applyNowTooltip('dvdetail')">Apply now</button>
+              </div>
+            </template>
 
             <!-- Per-tag rollup — collapsible, click-to-filter rows
                  (same as audio/video; the DV variant has no bucket
@@ -2235,6 +2352,30 @@
                 </template>
               </div>
             </template>
+
+            <!-- Promote-to-apply strip — preview-only. Mirrors the
+                 audio/video Apply-now strip above; opens the existing
+                 DV apply-confirm modal. -->
+            <template x-if="qfaDetailDv && qfaDetailDv.mode === 'preview'">
+              <div style="margin-top:16px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;display:flex;align-items:center;gap:16px">
+                <div style="flex:1;font-size:13px;color:var(--text-secondary);line-height:1.6">
+                  <template x-if="((qfaDetailDv.totals.toAdd || 0) + (qfaDetailDv.totals.toRemove || 0)) === 0">
+                    <span>No changes would be applied — already in sync.</span>
+                  </template>
+                  <template x-if="((qfaDetailDv.totals.toAdd || 0) + (qfaDetailDv.totals.toRemove || 0)) > 0">
+                    <span>
+                      <strong x-text="qfaDetailDv.instance && qfaDetailDv.instance.name"></strong>:
+                      <strong style="color:var(--accent-green)" x-text="qfaDetailDv.totals.toAdd || 0"></strong> add(s),
+                      <strong style="color:var(--accent-red)" x-text="qfaDetailDv.totals.toRemove || 0"></strong> removal(s).
+                    </span>
+                  </template>
+                </div>
+                <button class="btn btn-primary"
+                        @click="openDvDetailApplyConfirm()"
+                        :disabled="((qfaDetailDv.totals.toAdd || 0) + (qfaDetailDv.totals.toRemove || 0)) === 0 || isHistoricalForAction('dvdetail')"
+                        :title="applyNowTooltip('dvdetail')">Apply now</button>
+              </div>
+            </template>
           </div>
         </template>
 
@@ -2259,6 +2400,18 @@
         <div class="modal-title" style="margin:0">
           <span x-text="recoverResults && recoverResults.instance ? recoverResults.instance.name : 'Recover — detail'"></span>
         </div>
+        <!-- Instance variant switcher — visible when the wizard ran
+             Recover on 2+ instances (target='both'). Mirrors the QFA
+             detail modal's switcher so the user can flip between
+             primary / secondary results without re-running the scan. -->
+        <template x-if="(qfaDetailVariants || []).length > 1">
+          <div style="display:flex;align-items:center;gap:6px;margin-left:6px">
+            <span style="font-size:11px;color:var(--text-muted-secondary);text-transform:uppercase;letter-spacing:0.4px">Instance:</span>
+            <template x-for="(v, idx) in qfaDetailVariants" :key="v.instanceId + ':' + idx">
+              <button class="filter-pill" :class="{ 'is-active': idx === qfaDetailVariantIdx }" @click="selectQfaDetailVariant(idx)" x-text="v.label"></button>
+            </template>
+          </div>
+        </template>
         <div style="flex:1"></div>
         <button class="btn btn-sm" @click="dismissRecoverResults()">Close</button>
       </div>
@@ -3036,7 +3189,14 @@
                   <input type="radio" name="tagrg-source" value="discover" x-model="tagRgWizard.source" @change="tagRgWizardClampStep()" style="accent-color:var(--accent-blue);margin-top:3px">
                   <span>
                     <strong>Use Discover</strong>
-                    <span style="color:var(--text-secondary)">— run Discover first to find every release group passing the filter, add them to the Active list, then tag. Augments the curated list before the tag pass.</span>
+                    <span style="color:var(--text-secondary)">— find new release groups passing the filter, add them to the Active list, then tag. Augments the curated list before the tag pass.</span>
+                  </span>
+                </label>
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                  <input type="radio" name="tagrg-source" value="filter-only" x-model="tagRgWizard.source" @change="tagRgWizardClampStep()" style="accent-color:var(--accent-blue);margin-top:3px">
+                  <span>
+                    <strong>Use filter only</strong>
+                    <span style="color:var(--text-secondary)">— tag every movie passing the quality + audio filter (release group ignored). One tag for everything that meets your bar — no per-group bookkeeping.</span>
                   </span>
                 </label>
               </div>
@@ -3051,13 +3211,42 @@
               <template x-if="tagRgWizard.source === 'active' && groupsFilteredByInstanceType().length === 0">
                 <div style="margin-top:10px;padding:10px 14px;background:var(--accent-orange-bg);border:1px solid var(--accent-orange);border-radius:6px;font-size:13px;color:var(--text-body);line-height:1.5">
                   <div style="color:var(--accent-orange);font-weight:600;margin-bottom:4px">⚠ No active release groups configured</div>
-                  This instance has no release groups on the Active list yet, so <strong>Use active groups</strong> would tag nothing. Switch to <strong>Use Discover</strong> below to auto-find filter-passing groups, or close this wizard and add some manually with <strong>+ Add</strong> on the Active groups list before retrying.
-                  <div style="margin-top:8px">
-                    <button class="btn btn-sm btn-primary" @click="tagRgWizard.source = 'discover'; tagRgWizardClampStep()">Switch to Use Discover</button>
+                  This instance has no release groups on the Active list yet, so <strong>Use active groups</strong> would tag nothing. Pick one:
+                  <ul style="margin:6px 0 0 0;padding-left:20px">
+                    <li><strong>Use filter only</strong> — tag every movie passing the quality + audio filter (release group ignored).</li>
+                    <li><strong>Use Discover</strong> — auto-find filter-passing groups, add them, then tag.</li>
+                    <li>Or close the wizard and add some manually with <strong>+ Add</strong> on the Active groups list.</li>
+                  </ul>
+                  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn-sm btn-primary" @click="tagRgWizard.source = 'filter-only'; tagRgWizardClampStep()">Switch to Use filter only</button>
+                    <button class="btn btn-sm" @click="tagRgWizard.source = 'discover'; tagRgWizardClampStep()">Switch to Use Discover</button>
                   </div>
                 </div>
               </template>
             </div>
+
+            <!-- Filter-only sub-options: tag-name input + collision warning. -->
+            <template x-if="tagRgWizard.source === 'filter-only'">
+              <div class="form-group">
+                <label class="label">Tag to apply</label>
+                <input type="text" class="input" x-model="tagRgWizard.filterOnlyTag"
+                       placeholder="lossless-web"
+                       style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;max-width:320px">
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:6px;line-height:1.5">
+                  Default <code>lossless-web</code> reflects the out-of-the-box filter (MA/Play WEB-DL + lossless audio). Rename to fit your filter set if you customise it. Lowercase letters, digits, dashes, or underscores — same rules as Active group tag names.
+                </div>
+                <!-- Collision warning when the chosen tag matches any
+                     existing Active-group's tag for this instance type.
+                     Backend rejects with 409; the inline warning lets
+                     the user fix it before clicking Run. -->
+                <template x-if="tagRgWizardFilterOnlyCollides()">
+                  <div style="margin-top:10px;padding:10px 14px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;font-size:13px;color:var(--text-body);line-height:1.5">
+                    <div style="color:var(--accent-red);font-weight:600;margin-bottom:4px">⚠ Tag name conflict</div>
+                    <span x-text="'The tag &quot;' + tagRgWizard.filterOnlyTag + '&quot; is already used by an Active group rule. Pick a different name, or remove the conflicting group from the Active list before running this wizard.'"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
 
             <!-- Sub-options when Use Discover picked: add behavior. -->
             <template x-if="tagRgWizard.source === 'discover'">
@@ -3087,7 +3276,12 @@
                 <input type="checkbox" x-model="tagRgWizard.syncToSecondary" style="accent-color:var(--accent-blue)">
                 <span>Mirror tag decisions to secondary <span style="color:var(--text-secondary)" x-text="'(' + (tagRgWizardSecondaryName() || 'secondary') + ')'"></span></span>
               </label>
-              <div style="font-size:12px;color:var(--text-secondary);margin:4px 0 0 26px;line-height:1.5">For every tag added or removed on this instance, the same change is applied to a movie with matching TmdbID on the secondary instance. Orphan cleanup on secondary runs as part of mirror so primary + secondary stay aligned.</div>
+              <div style="font-size:12px;color:var(--text-secondary);margin:4px 0 0 26px;line-height:1.5">
+                Same tag decisions applied to a movie with matching TmdbID on the secondary instance. Orphan cleanup runs as part of mirror so primary + secondary stay aligned.
+                <div style="margin-top:6px">
+                  <strong style="color:var(--text-body)">Typical use case:</strong> tag movies in your WEB-DL Radarr that already meet your quality bar (MA/Play WEB-DL + lossless audio), mirror to your Remux Radarr, then a tag-driven cleanup tool on the remux side handles the redundant 40-80 GB files. 3-6 TB saved on a typical 100-title overlap with no audio quality loss. See the help panel for the full flow.
+                </div>
+              </div>
             </div>
 
             <div class="form-group" x-show="tagRgWizard.source === 'active'">
@@ -3209,7 +3403,17 @@
                 <span :style="tagRgWizard.runMode === 'apply' ? 'color:var(--accent-green);font-weight:600' : 'color:var(--accent-sky);font-weight:600'"
                       x-text="tagRgWizard.runMode === 'apply' ? 'Apply (writes changes)' : 'Preview (no writes)'"></span>
               </div>
-              <div><strong>Source:</strong> <span x-text="tagRgWizard.source === 'discover' ? ('Discover (' + tagRgWizard.discoverAdd + ')') : 'Use active groups'"></span></div>
+              <div><strong>Source:</strong>
+                <template x-if="tagRgWizard.source === 'filter-only'">
+                  <span><span style="color:var(--accent-blue);font-weight:600">Use filter only</span> — every movie passing the filter gets tagged <code style="color:var(--accent-sky)" x-text="'&quot;' + (tagRgWizard.filterOnlyTag || 'lossless-web') + '&quot;'"></code>; release groups ignored.</span>
+                </template>
+                <template x-if="tagRgWizard.source === 'discover'">
+                  <span><span style="color:var(--accent-blue);font-weight:600">Use Discover</span> — find new groups passing the filter, add them <span x-text="tagRgWizard.discoverAdd === 'enabled' ? '(enabled)' : '(disabled)'"></span>, then tag.</span>
+                </template>
+                <template x-if="!tagRgWizard.source || tagRgWizard.source === 'active'">
+                  <span><span style="color:var(--accent-blue);font-weight:600">Use active groups</span> — only movies whose release group is on the Active list get tagged.</span>
+                </template>
+              </div>
               <div><strong>Filter:</strong> <span x-text="(filters.quality ? 'Quality on' : '') + (filters.quality && filters.audio ? ' · ' : '') + (filters.audio ? 'Audio on' : '')"></span></div>
               <div x-show="tagRgWizard.source === 'active'"><strong>Active groups:</strong> <span x-text="groupsFilteredByInstanceType().filter(g => g.enabled).length"></span> of <span x-text="groupsFilteredByInstanceType().length"></span> enabled</div>
               <div x-show="tagRgWizard.syncToSecondary"><strong>Sync:</strong> mirror to <span x-text="tagRgWizardSecondaryName()"></span></div>
@@ -3490,10 +3694,22 @@
         <template x-if="audioTagsPendingChangeCount() === 0">
           <span>This will scan your library and write Audio tags to <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> in one step (no Preview to compare against — pick Preview first if you'd rather see the changes before they land). New tags will be created automatically.</span>
         </template>
+        <!-- Both-instance clarifier — only shown when the wizard ran
+             with target=both (qfaDetailVariants > 1). The count above
+             only reflects the currently-displayed variant; Apply will
+             re-run against every targeted instance, each computing its
+             own deltas fresh. -->
+        <template x-if="applyNowMultiInstanceLabel()">
+          <div style="margin-top:10px;padding:8px 12px;background:var(--alpha-blue-soft);border:1px solid var(--alpha-blue-border-strong);border-radius:6px;color:var(--accent-sky);font-size:12px;line-height:1.5"
+               x-text="applyNowMultiInstanceLabel()"></div>
+        </template>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn" @click="showAudioTagsApplyConfirm = false">Cancel</button>
-        <button class="btn btn-primary" @click="confirmAudioTagsApply()">Apply now</button>
+        <button class="btn" @click="showAudioTagsApplyConfirm = false" :disabled="scanLoading">Cancel</button>
+        <button class="btn btn-primary" @click="confirmAudioTagsApply()" :disabled="scanLoading">
+          <span x-show="!scanLoading">Apply now</span>
+          <span x-show="scanLoading">Applying…</span>
+        </button>
       </div>
     </div>
   </div>
@@ -3510,10 +3726,17 @@
         <template x-if="videoTagsPendingChangeCount() === 0">
           <span>This will scan your library and write Video tags to <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> in one step (no Preview to compare against — pick Preview first if you'd rather see the changes before they land). New tags will be created automatically.</span>
         </template>
+        <template x-if="applyNowMultiInstanceLabel()">
+          <div style="margin-top:10px;padding:8px 12px;background:var(--alpha-blue-soft);border:1px solid var(--alpha-blue-border-strong);border-radius:6px;color:var(--accent-sky);font-size:12px;line-height:1.5"
+               x-text="applyNowMultiInstanceLabel()"></div>
+        </template>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn" @click="showVideoTagsApplyConfirm = false">Cancel</button>
-        <button class="btn btn-primary" @click="confirmVideoTagsApply()">Apply now</button>
+        <button class="btn" @click="showVideoTagsApplyConfirm = false" :disabled="scanLoading">Cancel</button>
+        <button class="btn btn-primary" @click="confirmVideoTagsApply()" :disabled="scanLoading">
+          <span x-show="!scanLoading">Apply now</span>
+          <span x-show="scanLoading">Applying…</span>
+        </button>
       </div>
     </div>
   </div>
@@ -3529,6 +3752,10 @@
       <template x-if="dvDetailPendingChangeCount() > 0">
         <div style="font-size:13px;color:var(--text-body);line-height:1.5;margin-bottom:16px">
           This will write <strong x-text="dvDetailPendingChangeCount()"></strong> tag change<span x-show="dvDetailPendingChangeCount() !== 1">s</span> to Radarr based on the Preview above. New tags will be created automatically.
+          <template x-if="applyNowMultiInstanceLabel()">
+            <div style="margin-top:10px;padding:8px 12px;background:var(--alpha-blue-soft);border:1px solid var(--alpha-blue-border-strong);border-radius:6px;color:var(--accent-sky);font-size:12px;line-height:1.5"
+                 x-text="applyNowMultiInstanceLabel()"></div>
+          </template>
         </div>
       </template>
       <template x-if="dvDetailPendingChangeCount() === 0">
@@ -3537,8 +3764,11 @@
         </div>
       </template>
       <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn" @click="showDvDetailApplyConfirm = false">Cancel</button>
-        <button class="btn btn-primary" @click="confirmDvDetailApply()">Apply now</button>
+        <button class="btn" @click="showDvDetailApplyConfirm = false" :disabled="scanLoading">Cancel</button>
+        <button class="btn btn-primary" @click="confirmDvDetailApply()" :disabled="scanLoading">
+          <span x-show="!scanLoading">Apply now</span>
+          <span x-show="scanLoading">Applying…</span>
+        </button>
       </div>
     </div>
   </div>
@@ -5615,6 +5845,17 @@
             </div>
             <template x-if="ruleAffectsTag()">
               <div class="help-section">
+                <h4>Source of release groups (Tag phase)</h4>
+                <p>Three modes for how the Tag phase decides what to tag:</p>
+                <ul>
+                  <li><strong>Use active groups</strong> — match against the per-rule subset below. Each enabled group writes its own per-group tag.</li>
+                  <li><strong>Use Discover</strong> — find new groups passing the filter, add them, then tag.</li>
+                  <li><strong>Use filter only</strong> — ignore release group entirely. Every movie passing the filter gets one tag (default <code>lossless-web</code>). Use this when you want one downstream gate covering everything that meets your bar — no per-group bookkeeping.</li>
+                </ul>
+              </div>
+            </template>
+            <template x-if="ruleAffectsTag()">
+              <div class="help-section">
                 <h4>Delete release-group tags that no longer match any movie</h4>
                 <p>Optional cleanup pass at the tail of a Tag run. Walks the managed tag list and drops any release-group tag that's no longer on a single movie (typical case: you removed a group from this rule, or a group got renamed). <strong>Off by default — destructive</strong>; only managed tags (those tied to your Release Groups list) are touched. Manual / Custom-Format / Quality-Profile tags are never affected.</p>
               </div>
@@ -5632,11 +5873,122 @@
             </template>
           </div>
 
+          <!-- Source of release groups — only relevant when this rule
+               actually runs the Tag phase. Two-or-three radios match
+               the standalone Tag wizard's Step 1, with the "Use
+               Discover" radio hidden when this rule doesn't include
+               the Discover phase (toggled on Basics). Filter-only
+               swaps the per-group picker below for a single tag-
+               input. -->
+          <template x-if="ruleAffectsTag()">
+            <div style="margin-bottom:14px;padding:14px 16px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
+              <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">Source of release groups (Tag phase)</div>
+              <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;color:var(--text-primary)">
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                  <input type="radio" name="rule-tag-source"
+                         :checked="!editingRule.options.tagSource || editingRule.options.tagSource === 'active'"
+                         @change="editingRule.options.tagSource = 'active'"
+                         style="accent-color:var(--accent-blue);margin-top:3px">
+                  <span>
+                    <strong>Use active groups</strong>
+                    <span style="color:var(--text-secondary)">— match the per-rule subset below. Each enabled group writes its own tag.</span>
+                  </span>
+                </label>
+                <!-- Use Discover only meaningful when the rule actually
+                     runs the Discover phase. Hidden otherwise — the
+                     standalone Discover-add radios further down are
+                     gated the same way. -->
+                <template x-if="ruleAffectsDiscover()">
+                  <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                    <input type="radio" name="rule-tag-source"
+                           :checked="editingRule.options.tagSource === 'discover'"
+                           @change="editingRule.options.tagSource = 'discover'"
+                           style="accent-color:var(--accent-blue);margin-top:3px">
+                    <span>
+                      <strong>Use Discover</strong>
+                      <span style="color:var(--text-secondary)">— find new groups passing the filter, add them to the Active list, then tag.</span>
+                    </span>
+                  </label>
+                </template>
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;line-height:1.45">
+                  <input type="radio" name="rule-tag-source"
+                         :checked="editingRule.options.tagSource === 'filter-only'"
+                         @change="editingRule.options.tagSource = 'filter-only'"
+                         style="accent-color:var(--accent-blue);margin-top:3px">
+                  <span>
+                    <strong>Use filter only</strong>
+                    <span style="color:var(--text-secondary)">— tag every movie passing the quality + audio filter (release group ignored). One tag for everything that meets your bar — no per-group bookkeeping.</span>
+                  </span>
+                </label>
+              </div>
+
+              <!-- Failguard: source==='active' AND no active groups
+                   exist AND Discover isn't part of the rule. Suggest
+                   switching to filter-only as the only sensible
+                   remaining option. Same UX as the standalone Tag
+                   wizard's failguard (orange banner + one-click
+                   switch button). The Basics-step Next-button gate
+                   blocks advance in this state, but the inline
+                   prompt makes the resolution actionable in-place. -->
+              <template x-if="(!editingRule.options.tagSource || editingRule.options.tagSource === 'active') && !ruleAffectsDiscover() && groupsForRule().length === 0">
+                <div style="margin-top:10px;padding:10px 14px;background:var(--accent-orange-bg);border:1px solid var(--accent-orange);border-radius:6px;font-size:13px;color:var(--text-body);line-height:1.5">
+                  <div style="color:var(--accent-orange);font-weight:600;margin-bottom:4px">⚠ No active release groups configured</div>
+                  This instance has no active groups yet, and Discover isn't part of this rule. The Tag pass would be a no-op. Pick one:
+                  <ul style="margin:6px 0 0 0;padding-left:20px">
+                    <li><strong>Use filter only</strong> — tag every movie passing the quality + audio filter (release group ignored).</li>
+                    <li><strong>Add Discover to this rule</strong> — Discover seeds the Active list at runtime, then the Tag pass tags whatever it added.</li>
+                    <li>Or close the wizard and add some groups under <strong>Library scan → Release Groups</strong> first.</li>
+                  </ul>
+                  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn-sm btn-primary" @click="editingRule.options.tagSource = 'filter-only'">Switch to Use filter only</button>
+                    <button class="btn btn-sm" @click="enableDiscoverFromTagSourceBanner()">Add Discover to this rule</button>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Auto-correct: rule was previously saved with
+                   tagSource='discover' but Discover got removed from
+                   the chain in this edit. Show a slim inline note +
+                   reset to 'active' (legacy default). The note dims
+                   itself once the user has acknowledged by changing
+                   the radio — there's no dismiss-X needed. -->
+              <template x-if="editingRule.options.tagSource === 'discover' && !ruleAffectsDiscover()">
+                <div style="margin-top:10px;padding:8px 12px;background:var(--alpha-blue-soft);border:1px solid var(--alpha-blue-border-strong);border-radius:6px;font-size:12px;color:var(--accent-sky);line-height:1.5">
+                  Discover isn't part of this rule (toggled off on Basics). Pick a different source above — defaulting to <strong>Use active groups</strong>.
+                  <div style="margin-top:6px">
+                    <button class="btn btn-sm" @click="editingRule.options.tagSource = ''">Reset to Use active groups</button>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Filter-only sub-options: tag-name input + collision warning. -->
+              <template x-if="editingRule.options.tagSource === 'filter-only'">
+                <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--bg-muted)">
+                  <label class="label" style="font-size:12px">Tag to apply</label>
+                  <input type="text" class="input" x-model="editingRule.options.filterOnlyTag"
+                         placeholder="lossless-web"
+                         style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;max-width:320px">
+                  <div style="font-size:12px;color:var(--text-secondary);margin-top:6px;line-height:1.5">
+                    Default <code>lossless-web</code> reflects the out-of-the-box filter (MA/Play WEB-DL + lossless audio). Lowercase letters, digits, dashes, or underscores.
+                  </div>
+                  <template x-if="ruleEditorFilterOnlyCollides()">
+                    <div style="margin-top:10px;padding:10px 14px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;font-size:13px;color:var(--text-body);line-height:1.5">
+                      <div style="color:var(--accent-red);font-weight:600;margin-bottom:4px">⚠ Tag name conflict</div>
+                      <span x-text="'The tag &quot;' + editingRule.options.filterOnlyTag + '&quot; is already used by an Active group rule. Pick a different name, or remove the conflicting group.'"></span>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+
           <!-- Cleanup unused tags — Tag-pass tail action. Lives on the
                Release Groups step because it's tied to the RG list:
                a tag is "unused" when no movie in the library matches
-               any of the rule's release groups under that label. -->
-          <template x-if="ruleAffectsTag()">
+               any of the rule's release groups under that label.
+               No-op for filter-only (single rule, single tag, no
+               orphan candidates) — toggle hides in that mode. -->
+          <template x-if="ruleAffectsTag() && editingRule.options.tagSource !== 'filter-only'">
             <div style="margin-bottom:14px;padding:14px 16px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
               <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-primary);line-height:1.45">
                 <input type="checkbox" x-model="editingRule.options.cleanupUnusedTags" style="accent-color:var(--accent-blue);margin-top:3px">
@@ -5683,37 +6035,46 @@
             </div>
           </template>
 
-          <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:12px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:8px">
-            Pick which release-groups this rule operates on. The list is filtered to the rule's instance type. Per-group config (search string, tag label, display name) is managed globally under <strong>Library scan → Release Groups</strong> — this picker just selects which groups apply to <em>this rule</em>. Filtered / simple behaviour is set in the previous step.
-          </div>
-
-          <template x-if="groupsForRule().length === 0">
-            <div style="padding:14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;color:var(--text-secondary);font-size:13px;text-align:center">
-              No release-groups configured for this instance type yet. Add some under <strong>Library scan → Release Groups</strong> first.
-            </div>
-          </template>
-
-          <template x-if="groupsForRule().length > 0">
+          <!-- Per-group picker — hidden when source = filter-only
+               (single tag, no group-list bookkeeping). The radio
+               above is the single source-of-truth; everything below
+               only renders when the rule actually walks the active
+               list (sources: empty / "active" / "discover"). -->
+          <template x-if="!ruleAffectsTag() || editingRule.options.tagSource !== 'filter-only'">
             <div>
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
-                <div style="font-size:12px;color:var(--text-secondary)">
-                  <span x-text="(editingRule.releaseGroupIds || []).length"></span> of <span x-text="groupsForRule().length"></span> selected
+              <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:12px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:8px">
+                Pick which release-groups this rule operates on. The list is filtered to the rule's instance type. Per-group config (search string, tag label, display name) is managed globally under <strong>Library scan → Release Groups</strong> — this picker just selects which groups apply to <em>this rule</em>. Filtered / simple behaviour is set in the previous step.
+              </div>
+
+              <template x-if="groupsForRule().length === 0">
+                <div style="padding:14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;color:var(--text-secondary);font-size:13px;text-align:center">
+                  No release-groups configured for this instance type yet. Add some under <strong>Library scan → Release Groups</strong> first.
                 </div>
-                <button type="button" class="btn btn-sm" @click="ruleEditorRGToggleAll()">
-                  <span x-text="ruleEditorRGAllVisible() ? 'Deselect all' : 'Select all'"></span>
-                </button>
-              </div>
-              <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden;max-height:340px;overflow-y:auto">
-                <template x-for="g in groupsForRule()" :key="g.id">
-                  <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--bg-muted);cursor:pointer;font-size:13px;color:var(--text-primary)">
-                    <input type="checkbox" :checked="ruleEditorRGChecked(g.id)" @change="ruleEditorRGToggle(g.id)" style="accent-color:var(--accent-blue)">
-                    <span style="font-weight:500;min-width:120px" x-text="g.display || g.tag || g.search"></span>
-                    <code style="font-size:11px;color:var(--accent-sky);font-family:ui-monospace,monospace" x-text="g.tag"></code>
-                    <span x-show="!g.enabled" style="font-size:11px;color:var(--accent-orange);margin-left:auto">disabled globally</span>
-                  </label>
-                </template>
-              </div>
-              <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Globally-disabled groups are still selectable here — the rule will skip them at runtime.</div>
+              </template>
+
+              <template x-if="groupsForRule().length > 0">
+                <div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+                    <div style="font-size:12px;color:var(--text-secondary)">
+                      <span x-text="(editingRule.releaseGroupIds || []).length"></span> of <span x-text="groupsForRule().length"></span> selected
+                    </div>
+                    <button type="button" class="btn btn-sm" @click="ruleEditorRGToggleAll()">
+                      <span x-text="ruleEditorRGAllVisible() ? 'Deselect all' : 'Select all'"></span>
+                    </button>
+                  </div>
+                  <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden;max-height:340px;overflow-y:auto">
+                    <template x-for="g in groupsForRule()" :key="g.id">
+                      <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--bg-muted);cursor:pointer;font-size:13px;color:var(--text-primary)">
+                        <input type="checkbox" :checked="ruleEditorRGChecked(g.id)" @change="ruleEditorRGToggle(g.id)" style="accent-color:var(--accent-blue)">
+                        <span style="font-weight:500;min-width:120px" x-text="g.display || g.tag || g.search"></span>
+                        <code style="font-size:11px;color:var(--accent-sky);font-family:ui-monospace,monospace" x-text="g.tag"></code>
+                        <span x-show="!g.enabled" style="font-size:11px;color:var(--accent-orange);margin-left:auto">disabled globally</span>
+                      </label>
+                    </template>
+                  </div>
+                  <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Globally-disabled groups are still selectable here — the rule will skip them at runtime.</div>
+                </div>
+              </template>
             </div>
           </template>
         </div>
@@ -6315,18 +6676,39 @@
             </div>
           </div>
 
-          <!-- ===== Tag library section (when affects tag) ===== -->
+          <!-- ===== Tag library section (when affects tag) =====
+               Surfaces the tag-source choice (active / discover /
+               filter-only) so the Review step actually reflects what
+               the wizard collected. The "Release Groups: N selected"
+               line is gated on tagSource === 'active' — for
+               filter-only the count is irrelevant (every passing
+               movie gets one shared tag), and for Discover-as-source
+               the groups are seeded at runtime, not picked here. -->
           <template x-if="ruleAffectsTag()">
             <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
               <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">Tag library</div>
               <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
                 <div>
-                  <strong style="color:var(--text-body)">Release Groups:</strong>
-                  <span x-text="(editingRule.releaseGroupIds || []).length"></span> selected
-                  <template x-if="(editingRule.releaseGroupIds || []).length === 0">
-                    <span style="color:var(--accent-orange)"> ⚠ none — nothing will be tagged</span>
+                  <strong style="color:var(--text-body)">Tag source:</strong>
+                  <template x-if="(editingRule.options.tagSource || 'active') === 'filter-only'">
+                    <span><strong style="color:var(--accent-blue)">Use filter only</strong> — every movie passing the quality + audio filter gets tagged <code style="color:var(--accent-sky)" x-text="'&quot;' + (editingRule.options.filterOnlyTag || 'lossless-web') + '&quot;'"></code>; release groups are ignored.</span>
+                  </template>
+                  <template x-if="editingRule.options.tagSource === 'discover' && ruleAffectsDiscover()">
+                    <span><strong style="color:var(--accent-blue)">Use Discover</strong> — Discover finds new groups passing the filter, adds them to the Active list, then the Tag pass tags whatever it just added.</span>
+                  </template>
+                  <template x-if="(editingRule.options.tagSource || 'active') === 'active'">
+                    <span><strong style="color:var(--accent-blue)">Use active groups</strong> — only movies whose release group is in the Active list below get tagged.</span>
                   </template>
                 </div>
+                <template x-if="(editingRule.options.tagSource || 'active') === 'active'">
+                  <div>
+                    <strong style="color:var(--text-body)">Release Groups:</strong>
+                    <span x-text="(editingRule.releaseGroupIds || []).length"></span> selected
+                    <template x-if="(editingRule.releaseGroupIds || []).length === 0">
+                      <span style="color:var(--accent-orange)"> ⚠ none — nothing will be tagged</span>
+                    </template>
+                  </div>
+                </template>
                 <div>
                   <strong style="color:var(--text-body)">Filters active:</strong>
                   <span x-text="reviewActiveFilters().length === 0 ? '(none — every matched release group passes)' : reviewActiveFilters().join(', ')"></span>
@@ -6374,23 +6756,23 @@
           </template>
 
           <!-- ===== Recover section =====
-               Recover runs ONCE against the rule's primary instance via
-               fetchPhase('recover', primaryInstanceId). Earlier
-               revisions exposed include-secondary / include-sonarr flags
-               that mapped to bash tagarr_recover.sh's --instance / --app
-               command-line knobs, but the chain runner + scheduler
-               runner don't read those — every rule recovers a single
-               instance only. Show the truth: which instance, and that
-               rename fires after a successful patch. -->
+               Recover walks each instance's own history independently —
+               no cross-instance state. recoverTarget (primary | secondary
+               | both) decides which passes fire. The "Runs against:" line
+               reflects the target choice; when isPerActionAutoTag is true
+               the unified Target panel above already shows it (recover
+               joined the per-action picker 2026-05-09), so we hide the
+               per-section line for that path to avoid duplication. -->
           <template x-if="ruleAffectsRecover()">
             <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
               <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">Recover</div>
               <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
-                <div>
-                  <strong style="color:var(--text-body)">Runs against:</strong>
-                  <span x-text="((instances.find(i => i.id === editingRule.instanceId) || {}).name || '(no instance)')"></span>
-                  <span style="color:var(--text-secondary)" x-text="'(' + (ruleEditorInstanceType() || 'radarr') + ')'"></span>
-                </div>
+                <template x-if="!isPerActionAutoTag()">
+                  <div>
+                    <strong style="color:var(--text-body)">Runs against:</strong>
+                    <span x-text="reviewTargetLabel(editingRule.options.recoverTarget)"></span>
+                  </div>
+                </template>
                 <div>
                   <strong style="color:var(--text-body)">Rename files after fix:</strong> yes
                   <span style="color:var(--text-secondary)">— Apply triggers a Radarr/Sonarr RenameFiles command after the releaseGroup patch lands</span>

@@ -314,6 +314,28 @@ func TestDvDetailMigration_BadPrefixCleared(t *testing.T) {
 	}
 }
 
+// TestConfigStore_GetDeepCopiesQbitInstances regression-pins the
+// QbitInstances slice deep-copy added per Agent 3 review #2.
+// Without it, concurrent ConfigStore.Update doing a delete-by-shift
+// would mutate the backing array under in-flight readers
+// (findQbitInstanceByID returns *QbitInstance pointers into the
+// snapshot).
+func TestConfigStore_GetDeepCopiesQbitInstances(t *testing.T) {
+	s := &ConfigStore{}
+	s.cfg.QbitInstances = []QbitInstance{
+		{ID: "q1", Name: "Main", URL: "http://example.com:8080"},
+		{ID: "q2", Name: "Backup", URL: "http://example.com:8081"},
+	}
+	got := s.Get()
+	if len(got.QbitInstances) != 2 {
+		t.Fatalf("unexpected QbitInstances: %+v", got.QbitInstances)
+	}
+	got.QbitInstances[0].Name = "HACKED"
+	if s.cfg.QbitInstances[0].Name != "Main" {
+		t.Errorf("store mutated via returned slice: %q", s.cfg.QbitInstances[0].Name)
+	}
+}
+
 // TestConfigStore_GetDeepCopiesDvDetailAllowedValues regression-pins
 // the same header-aliasing class the AppriseURLs / ExtraTags fixes
 // addressed. A caller mutating the returned AllowedValues slice
@@ -328,5 +350,118 @@ func TestConfigStore_GetDeepCopiesDvDetailAllowedValues(t *testing.T) {
 	got.DvDetail.AllowedValues[0] = "HACKED"
 	if s.cfg.DvDetail.AllowedValues[0] != "mel" {
 		t.Errorf("store mutated via returned slice: %q", s.cfg.DvDetail.AllowedValues[0])
+	}
+}
+
+// TestConfigStore_FilterOnlyDefaultsBackfill — a schedule loaded
+// with TagSource="filter-only" but missing FilterOnlyTag must get
+// the canonical default ("lossless-web") backfilled at Load. Belt
+// + braces against a UI bug or hand-edit leaving the rule in a
+// state where the engine would refuse to run.
+func TestConfigStore_FilterOnlyDefaultsBackfill(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolvarr.json")
+	legacy := []byte(`{
+  "instances": [{"id":"r","name":"Radarr","type":"radarr","iconVariant":"standard","url":"http://radarr:7878","apiKey":"k"}],
+  "schedules": [{
+    "id": "s1",
+    "name": "Filter-only nightly",
+    "mode": "tag",
+    "instanceId": "r",
+    "cron": "0 3 * * *",
+    "enabled": true,
+    "options": {
+      "runMode": "apply",
+      "tagSource": "filter-only"
+    }
+  }]
+}`)
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewConfigStore(dir)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := s.Get()
+	if len(got.Schedules) != 1 {
+		t.Fatalf("expected 1 schedule, got %d", len(got.Schedules))
+	}
+	if got.Schedules[0].Options.TagSource != "filter-only" {
+		t.Errorf("TagSource preserved? got %q, want filter-only", got.Schedules[0].Options.TagSource)
+	}
+	if got.Schedules[0].Options.FilterOnlyTag != "lossless-web" {
+		t.Errorf("FilterOnlyTag default not applied: got %q, want lossless-web", got.Schedules[0].Options.FilterOnlyTag)
+	}
+}
+
+// TestConfigStore_FilterOnlyClampsInvalidTagSource — an unknown
+// tagSource value clamps to "" (legacy default = use Active list)
+// at Load. Defensive against future value renames or hand-edits
+// that would otherwise leave the engine in an unhandled-branch
+// state.
+func TestConfigStore_FilterOnlyClampsInvalidTagSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolvarr.json")
+	legacy := []byte(`{
+  "instances": [{"id":"r","name":"Radarr","type":"radarr","iconVariant":"standard","url":"http://radarr:7878","apiKey":"k"}],
+  "schedules": [{
+    "id": "s1",
+    "name": "Bad tagSource",
+    "mode": "tag",
+    "instanceId": "r",
+    "cron": "0 3 * * *",
+    "enabled": true,
+    "options": {
+      "runMode": "apply",
+      "tagSource": "garbage-value"
+    }
+  }]
+}`)
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewConfigStore(dir)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := s.Get()
+	if got.Schedules[0].Options.TagSource != "" {
+		t.Errorf("invalid tagSource not clamped: got %q, want \"\"", got.Schedules[0].Options.TagSource)
+	}
+}
+
+// TestConfigStore_FilterOnlyPreservesUserTag — when the user did
+// supply FilterOnlyTag, Load must NOT overwrite it with the default.
+// Backfill is a defaulting safety net, not a rename.
+func TestConfigStore_FilterOnlyPreservesUserTag(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolvarr.json")
+	legacy := []byte(`{
+  "instances": [{"id":"r","name":"Radarr","type":"radarr","iconVariant":"standard","url":"http://radarr:7878","apiKey":"k"}],
+  "schedules": [{
+    "id": "s1",
+    "name": "Custom tag",
+    "mode": "tag",
+    "instanceId": "r",
+    "cron": "0 3 * * *",
+    "enabled": true,
+    "options": {
+      "runMode": "apply",
+      "tagSource": "filter-only",
+      "filterOnlyTag": "premium-bluray"
+    }
+  }]
+}`)
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewConfigStore(dir)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := s.Get()
+	if got.Schedules[0].Options.FilterOnlyTag != "premium-bluray" {
+		t.Errorf("user FilterOnlyTag clobbered: got %q, want premium-bluray", got.Schedules[0].Options.FilterOnlyTag)
 	}
 }

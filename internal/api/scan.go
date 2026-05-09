@@ -45,6 +45,29 @@ func (s *Server) handleScanRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "mode must be preview or apply")
 			return
 		}
+		// TagSource gates which engine path runs. Empty / "active" /
+		// "discover" all go through runTag (per-group decisions); the
+		// "discover" prelude is wired via the chain runner upstream so
+		// from the tag handler's POV they're identical. "filter-only"
+		// dispatches to runTagFilterOnly. Validate FilterOnlyTag's
+		// shape here (Radarr's strict tag-label regex) so a malformed
+		// payload fails fast instead of producing a 502 from Arr.
+		switch req.TagSource {
+		case "", "active", "discover":
+			// OK — runTag path
+		case "filter-only":
+			if req.FilterOnlyTag == "" {
+				writeError(w, 400, "filterOnlyTag is required when tagSource is filter-only")
+				return
+			}
+			if !reTagName.MatchString(req.FilterOnlyTag) {
+				writeError(w, 400, "filterOnlyTag must be lowercase letters, digits, underscores, or dashes")
+				return
+			}
+		default:
+			writeError(w, 400, `tagSource must be "" / "active" / "discover" / "filter-only"`)
+			return
+		}
 	case "discover":
 		// Discover is preview-only — there's no "apply" semantic until the
 		// user POSTs selected candidates to /api/groups themselves. Force
