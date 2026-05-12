@@ -7,11 +7,11 @@ import (
 
 func TestParseSeasonEpisodeFromTitle(t *testing.T) {
 	cases := []struct {
-		name        string
-		title       string
-		wantSeason  int
-		wantEps     []int
-		wantOk      bool
+		name       string
+		title      string
+		wantSeason int
+		wantEps    []int
+		wantOk     bool
 	}{
 		{"single episode S01E05",
 			"Show.Name.S01E05.1080p.WEB-DL-FLUX",
@@ -61,74 +61,90 @@ func TestParseSeasonEpisodeFromTitle(t *testing.T) {
 	}
 }
 
-func TestQbitSeasonEpisodeTags(t *testing.T) {
-	bothOn := QbitSeRulesView{TagSeason: true, TagEpisode: true}
-	seasonOnly := QbitSeRulesView{TagSeason: true, TagEpisode: false}
-	episodeOnly := QbitSeRulesView{TagSeason: false, TagEpisode: true}
-	bothOff := QbitSeRulesView{}
+// TestDetermineQbitTag covers the three-rule first-match-wins model.
+// Mirrors the Python qbittorrent_auto_tagger.py reference behaviour
+// — Episode wins over Season, Unmatched is the catch-all, disabling
+// a rule short-circuits without falling through to the next class.
+func TestDetermineQbitTag(t *testing.T) {
+	allOn := QbitSeRulesView{
+		EpisodeEnabled: true, EpisodeTag: "Episode",
+		SeasonEnabled: true, SeasonTag: "Season",
+		UnmatchedEnabled: true, UnmatchedTag: "Unmatched",
+	}
+	episodeOnly := QbitSeRulesView{
+		EpisodeEnabled: true, EpisodeTag: "Episode",
+	}
+	seasonOnly := QbitSeRulesView{
+		SeasonEnabled: true, SeasonTag: "Season",
+	}
+	unmatchedOnly := QbitSeRulesView{
+		UnmatchedEnabled: true, UnmatchedTag: "Unmatched",
+	}
+	custom := QbitSeRulesView{
+		EpisodeEnabled: true, EpisodeTag: "ep",
+		SeasonEnabled: true, SeasonTag: "sn",
+		UnmatchedEnabled: true, UnmatchedTag: "un",
+	}
+	allOff := QbitSeRulesView{}
 
 	cases := []struct {
-		name           string
-		season         int
-		episodes       []int
-		totalEpsKnown  int
-		cfg            QbitSeRulesView
-		want           []string
+		name string
+		in   string
+		cfg  QbitSeRulesView
+		want string
 	}{
-		{"single episode, both on",
-			1, []int{5}, 0, bothOn,
-			[]string{"S01", "S01E05"}},
-		{"single episode, season only",
-			1, []int{5}, 0, seasonOnly,
-			[]string{"S01"}},
-		{"single episode, episode only",
-			1, []int{5}, 0, episodeOnly,
-			[]string{"S01E05"}},
-		{"multi-episode (S01E05E06), both on",
-			1, []int{5, 6}, 0, bothOn,
-			[]string{"S01", "S01E05E06"}},
-		{"multi-episode unsorted input — sorts ascending",
-			1, []int{6, 5}, 0, episodeOnly,
-			[]string{"S01E05E06"}},
-		{"three-episode multi-ep (S01E05E06E07)",
-			1, []int{5, 6, 7}, 0, episodeOnly,
-			[]string{"S01E05E06E07"}},
-		{"empty episodes — season pack",
-			1, nil, 0, bothOn,
-			[]string{"S01"}},
-		{"explicit season-pack via totalEps match",
-			1, []int{1, 2, 3, 4, 5}, 5, bothOn,
-			[]string{"S01"}},
-		{"≥10 episodes fallback heuristic",
-			1, []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 0, bothOn,
-			[]string{"S01"}},
-		{"both formats off — empty",
-			1, []int{5}, 0, bothOff,
-			nil},
-		{"invalid season",
-			0, []int{5}, 0, bothOn,
-			nil},
-		{"season 12 — double-digit padding",
-			12, []int{3}, 0, bothOn,
-			[]string{"S12", "S12E03"}},
-		{"duplicate episode IDs deduped",
-			1, []int{5, 5, 6, 5}, 0, episodeOnly,
-			[]string{"S01E05E06"}},
-		{"zero/negative episode numbers filtered",
-			1, []int{0, -1, 5}, 0, episodeOnly,
-			[]string{"S01E05"}},
-		{"season-only with empty episodes",
-			3, nil, 0, seasonOnly,
-			[]string{"S03"}},
-		{"episode-only mode + season-pack input → empty (no episode tag for season pack)",
-			1, nil, 0, episodeOnly,
-			nil},
+		// Episode wins
+		{"S01E05 single episode", "Show.S01E05.WEB-DL-FLUX", allOn, "Episode"},
+		{"S01E05E06 multi-episode", "Show.S01E05E06.WEB-DL-FLUX", allOn, "Episode"},
+		{"S12E03 double-digit season", "Show.S12E03-FLUX", allOn, "Episode"},
+		{"daily-show 2024.10.15", "Show.2024.10.15.1080p.WEB-DL-FLUX", allOn, "Episode"},
+		{"daily-show 2024-10-15 hyphenated", "Show.2024-10-15.WEB-DL-FLUX", allOn, "Episode"},
+		{"daily-show with spaces", "Show 2024 10 15 WEB-DL FLUX", allOn, "Episode"},
+		// Season — bare S01 / Season 1, no episode token
+		{"bare S01 season pack", "Show.S01.Complete.WEB-DL-FLUX", allOn, "Season"},
+		{"Season.1 worded", "Show.Season.1.Complete.WEB-DL-FLUX", allOn, "Season"},
+		{"Season 1 spaced", "Show Season 1 Complete WEB-DL FLUX", allOn, "Season"},
+		// Unmatched — neither pattern matched
+		{"movie no S/E token", "Movie.2024.1080p.WEB-DL-FLUX", allOn, "Unmatched"},
+		{"music release", "Album.Name.2024.FLAC", allOn, "Unmatched"},
+		{"software ISO", "ubuntu-24.04-desktop-amd64.iso", allOn, "Unmatched"},
+		// Episode-only mode
+		{"episode-only on episode → tag", "Show.S01E05-FLUX", episodeOnly, "Episode"},
+		{"episode-only on season pack → empty", "Show.S01.Complete-FLUX", episodeOnly, ""},
+		{"episode-only on movie → empty", "Movie.2024-FLUX", episodeOnly, ""},
+		// Season-only mode
+		{"season-only on episode → empty (epMatched short-circuits)", "Show.S01E05-FLUX", seasonOnly, ""},
+		{"season-only on season pack → tag", "Show.S01.Complete-FLUX", seasonOnly, "Season"},
+		{"season-only on movie → empty", "Movie.2024-FLUX", seasonOnly, ""},
+		// Unmatched-only mode
+		{"unmatched-only on episode → empty (epMatched short-circuits)", "Show.S01E05-FLUX", unmatchedOnly, ""},
+		{"unmatched-only on season → empty (seasonMatched short-circuits)", "Show.S01.Complete-FLUX", unmatchedOnly, ""},
+		{"unmatched-only on movie → tag", "Movie.2024-FLUX", unmatchedOnly, "Unmatched"},
+		// Custom tag names
+		{"custom episode name", "Show.S01E05-FLUX", custom, "ep"},
+		{"custom season name", "Show.S01.Complete-FLUX", custom, "sn"},
+		{"custom unmatched name", "Movie.2024-FLUX", custom, "un"},
+		// All off
+		{"all-off on episode", "Show.S01E05-FLUX", allOff, ""},
+		{"all-off on movie", "Movie.2024-FLUX", allOff, ""},
+		// Empty input
+		{"empty torrent name", "", allOn, ""},
+		// Empty tag string falls back to default
+		{"empty episode tag → default Episode", "Show.S01E05-FLUX",
+			QbitSeRulesView{EpisodeEnabled: true}, "Episode"},
+		{"empty season tag → default Season", "Show.S01.Complete-FLUX",
+			QbitSeRulesView{SeasonEnabled: true}, "Season"},
+		{"empty unmatched tag → default Unmatched", "Movie.2024-FLUX",
+			QbitSeRulesView{UnmatchedEnabled: true}, "Unmatched"},
+		// Whitespace-only tag string falls back too
+		{"whitespace tag → default", "Show.S01E05-FLUX",
+			QbitSeRulesView{EpisodeEnabled: true, EpisodeTag: "   "}, "Episode"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := QbitSeasonEpisodeTags(c.season, c.episodes, c.totalEpsKnown, c.cfg)
-			if !reflect.DeepEqual(got, c.want) {
-				t.Errorf("got %v, want %v", got, c.want)
+			got := DetermineQbitTag(c.in, c.cfg)
+			if got != c.want {
+				t.Errorf("DetermineQbitTag(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
 	}

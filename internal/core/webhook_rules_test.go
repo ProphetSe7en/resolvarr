@@ -247,6 +247,101 @@ func TestMigrateLegacyTriggerFlags_AlreadyMigratedNoOp(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyQbitSeFlags_LegacyTagSeasonOnly(t *testing.T) {
+	// Legacy rule with TagSeason=true, TagEpisode=false. Migration
+	// should set SeasonEnabled=true, EpisodeEnabled=false, and turn
+	// the new Unmatched bucket ON by default (preserves Python-script
+	// "always have a fallback" posture). All three tag names get the
+	// documented defaults backfilled.
+	r := &QbitSeRules{TagSeason: true, TagEpisode: false}
+	r.MigrateLegacyQbitSeFlags()
+	if !r.SeasonEnabled {
+		t.Error("expected SeasonEnabled=true (legacy TagSeason=true)")
+	}
+	if r.EpisodeEnabled {
+		t.Error("expected EpisodeEnabled=false (legacy TagEpisode=false)")
+	}
+	if !r.UnmatchedEnabled {
+		t.Error("expected UnmatchedEnabled=true (new default for migrated rules)")
+	}
+	if r.EpisodeTag != "Episode" || r.SeasonTag != "Season" || r.UnmatchedTag != "Unmatched" {
+		t.Errorf("default tag names not backfilled: ep=%q se=%q un=%q",
+			r.EpisodeTag, r.SeasonTag, r.UnmatchedTag)
+	}
+}
+
+func TestMigrateLegacyQbitSeFlags_LegacyBothBoolsOn(t *testing.T) {
+	r := &QbitSeRules{TagSeason: true, TagEpisode: true}
+	r.MigrateLegacyQbitSeFlags()
+	if !r.SeasonEnabled || !r.EpisodeEnabled || !r.UnmatchedEnabled {
+		t.Errorf("expected all three Enabled flags=true after migration; got ep=%v se=%v un=%v",
+			r.EpisodeEnabled, r.SeasonEnabled, r.UnmatchedEnabled)
+	}
+}
+
+func TestMigrateLegacyQbitSeFlags_LegacyAllOff(t *testing.T) {
+	// Pristine zero-value struct (no legacy bools, no new flags).
+	// Detection treats this as "legacy" because all new fields are
+	// blank — backfill turns Unmatched ON (so a config with an empty
+	// QbitSe block ends up with the catch-all firing) plus default
+	// tag names. EpisodeEnabled / SeasonEnabled stay false because
+	// the legacy bools were false too.
+	r := &QbitSeRules{}
+	r.MigrateLegacyQbitSeFlags()
+	if r.EpisodeEnabled {
+		t.Error("expected EpisodeEnabled=false (no legacy TagEpisode)")
+	}
+	if r.SeasonEnabled {
+		t.Error("expected SeasonEnabled=false (no legacy TagSeason)")
+	}
+	if !r.UnmatchedEnabled {
+		t.Error("expected UnmatchedEnabled=true (new default for empty/legacy rules)")
+	}
+}
+
+func TestMigrateLegacyQbitSeFlags_AlreadyMigratedNoOp(t *testing.T) {
+	// Rule already on the new shape — at least one Enabled flag set.
+	// Migration should NOT clobber the user's choice.
+	r := &QbitSeRules{
+		EpisodeEnabled: true, EpisodeTag: "ep",
+		SeasonEnabled: false, SeasonTag: "",
+		UnmatchedEnabled: false, UnmatchedTag: "",
+		// Legacy bools left at zero — would falsely activate
+		// migration if the detection were broken.
+	}
+	r.MigrateLegacyQbitSeFlags()
+	if !r.EpisodeEnabled || r.EpisodeTag != "ep" {
+		t.Errorf("user's EpisodeEnabled+EpisodeTag clobbered: %v / %q", r.EpisodeEnabled, r.EpisodeTag)
+	}
+	if r.SeasonEnabled {
+		t.Error("user's SeasonEnabled=false flipped by migration")
+	}
+	if r.UnmatchedEnabled {
+		t.Error("user's UnmatchedEnabled=false flipped by migration")
+	}
+	// Tag-name defaults DO get backfilled even on already-migrated
+	// rules (cheap idempotent backfill so blanks always have a name).
+	if r.SeasonTag != "Season" || r.UnmatchedTag != "Unmatched" {
+		t.Errorf("blank tag names not backfilled: se=%q un=%q", r.SeasonTag, r.UnmatchedTag)
+	}
+}
+
+func TestMigrateLegacyQbitSeFlags_Idempotent(t *testing.T) {
+	// Run migration twice — second pass must be a no-op.
+	r := &QbitSeRules{TagSeason: true, TagEpisode: false}
+	r.MigrateLegacyQbitSeFlags()
+	pre := *r
+	r.MigrateLegacyQbitSeFlags()
+	if !reflect.DeepEqual(*r, pre) {
+		t.Errorf("MigrateLegacyQbitSeFlags not idempotent:\n  before second: %+v\n  after  second: %+v", pre, *r)
+	}
+}
+
+func TestMigrateLegacyQbitSeFlags_NilReceiverNoPanic(t *testing.T) {
+	var r *QbitSeRules
+	r.MigrateLegacyQbitSeFlags() // must not panic
+}
+
 func TestGrabRenameCriteria_AppendReleaseGroupOrDefault(t *testing.T) {
 	// nil pointer → default true (matches the field doc-comment).
 	var nilCriteria *GrabRenameCriteria

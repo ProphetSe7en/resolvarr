@@ -99,6 +99,24 @@ func (s *Server) dispatchGrabRename(
 	}
 	criteria := rule.GrabRename
 
+	// RenameTarget gate — defence-in-depth against pre-validator-saved
+	// rules still on disk where target was set to "file" / "both" (the
+	// save-time validator at webhook_rules.go:268-270 rejects those now,
+	// but a config from before that gate landed could still slip
+	// through). Default empty → "torrent". Any other value short-
+	// circuits BEFORE qBit calls so the dispatcher logs the reason
+	// without generating API traffic.
+	renameTarget := strings.TrimSpace(criteria.RenameTarget)
+	if renameTarget == "" {
+		renameTarget = core.GrabRenameTargetTorrent
+	}
+	if renameTarget != core.GrabRenameTargetTorrent {
+		return functionResult{
+			Function: core.WebhookFnGrabRename, OK: false,
+			Summary: fmt.Sprintf("rename target %q is configured but not yet supported (only 'torrent' is wired in v1)", renameTarget),
+		}
+	}
+
 	var payload grabEventPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return functionResult{Function: core.WebhookFnGrabRename, OK: false, Summary: "decode payload failed", Err: err}

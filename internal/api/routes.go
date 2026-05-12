@@ -93,6 +93,15 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Scan (M3 — tag / discover / cleanup / recover, dispatched via action field)
 	mux.HandleFunc("POST /api/scan/run", s.handleScanRun)
 
+	// Missing-episodes scanner (Tag Library → Sonarr → Missing episodes).
+	// Sonarr-only. Distinct from the action-dispatched /api/scan/run
+	// because this surface is a Tag Library tool, not a general
+	// per-instance scan — it has its own preview / search / tag triplet
+	// instead of preview+apply with a tag dimension.
+	mux.HandleFunc("POST /api/scan/missing-episodes/preview", s.handleMissingEpisodesPreview)
+	mux.HandleFunc("POST /api/scan/missing-episodes/search", s.handleMissingEpisodesSearch)
+	mux.HandleFunc("POST /api/scan/missing-episodes/tag", s.handleMissingEpisodesTag)
+
 	// Recover exclusions — per-instance "skip these in next scan" lists.
 	// User flags faulty / unfixable items; Recover scan filters them out
 	// before the per-item history walk. Restored via the "Show excluded"
@@ -142,7 +151,16 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/instances/{id}/webhook/events", s.handleWebhookClearEvents)
 	mux.HandleFunc("POST /api/instances/{id}/webhook/rotate", s.handleWebhookRotateToken)
 	mux.HandleFunc("PUT /api/instances/{id}/webhook/logging", s.handleWebhookSetLogging)
+	mux.HandleFunc("PUT /api/instances/{id}/webhook/require-signature", s.handleWebhookSetRequireSignature)
 	mux.HandleFunc("DELETE /api/instances/{id}/webhook", s.handleWebhookDelete)
+
+	// Arr download-client list — surfaces Sonarr/Radarr's configured
+	// download clients (qBit / sabnzbd / etc.) with pre/post category
+	// names already extracted. Used by the qBit Category Fix rule
+	// editor so the user picks a download client and the category
+	// names auto-populate from the Arr's config. ?refresh=1 invalidates
+	// the 5-min cache for that instance.
+	mux.HandleFunc("GET /api/instances/{id}/download-clients", s.handleListArrDownloadClients)
 
 	// Webhook rules — saved-rule objects fired by Connect events.
 	// Architectural twin of /api/schedules. CRUD only; the dispatch

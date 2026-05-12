@@ -1,21 +1,25 @@
 package api
 
-// webhook_qbit_se.go — qBit Season/Episode tagging adapter for the
-// M-Webhook dispatcher. Sonarr-only per WebhookFunctionAppliesTo.
-// Fires on Connect Grab events and tags the qBit torrent with
-// S/E patterns (S01 / S01E05 / S01E05E06) so backlog seeding by
-// season/episode becomes trivial in qBit's tag dropdown.
+// webhook_qbit_se.go — qBit tagging adapter for the M-Webhook
+// dispatcher. Three-rule first-match-wins model (Episode → Season →
+// Unmatched), direct port of the community Python reference
+// qbittorrent_auto_tagger.py. Sonarr-only per WebhookFunctionAppliesTo.
 //
-// Architectural rule 1: tag-format decisions come from
-// engine.QbitSeasonEpisodeTags (pure function). NO inline format
-// strings.
+// Fires on Connect Grab events; classifies the release title via
+// engine.DetermineQbitTag and adds ONE tag to the qBit torrent
+// identified by downloadId. The classifier looks at the torrent name
+// (release.releaseTitle on the Connect payload) — episodes[] is not
+// consulted because the patterns are name-based, mirroring the Python
+// script's behaviour exactly.
+//
+// Architectural rule 1: tag decisions come from engine.DetermineQbitTag
+// (pure function). NO inline classification logic in the adapter.
 //
 // Architectural rule 2: one Grab event = one torrent. GetTorrent +
 // AddTags are O(1) round-trips. NEVER walk the qBit library.
 //
-// Container-only feature; bash tagarr_import_sonarr.sh has no S/E
-// tagging. Backlog-fix flow (preview/apply on existing torrents)
-// lives in commit 3 as a separate API endpoint, not an adapter.
+// Container-only feature with bash-script-parity semantics — replaces
+// the user's existing qbittorrent_auto_tagger.py deployment.
 
 import (
 	"context"
@@ -28,24 +32,24 @@ import (
 	"resolvarr/internal/qbit"
 )
 
-// dispatchQbitSeTag fires on Sonarr Grab events. Reads release
-// metadata (seasonNumber via episodes[]) + computes the tag list
-// via the engine helper, then adds the tag(s) to the qBit torrent
-// identified by downloadId.
+// dispatchQbitSeTag fires on Sonarr Grab events. Reads release title
+// from the Connect payload + classifies via the engine helper, then
+// adds ONE tag (the winner of Episode → Season → Unmatched first-
+// match-wins) to the qBit torrent identified by downloadId.
 //
 // Skip conditions (clean OK=true skip, no qBit write):
 //   - Not a Grab event.
 //   - Rule's QbitSe criteria struct missing (validator should have
 //     caught this at save-time; defence in depth).
-//   - Empty downloadId or empty episodes[] (no S/E info to tag).
-//   - Episodes span multiple seasons (anomalous; skip rather than
-//     tag wrongly — Sonarr typically grabs one season per torrent).
-//   - Rule's TagSeason + TagEpisode both off (engine returns empty
-//     tag list → nothing to apply).
+//   - Empty downloadId (manual grab without a download client).
+//   - Empty release title (anomalous — Sonarr always emits one).
+//   - Engine returned no tag (every rule disabled, OR the matched
+//     rule is the disabled one — see DetermineQbitTag's no-fall-
+//     through behaviour).
 //   - qBit torrent not found in qBit's library after retries.
 //
-// Idempotency: qBit's /addTags is no-op when tag already on
-// torrent, so Connect retries are free.
+// Idempotency: qBit's /addTags is no-op when tag already on torrent,
+// so Connect retries are free.
 func (s *Server) dispatchQbitSeTag(
 	ctx context.Context,
 	rule *core.WebhookRule,
@@ -70,38 +74,31 @@ func (s *Server) dispatchQbitSeTag(
 	if hash == "" {
 		return functionResult{Function: core.WebhookFnQbitSeTag, OK: true, Summary: "skipped (no downloadId on event — manual grab?)"}
 	}
-	if len(payload.Episodes) == 0 {
-		return functionResult{Function: core.WebhookFnQbitSeTag, OK: true, Summary: "skipped (no episodes[] on event payload)"}
+
+	// Source torrent name for classification — release.releaseTitle is
+	// the indexer-provided release title that qBit also uses as the
+	// torrent display name post-grab. The classifier doesn't need
+	// episodes[] structured data; the patterns are name-based by design
+	// (Python reference behaviour).
+	torrentName := strings.TrimSpace(payload.Release.ReleaseTitle)
+	if torrentName == "" {
+		return functionResult{Function: core.WebhookFnQbitSeTag, OK: true, Summary: "skipped (no release.releaseTitle on event payload)"}
 	}
 
-	// Resolve season + episode list. All episodes must belong to the
-	// same season for tag-format to be meaningful — Sonarr typically
-	// emits per-season grabs, but a multi-season torrent (rare —
-	// usually a manually-imported pack) would produce ambiguous tags.
-	seasonNum := payload.Episodes[0].SeasonNumber
-	epNums := make([]int, 0, len(payload.Episodes))
-	for _, e := range payload.Episodes {
-		if e.SeasonNumber != seasonNum {
-			return functionResult{
-				Function: core.WebhookFnQbitSeTag, OK: true,
-				Summary: "skipped (episodes span multiple seasons — ambiguous tag)",
-			}
-		}
-		epNums = append(epNums, e.EpisodeNumber)
+	// Classify via engine — single tag winner per first-match-wins.
+	view := engine.QbitSeRulesView{
+		EpisodeEnabled:   rules.EpisodeEnabled,
+		EpisodeTag:       rules.EpisodeTag,
+		SeasonEnabled:    rules.SeasonEnabled,
+		SeasonTag:        rules.SeasonTag,
+		UnmatchedEnabled: rules.UnmatchedEnabled,
+		UnmatchedTag:     rules.UnmatchedTag,
 	}
-
-	// Build tag list via engine helper. totalEps left at 0 (heuristic
-	// fallback) — querying Sonarr for series statistics would add a
-	// network round-trip per fire; the ≥10-eps heuristic catches
-	// genuine season packs cheaply.
-	tags := engine.QbitSeasonEpisodeTags(seasonNum, epNums, 0, engine.QbitSeRulesView{
-		TagSeason:  rules.TagSeason,
-		TagEpisode: rules.TagEpisode,
-	})
-	if len(tags) == 0 {
+	tag := engine.DetermineQbitTag(torrentName, view)
+	if tag == "" {
 		return functionResult{
 			Function: core.WebhookFnQbitSeTag, OK: true,
-			Summary: "skipped (no tag formats enabled — toggle TagSeason or TagEpisode)",
+			Summary: "skipped (no rule matched — toggle Episode / Season / Unmatched)",
 		}
 	}
 
@@ -136,11 +133,11 @@ func (s *Server) dispatchQbitSeTag(
 		}
 	}
 
-	if err := client.AddTags(ctx, []string{hash}, tags); err != nil {
+	if err := client.AddTags(ctx, []string{hash}, []string{tag}); err != nil {
 		return functionResult{Function: core.WebhookFnQbitSeTag, OK: false, Summary: "qbit addTags", Err: err}
 	}
 	return functionResult{
 		Function: core.WebhookFnQbitSeTag, OK: true,
-		Summary: fmt.Sprintf("tagged %s with [%s]", hash, strings.Join(tags, ", ")),
+		Summary: fmt.Sprintf("tagged %s with %q", hash, tag),
 	}
 }

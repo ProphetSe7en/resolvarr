@@ -52,6 +52,24 @@ type Server struct {
 	// that case (they can't run before main has set up the persistence
 	// path). See internal/api/webhook_log.go for the type.
 	WebhookLog *webhookLog
+
+	// authLogLimiter coalesces (rejected) / (unsigned) ring-buffer
+	// appends per (instance, reason) within a 5-minute window — see
+	// authLogRateLimiter in webhooks.go. Prevents an attacker (or a
+	// chatty Connect setup) from flooding the 100-entry ring + the
+	// on-disk persist with thousands of identical warnings. Lazily
+	// allocated by webhook handlers if nil so older test factories
+	// that build Server{} directly still work.
+	authLogLimiter *authLogRateLimiter
+
+	// arrDLCache caches per-instance Arr download-client list reads for
+	// 5 minutes. Used by the qBit Category Fix webhook function so a
+	// whole-season Sonarr Import doesn't fan out N reads to the same
+	// Arr for the same list. Lazily allocated on first use (or
+	// via dedicated handler init) so tests that build Server{}
+	// directly without calling NewServer keep working.
+	arrDLCache   *arrDownloadClientCache
+	arrDLCacheMu sync.Mutex
 }
 
 // DvScanState is the atomic snapshot the progress endpoint returns.
@@ -76,7 +94,13 @@ type DvScanState struct {
 // Scheduler is set after server construction (it depends on Server's
 // runX methods to implement core.Runner) — see main.go wiring.
 func NewServer(app *core.App, version string, authStore *auth.Store, hp *health.Poller) *Server {
-	return &Server{App: app, Version: version, AuthStore: authStore, Health: hp}
+	return &Server{
+		App:            app,
+		Version:        version,
+		AuthStore:      authStore,
+		Health:         hp,
+		authLogLimiter: &authLogRateLimiter{},
+	}
 }
 
 // AttachScheduler wires the scheduler in after construction. main.go
@@ -109,6 +133,19 @@ func (s *Server) NewSchedulerRunner() core.Runner {
 // (handlers will 503 on POST, return empty list on GET).
 func (s *Server) AttachWebhookLog(persistPath string) {
 	s.WebhookLog = newWebhookLog(persistPath)
+}
+
+// ArrDLCache returns the shared arr-download-client cache, allocating
+// it on first call. Lazy so test factories that build Server{} directly
+// don't need to know about the cache; production main.go also gets the
+// cache without explicit wiring.
+func (s *Server) ArrDLCache() *arrDownloadClientCache {
+	s.arrDLCacheMu.Lock()
+	defer s.arrDLCacheMu.Unlock()
+	if s.arrDLCache == nil {
+		s.arrDLCache = newArrDownloadClientCache()
+	}
+	return s.arrDLCache
 }
 
 // ---- helpers ----

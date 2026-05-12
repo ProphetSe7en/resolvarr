@@ -1088,38 +1088,59 @@ func (s *Server) dispatchSyncToSecondary(
 		}
 	}
 
-	// Recompute the rule's RG decisions for the secondary, using the
+	// Recompute the rule's tag decisions for the secondary, using the
 	// SAME mediaInfo + filter snapshot the primary fired with. Engine
 	// is deterministic; rule snapshots are identical between adapter
 	// invocations; result on secondary's tag set equals what Tag-RG
 	// adapter would have computed had it fired on the secondary's
 	// counterpart event (modulo the file actually existing there).
-	groups := resolveRuleReleaseGroups(rule, cfg)
-	if len(groups) == 0 {
-		return functionResult{Function: core.WebhookFnSyncToSecondary, OK: true, Summary: "skipped (no active release groups for this rule)"}
-	}
+	//
+	// Two branches mirror dispatchTagReleaseGroups:
+	//   - filter-only: single FilterOnlyTag, decision = filter pass
+	//   - active / per-group: walk resolveRuleReleaseGroups with
+	//     engine.DecideTag (legacy default)
 	filterCfg := pickFiltersConfig(rule, cfg)
-	mf := engine.MovieFile{
-		RelativePath: ed.MediaInfo.RelativePath,
-		SceneName:    ed.MediaInfo.SceneName,
-		ReleaseGroup: ed.ReleaseGroup,
-	}
 	var desired []string
 	managed := map[string]string{}
-	for _, g := range groups {
-		// Always include in managed when computing desired so we can
-		// emit ShouldHave decisions; whether managed flows into
-		// applyAutoTagDiff (and thus drives orphan-removal) is gated
-		// by SyncSkipOrphanCleanup below.
-		managed[g.Tag] = "releaseGroup"
-		d := engine.DecideTag(mf, engine.GroupConfig{
-			Search:  g.Search,
-			Tag:     g.Tag,
-			Display: g.Display,
-			Mode:    g.Mode,
-		}, filterCfg)
-		if d.ShouldHave {
-			desired = append(desired, g.Tag)
+
+	if rule.TagSource == "filter-only" {
+		tag := strings.TrimSpace(rule.FilterOnlyTag)
+		if tag == "" {
+			return functionResult{Function: core.WebhookFnSyncToSecondary, OK: false, Summary: "filterOnlyTag required for filter-only mode"}
+		}
+		combined := strings.ToLower(ed.MediaInfo.RelativePath) + " " +
+			strings.ToLower(ed.MediaInfo.SceneName) + " " +
+			strings.ToLower(ed.ReleaseGroup)
+		shouldHave := engine.CheckQuality(filterCfg, combined) && engine.CheckAudio(filterCfg, combined)
+		managed[tag] = "filterOnly"
+		if shouldHave {
+			desired = append(desired, tag)
+		}
+	} else {
+		groups := resolveRuleReleaseGroups(rule, cfg)
+		if len(groups) == 0 {
+			return functionResult{Function: core.WebhookFnSyncToSecondary, OK: true, Summary: "skipped (no active release groups for this rule)"}
+		}
+		mf := engine.MovieFile{
+			RelativePath: ed.MediaInfo.RelativePath,
+			SceneName:    ed.MediaInfo.SceneName,
+			ReleaseGroup: ed.ReleaseGroup,
+		}
+		for _, g := range groups {
+			// Always include in managed when computing desired so we can
+			// emit ShouldHave decisions; whether managed flows into
+			// applyAutoTagDiff (and thus drives orphan-removal) is gated
+			// by SyncSkipOrphanCleanup below.
+			managed[g.Tag] = "releaseGroup"
+			d := engine.DecideTag(mf, engine.GroupConfig{
+				Search:  g.Search,
+				Tag:     g.Tag,
+				Display: g.Display,
+				Mode:    g.Mode,
+			}, filterCfg)
+			if d.ShouldHave {
+				desired = append(desired, g.Tag)
+			}
 		}
 	}
 
@@ -1231,12 +1252,48 @@ func (s *Server) dispatchTagReleaseGroups(
 		return functionResult{Function: core.WebhookFnTagReleaseGroups, OK: true, Summary: "skipped (no movieFile on event payload)"}
 	}
 
+	inst := findInstanceByID(cfg, rule.InstanceID)
+	if inst == nil {
+		return functionResult{Function: core.WebhookFnTagReleaseGroups, OK: false, Summary: "instance vanished between event receive and dispatch"}
+	}
+	client := s.arrClientFor(inst)
+
+	filterCfg := pickFiltersConfig(rule, cfg)
+
+	// Filter-only branch — single tag emitted (or removed) per item
+	// based on quality + audio filter pass. Mirrors Library scan's
+	// runTagFilterOnly per-item decision (scan_tag.go:752-771) plus
+	// the same combined-string construction (scan_tag.go:730-733).
+	// Release-group is ignored entirely; the rule's ReleaseGroupIDs +
+	// per-group decision pass do not run.
+	if rule.TagSource == "filter-only" {
+		tag := strings.TrimSpace(rule.FilterOnlyTag)
+		if tag == "" {
+			return functionResult{Function: core.WebhookFnTagReleaseGroups, OK: false, Summary: "filterOnlyTag required for filter-only mode"}
+		}
+		combined := strings.ToLower(ed.MediaInfo.RelativePath) + " " +
+			strings.ToLower(ed.MediaInfo.SceneName) + " " +
+			strings.ToLower(ed.ReleaseGroup)
+		shouldHave := engine.CheckQuality(filterCfg, combined) && engine.CheckAudio(filterCfg, combined)
+		var desired []string
+		if shouldHave {
+			desired = []string{tag}
+		}
+		// Single-tag managed universe — applyAutoTagDiff strips the
+		// filter-only tag when shouldHave=false (item no longer
+		// qualifies — e.g. an upgrade event lands a release that
+		// stops passing the audio filter).
+		managed := map[string]string{tag: "filterOnly"}
+		res := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
+		res.Function = core.WebhookFnTagReleaseGroups
+		return res
+	}
+
+	// Active / per-group branch (legacy default).
 	groups := resolveRuleReleaseGroups(rule, cfg)
 	if len(groups) == 0 {
 		return functionResult{Function: core.WebhookFnTagReleaseGroups, OK: true, Summary: "skipped (no active release groups for this rule)"}
 	}
-
-	filterCfg := pickFiltersConfig(rule, cfg)
 
 	mf := engine.MovieFile{
 		RelativePath: ed.MediaInfo.RelativePath,
@@ -1260,12 +1317,6 @@ func (s *Server) dispatchTagReleaseGroups(
 			desired = append(desired, g.Tag)
 		}
 	}
-
-	inst := findInstanceByID(cfg, rule.InstanceID)
-	if inst == nil {
-		return functionResult{Function: core.WebhookFnTagReleaseGroups, OK: false, Summary: "instance vanished between event receive and dispatch"}
-	}
-	client := s.arrClientFor(inst)
 
 	res := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
 	res.Function = core.WebhookFnTagReleaseGroups
@@ -1446,7 +1497,135 @@ func (s *Server) dispatchFileDeleteCleanup(
 	// toRemove = currentManaged - desired = currentManaged.
 	res := applyAutoTagDiff(ctx, client, rule.AppType, itemID, nil, managed, tagDetails)
 	res.Function = core.WebhookFnFileDeleteClean
+
+	// Filter-only-targeted secondary mirror.
+	//
+	// When this rule pairs File-Delete-Clean with Sync-to-Secondary in
+	// filter-only mode, the filter-only tag must fall off secondary too —
+	// without it the secondary's filter-only label sits forever after
+	// the primary file is deleted (no upgrade follow-up restocks it the
+	// way a Download event would). Library scan handles this via its
+	// orphan-cleanup pass; webhook needs parity.
+	//
+	// Mirror is single-tag scope: just rule.FilterOnlyTag. The other
+	// managed buckets (audio/video/DV/RG) STAY primary-only because
+	// secondary holds an independent file with its own mediaInfo and
+	// its own per-group RG record. Per-group RG cleanup on pure delete
+	// would diverge from Library-scan's "primary keeps the RG record
+	// for its own file" semantics; mediaInfo-derived buckets reflect
+	// secondary's file (which is unchanged by the primary delete).
+	//
+	// Sonarr filter-only doesn't exist today (Radarr-only feature) —
+	// shouldMirrorFilterOnlyOnDelete gates on AppType=="radarr" so the
+	// branch is a no-op for Sonarr.
+	//
+	// Failure handling: secondary lookup or apply errors do NOT flip
+	// the primary's OK=true — primary cleanup already succeeded, and
+	// the next Library-scan reconciles. Mirror outcome is appended to
+	// the summary so History shows both halves.
+	if shouldMirrorFilterOnlyOnDelete(rule) {
+		mirrorSummary := s.mirrorFilterOnlyDeleteToSecondary(ctx, rule, cfg, payload)
+		if mirrorSummary != "" {
+			res.Summary = res.Summary + "; " + mirrorSummary
+		}
+	}
+
 	return res
+}
+
+// shouldMirrorFilterOnlyOnDelete returns true when a file-delete cleanup
+// fire on this rule should additionally strip the filter-only tag from
+// the rule's secondary instance.
+//
+// Gates:
+//   - rule has WebhookFnSyncToSecondary in Functions (user opted into mirror)
+//   - rule.TagSource == "filter-only"
+//   - rule.FilterOnlyTag != "" (validator ensures this when filter-only,
+//     but defensive — hand-edited config might survive Load)
+//   - rule.AppType == "radarr" (filter-only is a Radarr-only feature today)
+//
+// Pure function — split out so the gating can be unit-tested without
+// httptest infra.
+func shouldMirrorFilterOnlyOnDelete(rule *core.WebhookRule) bool {
+	if rule == nil {
+		return false
+	}
+	if rule.AppType != "radarr" {
+		return false
+	}
+	if rule.TagSource != "filter-only" {
+		return false
+	}
+	if strings.TrimSpace(rule.FilterOnlyTag) == "" {
+		return false
+	}
+	if !rule.HasFunction(core.WebhookFnSyncToSecondary) {
+		return false
+	}
+	return true
+}
+
+// mirrorFilterOnlyDeleteToSecondary strips ONLY the filter-only tag from
+// the rule's secondary Radarr instance after a primary file-delete.
+// Returns a short summary suitable for appending to the primary
+// cleanup's History row; empty string when nothing to report (genuinely
+// silent skip — caller's primary-OK summary stays clean).
+//
+// Never returns a hard error: every failure path produces a summary
+// the caller folds into the primary's OK=true result. Library scan's
+// orphan pass + the next Sync fire reconcile any drift.
+func (s *Server) mirrorFilterOnlyDeleteToSecondary(
+	ctx context.Context,
+	rule *core.WebhookRule,
+	cfg core.Config,
+	payload downloadEventPayload,
+) string {
+	// Same secondary-resolution helper Sync uses — explicit
+	// SyncToInstanceID wins, otherwise "first other Radarr instance".
+	secondary := pickSyncTarget(rule, cfg)
+	if secondary == nil {
+		return "secondary mirror skipped (no secondary configured)"
+	}
+	if secondary.ID == rule.InstanceID {
+		return "secondary mirror skipped (syncToInstanceId points at primary)"
+	}
+
+	// Need TmdbID to cross-match. Filter-only is Radarr-only so the
+	// movie shape is the only one we look at.
+	if payload.Movie == nil || payload.Movie.TmdbID == 0 {
+		return "secondary mirror skipped (no tmdbId on event)"
+	}
+	tmdbID := payload.Movie.TmdbID
+
+	secClient := s.arrClientFor(secondary)
+	secMovie, found, err := secClient.GetMovieByTmdbID(ctx, tmdbID)
+	if err != nil {
+		return fmt.Sprintf("secondary mirror failed: lookup tmdbId=%d on %s: %v", tmdbID, secondary.Name, err)
+	}
+	if !found {
+		return fmt.Sprintf("secondary mirror skipped (tmdbId=%d not in %s library)", tmdbID, secondary.Name)
+	}
+
+	secTagDetails, err := secClient.ListTagDetails(ctx)
+	if err != nil {
+		return fmt.Sprintf("secondary mirror failed: list tags on %s: %v", secondary.Name, err)
+	}
+
+	// Single-tag managed scope. Empty desired → applyAutoTagDiff strips
+	// rule.FilterOnlyTag from secondary if present; no-op otherwise.
+	mirrorManaged := map[string]string{
+		rule.FilterOnlyTag: "filterOnly",
+	}
+	mirror := applyAutoTagDiff(ctx, secClient, secondary.Type, secMovie.ID, nil, mirrorManaged, secTagDetails)
+	prefix := "→ " + secondary.Name + ": "
+	if !mirror.OK {
+		errSuffix := ""
+		if mirror.Err != nil {
+			errSuffix = ": " + mirror.Err.Error()
+		}
+		return prefix + mirror.Summary + errSuffix
+	}
+	return prefix + mirror.Summary
 }
 
 // pickItemIDForDelete extracts the movie or series ID from a file-delete
@@ -1524,6 +1703,16 @@ func buildFileDeleteManagedSet(rule *core.WebhookRule, cfg core.Config) map[stri
 		if rg.Tag != "" {
 			out[rg.Tag] = "releaseGroup"
 		}
+	}
+
+	// Filter-only tag — included when the rule is in filter-only mode
+	// AND has a non-empty FilterOnlyTag. Strip-on-delete now removes
+	// it from the item along with audio/video/DV/RG tags. Without this
+	// branch the filter-only tag would persist after file delete (the
+	// tag is not in any vocabulary, so the existing AllPossible*
+	// coverage misses it).
+	if rule.TagSource == "filter-only" && rule.FilterOnlyTag != "" {
+		out[rule.FilterOnlyTag] = "filterOnly"
 	}
 
 	return out

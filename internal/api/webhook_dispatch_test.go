@@ -17,6 +17,49 @@ import (
 // rawEventField is also covered here — adapters will lean on it for
 // fields not on the lowest-common-denominator envelope.
 
+func TestExtractReleaseAndFilePath(t *testing.T) {
+	cases := []struct {
+		name             string
+		body             string
+		wantReleaseTitle string
+		wantFilePath     string
+	}{
+		{"empty body", "", "", ""},
+		{"invalid JSON", "not json", "", ""},
+		{"Radarr Grab event — release.releaseTitle only",
+			`{"eventType":"Grab","release":{"releaseTitle":"Movie.2024.IMAX.WEB-DL-FLUX"}}`,
+			"Movie.2024.IMAX.WEB-DL-FLUX", ""},
+		{"Radarr Download event — releaseTitle + relativePath",
+			`{"eventType":"Download","release":{"releaseTitle":"Movie.2024.IMAX.WEB-DL-FLUX"},"movieFile":{"relativePath":"Movie 2024/Movie.2024.IMAX.WEB-DL.mkv","sceneName":"Movie.2024.IMAX.WEB-DL-FLUX"}}`,
+			"Movie.2024.IMAX.WEB-DL-FLUX", "Movie 2024/Movie.2024.IMAX.WEB-DL.mkv"},
+		{"Radarr Download event — sceneName fallback when no release",
+			`{"eventType":"Download","movieFile":{"relativePath":"Movie 2024/file.mkv","sceneName":"Movie.2024.WEB-DL-FLUX"}}`,
+			"Movie.2024.WEB-DL-FLUX", "Movie 2024/file.mkv"},
+		{"Sonarr Download event — episodeFile fields",
+			`{"eventType":"Download","release":{"releaseTitle":"Show.S01E05.WEB-DL-FLUX"},"episodeFile":{"relativePath":"Season 01/Show - S01E05.mkv","sceneName":"Show.S01E05.WEB-DL-FLUX"}}`,
+			"Show.S01E05.WEB-DL-FLUX", "Season 01/Show - S01E05.mkv"},
+		{"Radarr MovieFileDelete — file path only, no release",
+			`{"eventType":"MovieFileDelete","movieFile":{"relativePath":"Movie 2024/file.mkv","sceneName":""}}`,
+			"", "Movie 2024/file.mkv"},
+		{"event without movie/episode payload — both empty",
+			`{"eventType":"Test","level":"info"}`, "", ""},
+		{"whitespace trimmed",
+			`{"release":{"releaseTitle":"  Movie.2024-FLUX  "},"movieFile":{"relativePath":"  /movies/file.mkv  "}}`,
+			"Movie.2024-FLUX", "/movies/file.mkv"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotR, gotF := extractReleaseAndFilePath([]byte(c.body))
+			if gotR != c.wantReleaseTitle {
+				t.Errorf("releaseTitle = %q, want %q", gotR, c.wantReleaseTitle)
+			}
+			if gotF != c.wantFilePath {
+				t.Errorf("filePath = %q, want %q", gotF, c.wantFilePath)
+			}
+		})
+	}
+}
+
 func TestBuildWebhookRuleRun_StatusOK(t *testing.T) {
 	env := &connectEventEnvelope{EventType: "Download"}
 	env.Movie = &struct {
@@ -28,7 +71,7 @@ func TestBuildWebhookRuleRun_StatusOK(t *testing.T) {
 		{Function: core.WebhookFnTagAudio, OK: true, Summary: "3 added"},
 		{Function: core.WebhookFnTagVideo, OK: true, Summary: "1 added"},
 	}
-	run := buildWebhookRuleRun(env, time.Now().Add(-50*time.Millisecond).UTC(), results)
+	run := buildWebhookRuleRun(env, nil, time.Now().Add(-50*time.Millisecond).UTC(), results)
 	if run.Status != "ok" {
 		t.Errorf("Status = %q, want ok", run.Status)
 	}
@@ -49,7 +92,7 @@ func TestBuildWebhookRuleRun_StatusPartial(t *testing.T) {
 		{Function: core.WebhookFnTagAudio, OK: true, Summary: "ok"},
 		{Function: core.WebhookFnRecover, OK: false, Summary: "no grab history"},
 	}
-	run := buildWebhookRuleRun(env, time.Now().UTC(), results)
+	run := buildWebhookRuleRun(env, nil, time.Now().UTC(), results)
 	if run.Status != "partial" {
 		t.Errorf("Status = %q, want partial", run.Status)
 	}
@@ -61,7 +104,7 @@ func TestBuildWebhookRuleRun_StatusError(t *testing.T) {
 		{Function: core.WebhookFnTagAudio, OK: false, Summary: "arr unreachable"},
 		{Function: core.WebhookFnTagVideo, OK: false, Summary: "arr unreachable"},
 	}
-	run := buildWebhookRuleRun(env, time.Now().UTC(), results)
+	run := buildWebhookRuleRun(env, nil, time.Now().UTC(), results)
 	if run.Status != "error" {
 		t.Errorf("Status = %q, want error", run.Status)
 	}
@@ -73,7 +116,7 @@ func TestBuildWebhookRuleRun_EmptyResults(t *testing.T) {
 	// did the run should still classify cleanly (zero failures + zero
 	// successes maps to "ok" — vacuously true).
 	env := &connectEventEnvelope{EventType: "Download"}
-	run := buildWebhookRuleRun(env, time.Now().UTC(), nil)
+	run := buildWebhookRuleRun(env, nil, time.Now().UTC(), nil)
 	if run.Status != "ok" {
 		t.Errorf("Status (empty results) = %q, want ok", run.Status)
 	}

@@ -50,6 +50,74 @@ func TestDiffMissingMovieVersions(t *testing.T) {
 	}
 }
 
+func TestDiffMissingMovieVersions_NonImaxExclusion(t *testing.T) {
+	// Regression: bare \bimax\b would false-match NON-IMAX titles.
+	// TRaSH NON-IMAX CF intentionally flags releases as not IMAX;
+	// firing the IMAX trigger on those would rename grabs that
+	// explicitly identify themselves as the NON-IMAX cut.
+	//
+	// Go RE2 has no lookbehind, so the Exclude pattern catches
+	// "NON-IMAX" / "NON IMAX" / "NON.IMAX" / "NON_IMAX" forms and
+	// drops the match. Edge case where a single title contains both
+	// "NON-IMAX" AND a separate plain "IMAX" returns no match — rare
+	// enough to accept the false-negative.
+	cases := []struct {
+		name    string
+		current string
+		grab    string
+		want    []string
+	}{
+		{"non-imax in grab does not trigger imax",
+			"Movie 2024 1080p-FLUX",
+			"Movie 2024 NON-IMAX 1080p-FLUX",
+			nil},
+		{"non.imax with dot separator does not trigger",
+			"Movie 2024 1080p-FLUX",
+			"Movie.2024.NON.IMAX.1080p-FLUX",
+			nil},
+		{"non_imax with underscore does not trigger",
+			"Movie 2024 1080p-FLUX",
+			"Movie.2024.NON_IMAX.WEB-DL-FLUX",
+			nil},
+		{"non imax with space does not trigger",
+			"Movie 2024 1080p-FLUX",
+			"Movie 2024 NON IMAX 1080p-FLUX",
+			nil},
+		{"plain imax still triggers",
+			"Movie 2024 1080p-FLUX",
+			"Movie 2024 IMAX 1080p-FLUX",
+			[]string{"IMAX"}},
+		{"asymmetric upgrade — current is NON-IMAX, grab is plain IMAX → MUST diff",
+			// User has the NON-IMAX cut, grab is the IMAX cut: rename should
+			// fire so the qBit name reflects the upgraded version.
+			"Movie 2024 NON-IMAX 1080p-FLUX",
+			"Movie 2024 IMAX 1080p-FLUX",
+			[]string{"IMAX"}},
+		{"non-imax in current AND grab → no diff",
+			"Movie 2024 NON-IMAX 1080p-FLUX",
+			"Movie 2024 NON-IMAX 1080p-FLUX",
+			nil},
+		{"NONIMAX without separator → boundary safety, no false-match",
+			// \bimax\b doesn't match inside NONIMAX (no word boundary
+			// between N and I), so the substring "IMAX" is invisible to
+			// the matcher. Test pins the behaviour so a future regex
+			// tweak (e.g. dropping word-boundaries) doesn't silently
+			// flag this case.
+			"Movie 2024 1080p-FLUX",
+			"Movie.2024.NONIMAX.1080p-FLUX",
+			nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := DiffMissingMovieVersions(c.current, c.grab)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("DiffMissingMovieVersions(%q, %q) = %v, want %v",
+					c.current, c.grab, got, c.want)
+			}
+		})
+	}
+}
+
 func TestDiffMissingSources(t *testing.T) {
 	cases := []struct {
 		name    string
