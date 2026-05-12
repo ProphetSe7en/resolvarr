@@ -9,7 +9,9 @@ import (
 )
 
 // webhook_qbit_se_test.go — skip-path coverage for dispatchQbitSeTag.
-// qBit network calls deferred to soak.
+// Three-rule first-match-wins model — exercises every clean skip
+// branch + the new "no rule matched" path. qBit network calls
+// deferred to soak.
 
 func TestDispatchQbitSeTag_SkipPaths(t *testing.T) {
 	dir := t.TempDir()
@@ -26,6 +28,23 @@ func TestDispatchQbitSeTag_SkipPaths(t *testing.T) {
 	}
 	s := &Server{App: &core.App{Config: store}}
 
+	// Ruleshapes used across cases — three-rule new model.
+	episodeRule := &core.QbitSeRules{
+		QbitInstanceID: "q1",
+		EpisodeEnabled: true, EpisodeTag: "Episode",
+	}
+	allOnRule := &core.QbitSeRules{
+		QbitInstanceID: "q1",
+		EpisodeEnabled: true, EpisodeTag: "Episode",
+		SeasonEnabled: true, SeasonTag: "Season",
+		UnmatchedEnabled: true, UnmatchedTag: "Unmatched",
+	}
+	allOffRule := &core.QbitSeRules{QbitInstanceID: "q1"}
+	ghostQbitRule := &core.QbitSeRules{
+		QbitInstanceID: "ghost",
+		EpisodeEnabled: true, EpisodeTag: "Episode",
+	}
+
 	cases := []struct {
 		name    string
 		event   core.WebhookConnectEvent
@@ -35,39 +54,49 @@ func TestDispatchQbitSeTag_SkipPaths(t *testing.T) {
 	}{
 		{"non-Grab event",
 			core.WebhookEventDownload,
-			&core.WebhookRule{AppType: "sonarr", QbitSe: &core.QbitSeRules{TagSeason: true, QbitInstanceID: "q1"}},
+			&core.WebhookRule{AppType: "sonarr", QbitSe: episodeRule},
 			`{}`,
 			"not a Grab event"},
 		{"QbitSe criteria nil",
 			core.WebhookEventGrab,
 			&core.WebhookRule{AppType: "sonarr"},
-			`{"downloadId":"abc","episodes":[{"seasonNumber":1,"episodeNumber":5}]}`,
+			`{"downloadId":"abc","release":{"releaseTitle":"Show.S01E05-FLUX"}}`,
 			"no QbitSe criteria"},
 		{"empty downloadId",
 			core.WebhookEventGrab,
-			&core.WebhookRule{AppType: "sonarr", QbitSe: &core.QbitSeRules{TagSeason: true, QbitInstanceID: "q1"}},
-			`{"downloadId":"","episodes":[{"seasonNumber":1,"episodeNumber":5}]}`,
+			&core.WebhookRule{AppType: "sonarr", QbitSe: episodeRule},
+			`{"downloadId":"","release":{"releaseTitle":"Show.S01E05-FLUX"}}`,
 			"no downloadId"},
-		{"empty episodes",
+		{"empty release title",
 			core.WebhookEventGrab,
-			&core.WebhookRule{AppType: "sonarr", QbitSe: &core.QbitSeRules{TagSeason: true, QbitInstanceID: "q1"}},
-			`{"downloadId":"abc","episodes":[]}`,
-			"no episodes"},
-		{"multi-season episodes (anomalous)",
+			&core.WebhookRule{AppType: "sonarr", QbitSe: episodeRule},
+			`{"downloadId":"abc","release":{"releaseTitle":""}}`,
+			"no release.releaseTitle"},
+		{"all rules off → no tag",
 			core.WebhookEventGrab,
-			&core.WebhookRule{AppType: "sonarr", QbitSe: &core.QbitSeRules{TagSeason: true, QbitInstanceID: "q1"}},
-			`{"downloadId":"abc","episodes":[{"seasonNumber":1,"episodeNumber":5},{"seasonNumber":2,"episodeNumber":1}]}`,
-			"multiple seasons"},
-		{"both formats off",
+			&core.WebhookRule{AppType: "sonarr", QbitSe: allOffRule},
+			`{"downloadId":"abc","release":{"releaseTitle":"Show.S01E05-FLUX"}}`,
+			"no rule matched"},
+		{"episode-only rule on movie name (no match) → no tag",
 			core.WebhookEventGrab,
-			&core.WebhookRule{AppType: "sonarr", QbitSe: &core.QbitSeRules{QbitInstanceID: "q1"}},
-			`{"downloadId":"abc","episodes":[{"seasonNumber":1,"episodeNumber":5}]}`,
-			"no tag formats enabled"},
+			&core.WebhookRule{AppType: "sonarr", QbitSe: episodeRule},
+			`{"downloadId":"abc","release":{"releaseTitle":"Movie.2024.1080p.WEB-DL-FLUX"}}`,
+			"no rule matched"},
 		{"qbit instance not found",
 			core.WebhookEventGrab,
-			&core.WebhookRule{AppType: "sonarr", QbitSe: &core.QbitSeRules{TagSeason: true, QbitInstanceID: "ghost"}},
-			`{"downloadId":"abc","episodes":[{"seasonNumber":1,"episodeNumber":5}]}`,
+			&core.WebhookRule{AppType: "sonarr", QbitSe: ghostQbitRule},
+			`{"downloadId":"abc","release":{"releaseTitle":"Show.S01E05-FLUX"}}`,
 			"qbit instance"},
+		// All-rules-on with a movie name lands on Unmatched and tries
+		// to call qBit (127.0.0.1:1 fails with connection-refused).
+		// Asserts that classification proceeded past the "no rule
+		// matched" guard; the connection error is the expected outcome
+		// for this skip-path test.
+		{"all-on movie → unmatched → qbit reachable",
+			core.WebhookEventGrab,
+			&core.WebhookRule{AppType: "sonarr", QbitSe: allOnRule},
+			`{"downloadId":"abc","release":{"releaseTitle":"Movie.2024.1080p.WEB-DL-FLUX"}}`,
+			"qbit"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

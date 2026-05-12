@@ -36,7 +36,15 @@ var grabRenameMovieVersionTokens = []namedTokenRegex{
 	{Label: "Masters of Cinema", Pattern: regexp.MustCompile(`(?i)\b(masters[._ -]?of[._ -]?cinema|moc)\b`)},
 	{Label: "Vinegar Syndrome", Pattern: regexp.MustCompile(`(?i)\bvinegar[._ -]?syndrome\b`)},
 	{Label: "Hybrid", Pattern: regexp.MustCompile(`(?i)\bhybrid\b`)},
-	{Label: "IMAX", Pattern: regexp.MustCompile(`(?i)\bimax\b`)},
+	{
+		Label:   "IMAX",
+		Pattern: regexp.MustCompile(`(?i)\bimax\b`),
+		// "NON-IMAX" titles intentionally flag themselves as not IMAX —
+		// Radarr's NON-IMAX CF (TRaSH `\b((?<!NON[ ._-])IMAX)\b`) excludes
+		// these. We can't use lookbehind in Go RE2, so the Exclude branch
+		// drops matches when "non[._ -]+imax" appears in the input.
+		Exclude: regexp.MustCompile(`(?i)\bnon[._ -]+imax\b`),
+	},
 	{Label: "Open Matte", Pattern: regexp.MustCompile(`(?i)\bopen[ ._-]?matte\b`)},
 }
 
@@ -149,9 +157,22 @@ var sceneWebDLRE = regexp.MustCompile(`(?i)\bWEB[-._]?DL\b`)
 // namedTokenRegex pairs a user-facing label with a pre-compiled regex.
 // Stored as []slice (not map) so the diff helpers iterate in stable
 // order, producing deterministic summaries.
+//
+// Exclude is an optional negative pattern: when it matches the input,
+// the token is treated as NO match even if Pattern matches. Simulates
+// negative lookbehind/lookahead which Go RE2 doesn't support. Example:
+// IMAX sets Exclude=`(?i)\bnon[._ -]+imax\b` so titles flagged
+// "NON-IMAX" don't false-match the IMAX trigger (Radarr uses CFs to
+// distinguish IMAX from NON-IMAX; we'd otherwise rename grabs that
+// explicitly mark themselves as not-IMAX).
+//
+// Edge case: a title containing BOTH "NON-IMAX" and a separate plain
+// "IMAX" returns no match — rare enough that we accept the false-
+// negative rather than carry a position-walking matcher.
 type namedTokenRegex struct {
 	Label   string
 	Pattern *regexp.Regexp
+	Exclude *regexp.Regexp
 }
 
 // MovieVersionTokens / SourceTokens / AudioTokens return slice copies
@@ -211,13 +232,25 @@ func DiffMissingTokens(current, grab string, set []namedTokenRegex) []string {
 	if grab == "" {
 		return nil
 	}
+	// matches honours both the primary Pattern and an optional Exclude
+	// negative pattern (see namedTokenRegex doc-comment). Used to skip
+	// e.g. NON-IMAX titles when checking the IMAX trigger.
+	matches := func(t namedTokenRegex, s string) bool {
+		if !t.Pattern.MatchString(s) {
+			return false
+		}
+		if t.Exclude != nil && t.Exclude.MatchString(s) {
+			return false
+		}
+		return true
+	}
 	var out []string
 	for _, t := range set {
 		// Token must be PRESENT in grab AND ABSENT from current.
-		if !t.Pattern.MatchString(grab) {
+		if !matches(t, grab) {
 			continue
 		}
-		if t.Pattern.MatchString(current) {
+		if matches(t, current) {
 			continue
 		}
 		out = append(out, t.Label)

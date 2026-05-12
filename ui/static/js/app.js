@@ -30,6 +30,11 @@ function app() {
     timeFormat: 'auto',
     currentPage: 'settings',
     section: 'instances',
+    // Hash-routing guard. pushNav writes location.hash → browser
+    // fires hashchange → restoreFromHash runs → state setters fire
+    // pushNav again. Set to true around restore to break the loop.
+    // See restoreFromHash + pushNav for the contract.
+    _navSkipPush: false,
     webhookSection: 'setup',  // 'setup' | 'activity'. Per-event-type sub-tabs (Grab / Import / Delete) dropped 2026-05-07 — they suggested global per-event settings, but real architecture is per-instance via wizard.
     // Webhook subsystem state. webhookConfigs is populated by
     // loadWebhookSetupPage on Webhooks-tab open + after wizard finish:
@@ -60,7 +65,9 @@ function app() {
       fnLogging: true,
       busy: false,
       generatedUrl: '',         // populated after Step 1 advance
+      generatedSecret: '',      // shared-secret-as-Basic-auth-password (Phase 2 Slice A)
       generatedLoggingEnabled: false,
+      requireSignature: false,  // strict-mode toggle on Summary step (Phase 2 Slice B)
     },
     scanSection: 'run',           // 'run' | 'groups' | 'filters' | 'recover' | 'audio' | 'video' | 'dvdetail' | 'history'
     // Library scan App-type pill — same pattern as Tag inventory. Picks
@@ -74,11 +81,154 @@ function app() {
     // at the top of a sub-tab to expand a longer "How it works" panel.
     // Not persisted — fresh page load = closed again. Keys: run / groups /
     // filters / extra / tags (the standalone Tag inventory page).
-    helpOpen: { run: false, groups: false, filters: false, recover: false, sonarrRecover: false, audio: false, video: false, dvdetail: false, tags: false, history: false,
+    helpOpen: { run: false, groups: false, filters: false, recover: false, sonarrRecover: false, audio: false, video: false, dvdetail: false, missingEpisodes: false, tags: false, history: false,
+      // Webhooks page-level help.
+      webhooks: false,
       // Wizard-step help panels — same toggle pattern as the Library
       // scan fanes. Each wizard step renders its own collapsible
       // "How it works" panel so the inline form copy can stay short.
-      ruleBasics: false, ruleRG: false, ruleFilters: false, ruleAudio: false, ruleVideo: false, ruleDvDetail: false, ruleSchedule: false },
+      ruleBasics: false, ruleRG: false, ruleFilters: false, ruleAudio: false, ruleVideo: false, ruleDvDetail: false, ruleGrabRename: false, ruleQbitSe: false, ruleQbitCategoryFix: false, ruleSchedule: false },
+
+    // Single source of truth for short function descriptions. Used by:
+    // - Rule editor Basics step (schedule + webhook modes) to render
+    //   the function checkboxes / help-list with one canonical
+    //   wording per function instead of three slight variations.
+    // - QFA wizard step descriptions (when porting future).
+    // - Tag Library section-desc (when porting future).
+    //
+    // Per entry:
+    //   id            — option key on editingRule.options.fn<Cap>
+    //   optionFlag    — the editingRule.options key the checkbox writes to
+    //   label         — UI heading for the row
+    //   summary       — Radarr / generic plain-language description
+    //   summarySonarr — optional Sonarr-specific variant (falls back to summary)
+    //   triggers      — webhook events this function listens for
+    //                   (function id may pass through ruleEditorIsWebhook
+    //                    contexts where they're shown as a callout)
+    //   appliesTo     — 'radarr' | 'sonarr' | 'both'
+    //   webhookOnly   — true when the function only makes sense from a
+    //                   Connect-event trigger (Grab Rename, qBit S/E,
+    //                   Strip-on-delete). Hidden in schedule-mode rules.
+    //   scheduleOnly  — true when the function only makes sense as a
+    //                   chained scheduled action (Cleanup unused tags).
+    //                   Hidden in webhook-mode rules.
+    FUNCTION_INFO: {
+      discover: {
+        id: 'discover',
+        optionFlag: 'fnDiscover',
+        label: 'Discover new release-groups',
+        summary: 'Walks your library and surfaces release groups that pass your filter but aren\'t on your Active list yet — only filter-qualifying groups are reported, not every group seen. New groups get added on the Release Groups step (Add + leave disabled / Add + enable). Useful for first-time setup or keeping the list current as new groups appear in your imports.',
+        summaryWebhook: 'Checks the release group of the imported file and adds it to your Active list if it isn\'t there yet — but only when the group passes your filter. Keeps the Active list growing automatically as new filter-qualifying groups appear in your imports.',
+        triggers: ['On File Import', 'On File Upgrade'],
+        appliesTo: 'radarr',
+      },
+      recover: {
+        id: 'recover',
+        optionFlag: 'fnRecover',
+        label: 'Recover missing release groups',
+        summary: 'Indexers usually know the release group, but if the torrent filename doesn\'t include it the release-group field ends up empty or "Unknown" after import. This step looks at the original grab history — where the indexer\'s release group is preserved — and writes it back to the file.',
+        summarySonarr: 'Indexers usually know the release group, but if the torrent filename doesn\'t include it the release-group field ends up empty or "Unknown" after import. This step looks at Sonarr\'s grab history per series and writes the indexer\'s release group back to the affected episode files.',
+        triggers: ['On File Import', 'On File Upgrade'],
+        appliesTo: 'both',
+      },
+      tagReleaseGroups: {
+        id: 'tagReleaseGroups',
+        optionFlag: 'fnTagReleaseGroups',
+        label: 'Tag quality releases',
+        summary: 'Walks your library and tags movies by release group. Three modes: match against your Active list (filter is a per-group quality gate), use Discover to find and add new groups passing the filter then tag, or skip groups entirely and tag every movie passing the filter with one shared tag (filter-only mode).',
+        summaryWebhook: 'Tags the imported movie based on its release group. Three modes mirror Library scan: match against your Active list (filter is a per-group quality gate), pair with Discover to auto-add new filter-qualifying groups before tagging, or skip groups entirely and tag every movie passing the filter with one shared tag (filter-only mode).',
+        triggers: ['On File Import', 'On File Upgrade'],
+        appliesTo: 'radarr',
+      },
+      tagAudio: {
+        id: 'tagAudio',
+        optionFlag: 'fnTagAudio',
+        label: 'Tag Audio',
+        summary: 'Adds tags showing what kind of audio the file has (TrueHD, Atmos, 5.1, 7.1, etc). Useful for spotting movies missing Atmos and for grouping in Plex/Jellyfin.',
+        summarySonarr: 'Adds tags to each series showing what kind of audio its episodes have (TrueHD, Atmos, 5.1, 7.1, etc). Useful for spotting series that need an audio upgrade and for Plex/Jellyfin grouping.',
+        triggers: ['On File Import', 'On File Upgrade'],
+        appliesTo: 'both',
+      },
+      tagVideo: {
+        id: 'tagVideo',
+        optionFlag: 'fnTagVideo',
+        label: 'Tag Video',
+        summary: 'Adds tags showing what kind of video the file has (1080p, 4K, h265, HDR10, Dolby Vision). Same idea — easy upgrade triage and Plex shelving.',
+        summarySonarr: 'Adds tags to each series showing what kind of video its episodes have (1080p, 4K, h265, HDR10, Dolby Vision). Same idea — easy upgrade triage and Plex shelving.',
+        triggers: ['On File Import', 'On File Upgrade'],
+        appliesTo: 'both',
+      },
+      tagDvDetail: {
+        id: 'tagDvDetail',
+        optionFlag: 'fnTagDvDetail',
+        label: 'Tag DV Details',
+        summary: 'Reads inside Dolby Vision files to figure out which kind of DV they are (profile 5 / 7 / 8, FEL / MEL, CM2 / CM4). The first run is slower because it has to read each file; later runs are fast.',
+        summaryWebhook: 'Reads inside the imported Dolby Vision file to figure out which kind of DV it is (profile 5 / 7 / 8, FEL / MEL, CM2 / CM4) and tags it accordingly.',
+        triggers: ['On File Import', 'On File Upgrade'],
+        appliesTo: 'radarr',
+      },
+      cleanup: {
+        id: 'cleanup',
+        optionFlag: 'fnCleanup',
+        label: 'Delete tags that no longer match any movie',
+        summary: 'Cleanup pass after Tag quality releases. If a tag ends up on zero movies, this removes it from the tag list. Only touches tags from your Active list — never manual / custom-format / quality-profile tags.',
+        appliesTo: 'radarr',
+        scheduleOnly: true,
+      },
+      syncToSecondary: {
+        id: 'syncToSecondary',
+        optionFlag: 'fnSyncToSecondary',
+        label: 'Mirror release-group tags to secondary',
+        summary: 'If you have a second Radarr (e.g. a 4K/remux instance), this copies the Tag quality releases decisions from primary over so both stay in sync. Audio/Video/DV tags aren\'t mirrored — set them to run on the secondary as their own scan in the next step.',
+        triggers: [],
+        appliesTo: 'radarr',
+        // Rendered as its own form-group below the function checkbox
+        // list (mirrors the schedule-mode block at line 5949-5983) so
+        // the secondary-instance picker can live next to the toggle.
+        // Excluded from the lean checkbox list by default; help-panel
+        // still surfaces it via functionInfoList({ includeSeparate: true }).
+        separateControl: true,
+      },
+      fileDeleteClean: {
+        id: 'fileDeleteClean',
+        optionFlag: 'fnFileDeleteClean',
+        label: 'Strip managed tags on file delete',
+        summary: 'When you delete a movie file, removes the resolvarr-managed tags (release group, audio, video, DV) so your tag inventory stays honest. Without this, deleted files\' tags hang around as orphans.',
+        summarySonarr: 'When you delete an episode file, removes the resolvarr-managed tags so your tag inventory stays honest. Without this, deleted files\' tags hang around as orphans.',
+        triggers: ['On Movie File Delete'],
+        triggersSonarr: ['On Episode File Delete'],
+        appliesTo: 'both',
+        webhookOnly: true,
+      },
+      grabRename: {
+        id: 'grabRename',
+        optionFlag: 'fnGrabRename',
+        label: 'qBit Grab Rename',
+        summary: 'Renames the torrent in qBittorrent the moment it\'s grabbed so the eventual filename is parser-friendly. Catches awkward release patterns (space-dash-space group names, missing release-group tokens) that otherwise force a manual rename + re-import.',
+        triggers: ['On Grab'],
+        appliesTo: 'both',
+        webhookOnly: true,
+      },
+      qbitSeTag: {
+        id: 'qbitSeTag',
+        optionFlag: 'fnQbitSeTag',
+        label: 'qBit episode / season tag',
+        summary: 'Tags the qBit torrent with the season + episode it\'s downloading (S01, S01E05, S01E05E06). Useful when you have a long-running backlog and want to filter qBit by season.',
+        triggers: ['On Grab'],
+        appliesTo: 'sonarr',
+        webhookOnly: true,
+      },
+      qbitCategoryFix: {
+        id: 'qbitCategoryFix',
+        optionFlag: 'fnQbitCategoryFix',
+        label: 'Fix stuck qBit category after import',
+        summary: 'Sonarr/Radarr is supposed to change a torrent\'s qBit category after import (e.g. from "qbit-movies" to "qbit-movies-imp"). Sometimes that update silently fails and the torrent gets stuck on the pre-import category. This function listens for import events, verifies the import really happened (Arr history check), and corrects the category if needed.',
+        summaryWebhook: 'On every import: check the torrent\'s qBit category, verify the import actually completed via Arr\'s history, and swap to the post-import category if it\'s still stuck on pre-import.',
+        triggers: ['On File Import', 'On File Upgrade'],
+        appliesTo: 'both',
+        webhookOnly: true,
+      },
+    },
     scanInstanceId: '',           // primary instance for a run; picked per-run, not persistent
     // Tag is always-on for the Run scan button on the Tag library card
     // (the checkbox was removed 2026-04-29 — clicking Run scan implies tag).
@@ -116,8 +266,8 @@ function app() {
     // standalone Run that doesn't go through the wizard.
     scanTagSource: '',
     scanFilterOnlyTag: '',
-    // Mini-wizard state for the new "Tag release groups" launcher on
-    // the Tag Release Groups sub-tab. 4 steps:
+    // Mini-wizard state for the new "Tag quality releases" launcher on
+    // the Tag quality releases sub-tab. 4 steps:
     //   Choices → Filter → Active groups → Review.
     // The wizard is a thin orchestrator — final Run hands off to the
     // existing runLibraryScan path after copying picks into the
@@ -135,7 +285,7 @@ function app() {
       busy: false,
     },
     // Discover-only mini-wizard. Opened by the standalone "Run Discover"
-    // button on the Tag Release Groups actions card. Three steps:
+    // button on the Tag quality releases actions card. Three steps:
     //   Choices → Filter → Review.
     // Same shape as tagRgWizard but no run-mode (Discover doesn't have
     // preview/apply — it always lists candidates for the user to tick),
@@ -207,6 +357,35 @@ function app() {
     recoverExclusions: { instanceId: '', movies: [], series: [], seasons: [] },
     recoverExclusionsLoading: false,
     showScanApplyConfirm: false,  // confirm modal before applying a preview's decisions
+
+    // Missing-episodes scanner (Tag Library → Sonarr → Missing episodes).
+    // Sonarr-only feature; the sidebar entry hides on Radarr. State is
+    // session-scoped — config not persisted to globals.
+    //  - missingEpisodesConfig drives the form inputs; thresholdPercent
+    //    is whole-number 0-100 (sent to the backend as /100 for the
+    //    engine's 0.0-1.0 contract).
+    //  - missingEpisodesPreview holds the last scan response.
+    //  - missingEpisodesSelected maps episodeID → bool for the per-row
+    //    selection state (used by the bulk Search button + Select all/none).
+    //  - missingEpisodesApplying gates the per-row + bulk buttons during
+    //    an in-flight Sonarr command POST.
+    missingEpisodesConfig: {
+      thresholdPercent: 70,
+      bufferHours: 24,
+      includeContinuing: true,
+      includeEnded: true,
+      // B2: specials (season 0) skipped by default — typically ad-hoc
+      // content the user doesn't curate via Sonarr search. Tick the
+      // toggle in the UI to flag them.
+      includeSpecials: false,
+      tagName: 'missing-episodes',
+    },
+    missingEpisodesPreview: null,
+    missingEpisodesSelected: {},
+    missingEpisodesLoading: false,
+    missingEpisodesApplying: false,
+    missingEpisodesError: '',
+
     instances: [],
     // qBittorrent instances — user-managed list. Populated by
     // loadQbitInstances on Settings → qBit visit + after each
@@ -405,7 +584,7 @@ function app() {
     scanHistoryLoading: false,
     scanHistoryFilter: 'all',
     scanHistoryTypes: [
-      { action: 'tag',       label: 'Tag release groups' },
+      { action: 'tag',       label: 'Tag quality releases' },
       { action: 'discover',  label: 'Discover' },
       { action: 'recover',   label: 'Recover' },
       { action: 'cleanup',   label: 'Cleanup' },
@@ -544,6 +723,41 @@ function app() {
     // small client-side cron evaluator drives the Next-5-fires preview.
     schedulesLoading: false,
     schedules: [],
+    // Webhook rules — saved on /api/webhook-rules CRUD + the
+    // unified rule editor's webhook-mode save flow. Loaded eagerly
+    // when the Webhooks page mounts; refreshed after every save +
+    // delete + toggle-enabled.
+    webhookRules: [],
+    // Webhook rule history modal — opened from the per-rule History
+    // button on the Setup tab. Reads off the rule's already-loaded
+    // History[] (no separate API call); Refresh button re-runs
+    // loadWebhookRules() to pick up fires that arrived while the
+    // modal was open.
+    webhookRuleHistoryOpen: false,
+    webhookRuleHistoryRule: null,
+    webhookRuleHistoryRefreshing: false,
+    // qBit S/E backlog scan modal — opened from the per-rule "Backlog
+    // scan" button on rules carrying the qbitSeTag function. The modal
+    // walks three phases: initial (Run preview) → preview loaded
+    // (per-row checkboxes + Apply) → apply complete (results summary).
+    // State is reset every open; preview + apply responses persist
+    // across phase 2/3 so the user can flip back to the preview list
+    // if they want.
+    qbitSeBacklogOpen: false,
+    qbitSeBacklogRule: null,
+    qbitSeBacklogCategoryFilter: '',
+    qbitSeBacklogLoading: false,         // preview pass in flight
+    qbitSeBacklogApplying: false,        // apply pass in flight
+    qbitSeBacklogPreview: null,          // last preview response
+    qbitSeBacklogApplyResult: null,      // last apply response (null until apply runs)
+    qbitSeBacklogSelected: {},           // {hash: bool} — per-row checkbox state
+    qbitSeBacklogFilter: 'taggable',     // 'all' | 'taggable' | 'alreadyOk' | 'skipped'
+    qbitSeBacklogError: '',              // top-level error banner shown above the table
+    // Per-Arr-type filter on the Webhooks page. Mirrors scanAppType
+    // / tagsAppType — pills at the page top let the user flip
+    // context, instance card list filters down, app-type-irrelevant
+    // controls hide.
+    webhookAppType: 'radarr',
     schedulesError: '',
     scheduleBusyId: null,         // schedule id with run-now / delete in flight
     deleteScheduleTarget: null,   // schedule pending confirm-delete; null = modal closed
@@ -603,6 +817,13 @@ function app() {
       isQuickFix: false,      // true → wizard with no name/cron/save (one-shot dispatcher)
       step: 0,                // wizard step index 0..N-1
       activeTab: 'basics',    // tabbed-edit active section
+      // Rule kind — drives save target + visible steps + Basics step
+      // content. 'schedule' is the default (Tag Library / QFA / Create
+      // Rule wizards all open with kind='schedule'). 'webhook' is set
+      // by the Webhooks page +Add rule entry point — the editor then
+      // saves to /api/webhook-rules instead of /api/schedules and
+      // shows function-checkboxes on Basics instead of cron+combinedModes.
+      kind: 'schedule',
       // Locked Arr-type for this wizard session — set on open() from
       // scanAppType (Create / QFA) or the existing rule's instance type
       // (Edit). Drives the Primary instance dropdown filter and the
@@ -638,6 +859,12 @@ function app() {
       { id: 'audio',    label: 'Audio tags' },
       { id: 'video',    label: 'Video tags' },
       { id: 'dvdetail', label: 'DV detail' },
+      // Webhook-only tabs — visible only for webhook rules that have
+      // the corresponding function ticked. ruleEditorTabVisible() gates
+      // these via ruleAffectsGrabRename / ruleAffectsQbitSe.
+      { id: 'grabrename', label: 'qBit Grab Rename' },
+      { id: 'qbitse',     label: 'qBit S/E tag' },
+      { id: 'qbitcategoryfix', label: 'qBit category fix' },
       // Schedule tab is visible only when the rule fires on a cron
       // (not Manual run only). Hidden in quickfix mode entirely.
       { id: 'schedule', label: 'Schedule' },
@@ -694,7 +921,12 @@ function app() {
     // Wizard step order. 'review' is the final-confirmation step; the
     // others map 1:1 onto ruleEditorTabs and inherit the same
     // visibility rules.
-    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'schedule', 'review'],
+    //
+    // 'grabrename' + 'qbitse' webhook-only steps land between dvdetail
+    // and schedule. Visibility (ruleEditorTabVisible) gates them off
+    // for schedule rules entirely, and for webhook rules they only
+    // surface when the matching fn flag is ticked on Basics.
+    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'grabrename', 'qbitse', 'qbitcategoryfix', 'schedule', 'review'],
 
     // instance UI state
     instStatus: {},
@@ -837,7 +1069,7 @@ function app() {
         localStorage.setItem('resolvarr-scan-section', 'history');
       } else if (savedScanSection === 'tag' || savedScanSection === 'recover' || savedScanSection === 'filters') {
         // 2026-05-05 restructure folded standalone Tag library / Recover /
-        // Filters sub-tabs into one 'groups' (Tag Release Groups) tab.
+        // Filters sub-tabs into one 'groups' (Tag quality releases) tab.
         // Testers persisting any of those stale ids would land on a
         // hidden section with no nav back. Migrate forward.
         this.scanSection = 'groups';
@@ -867,6 +1099,28 @@ function app() {
       if (savedScanAppType === 'radarr' || savedScanAppType === 'sonarr') {
         this.scanAppType = savedScanAppType;
       }
+      const savedWebhookAppType = localStorage.getItem('resolvarr-webhook-app-type');
+      if (savedWebhookAppType === 'radarr' || savedWebhookAppType === 'sonarr') {
+        this.webhookAppType = savedWebhookAppType;
+      }
+
+      // Hash-routing: restore from URL hash (deep-link / refresh) AFTER
+      // localStorage so the hash wins when present. Empty hash falls
+      // through to localStorage state. Listener wired below for browser
+      // back/forward + sibling-tab navigation.
+      if (location.hash) {
+        this.restoreFromHash(location.hash);
+      } else {
+        // Seed the hash with current state so the URL matches what's
+        // visible from the very first render. Without this the first
+        // user click writes hash + adds a history entry; better to
+        // anchor the initial entry to the current page.
+        const initial = this.buildNavHash();
+        if (initial && initial !== '#') history.replaceState(null, '', initial);
+      }
+      window.addEventListener('hashchange', () => {
+        this.restoreFromHash(location.hash);
+      });
 
       await this.loadConfig();
       this.applyUIScale();
@@ -926,6 +1180,21 @@ function app() {
       if (this.currentPage === 'settings' && this.section === 'security') {
         this.loadSecurityPanel();
       }
+      // Webhooks page mount effects — fired here (post-loadConfig)
+      // rather than from restoreFromHash since restoreFromHash runs
+      // before instances are populated. Both refresh-on-#webhooks
+      // and refresh-with-localStorage-page=webhooks land here with
+      // full data context.
+      if (this.currentPage === 'webhooks') {
+        this.loadWebhookSetupPage();
+        this.loadWebhookRules();
+        // qBit instances feed the Grab Rename + qBit S/E tag step
+        // dropdowns inside the rule editor. Without this load, opening
+        // the Webhooks page directly (refresh / bookmark / hash) before
+        // visiting Settings → qBit leaves both dropdowns empty and the
+        // Next-button gate stuck on "Pick a qBit instance".
+        this.loadQbitInstances();
+      }
       // Kick off initial status check for all instances, then poll every 60s.
       // Same cadence applies to qBit so the row pill reflects live state, not
       // the last-clicked Test result.
@@ -940,6 +1209,7 @@ function app() {
     setCurrentPage(page) {
       this.currentPage = page;
       localStorage.setItem('resolvarr-page', page);
+      this.pushNav();
       // Schedules feed both the Run mode rules grid AND the History scan
       // filter chips — load + poll whenever the user is anywhere on the
       // Scan tab. Stop the poll when leaving the Scan tab entirely.
@@ -956,6 +1226,13 @@ function app() {
       // open EventSource for a tab the user isn't looking at.
       if (page === 'webhooks') {
         this.loadWebhookSetupPage();
+        // Webhook rules are listed per-instance on the Setup card;
+        // load them alongside the per-instance webhook configs so
+        // the rule list renders on first paint.
+        this.loadWebhookRules();
+        // Mirror init() — qBit instances feed Grab Rename + qBit S/E
+        // tag dropdowns. Idempotent (loadQbitInstances just refetches).
+        this.loadQbitInstances();
       } else {
         this.stopWebhookEventStream();
       }
@@ -978,6 +1255,129 @@ function app() {
       }
       if (section === 'qbit') {
         this.loadQbitInstances();
+      }
+      this.pushNav();
+    },
+
+    // ===== Hash routing (back/forward, bookmarks, copyable nav links) =====
+    //
+    // Hash format:
+    //   #scan/<appType>/<scanSection>[/<groupsSection>] — Tag Library
+    //   #tags/<tagsAppType>                              — Tag inventory
+    //   #lists                                           — Lists (M5 placeholder)
+    //   #webhooks                                        — Webhooks
+    //   #settings/<section>                              — Settings sub-section
+    //
+    // setCurrentPage / setScanSection / setSettingsSection / setScanAppType
+    // already write to localStorage on every change; pushNav() is just a
+    // mirror to location.hash so browser back/forward + right-click "Open
+    // in new tab" + bookmarks work. localStorage stays the source of truth
+    // for "where was I" on a fresh tab open with no hash; the hash wins
+    // when present (handled in init via restoreFromHash).
+
+    buildNavHash() {
+      const p = this.currentPage;
+      if (p === 'tags')     return '#tags/' + (this.tagsAppType || 'radarr');
+      if (p === 'lists')    return '#lists';
+      if (p === 'webhooks') return '#webhooks/' + (this.webhookAppType || 'radarr');
+      if (p === 'settings') return '#settings/' + (this.section || 'instances');
+      // 'scan' (Tag Library) — appType + scan section + optional groups sub.
+      const app = this.scanAppType || 'radarr';
+      const sec = this.scanSection || 'run';
+      let hash = '#scan/' + app + '/' + sec;
+      if (sec === 'groups') hash += '/' + (this.groupsSection || 'active');
+      return hash;
+    },
+
+    // navHref builds the hash a target page/section would produce, without
+    // mutating any state. Used by nav anchors so right-click → "Open in new
+    // tab" / "Copy link address" work, and the browser shows the URL on
+    // hover. opts: { appType, scanSection, groupsSection, settingsSection,
+    //                tagsAppType } — each defaults to current state.
+    navHref(page, opts = {}) {
+      if (page === 'tags')     return '#tags/' + (opts.tagsAppType || this.tagsAppType || 'radarr');
+      if (page === 'lists')    return '#lists';
+      if (page === 'webhooks') return '#webhooks/' + (opts.webhookAppType || this.webhookAppType || 'radarr');
+      if (page === 'settings') return '#settings/' + (opts.settingsSection || this.section || 'instances');
+      const app = opts.appType || this.scanAppType || 'radarr';
+      const sec = opts.scanSection || this.scanSection || 'run';
+      let hash = '#scan/' + app + '/' + sec;
+      if (sec === 'groups') hash += '/' + (opts.groupsSection || this.groupsSection || 'active');
+      return hash;
+    },
+
+    pushNav() {
+      if (this._navSkipPush) return;
+      const hash = this.buildNavHash();
+      // Initial render: location.hash is "" — pushState gives us the
+      // canonical hash. Subsequent pushes only fire when the hash
+      // actually changes so we don't pile up identical history entries.
+      if (location.hash !== hash) {
+        history.pushState(null, '', hash);
+      }
+    },
+
+    restoreFromHash(hash) {
+      if (!hash || hash === '#') return false;
+      // Loop guard: if the parsed hash already matches current state,
+      // skip — pushNav write triggered hashchange triggered restore;
+      // bailing here breaks the cycle.
+      if (hash === this.buildNavHash()) return true;
+      const parts = hash.replace(/^#/, '').split('/').filter(Boolean);
+      if (parts.length === 0) return false;
+      const page = parts[0];
+      const validPages = ['scan', 'tags', 'lists', 'webhooks', 'settings'];
+      if (!validPages.includes(page)) return false;
+      const validScanSections = ['run', 'groups', 'recover', 'audio', 'video', 'dvdetail', 'history'];
+      const validGroupsSections = ['active', 'discovered'];
+      const validSettings = ['instances', 'qbit', 'notifications', 'security', 'display', 'logging', 'about'];
+      this._navSkipPush = true;
+      try {
+        if (page === 'scan') {
+          this.currentPage = 'scan';
+          if (parts[1] === 'radarr' || parts[1] === 'sonarr') this.scanAppType = parts[1];
+          if (parts[2] && validScanSections.includes(parts[2])) this.scanSection = parts[2];
+          if (this.scanSection === 'groups' && parts[3] && validGroupsSections.includes(parts[3])) {
+            this.groupsSection = parts[3];
+          }
+          // Mirror what setCurrentPage('scan') would have done so the
+          // page lands in a coherent state on a fresh tab open with a
+          // deep-link hash. Light side-effects only — no extra API
+          // hits beyond what setCurrentPage already triggers.
+          if (this.scanSection === 'run' || this.scanSection === 'history') {
+            this.loadSchedules();
+            this.startSchedulePoll();
+          }
+        } else if (page === 'tags') {
+          this.currentPage = 'tags';
+          if (parts[1] === 'radarr' || parts[1] === 'sonarr') this.tagsAppType = parts[1];
+        } else if (page === 'lists') {
+          this.currentPage = 'lists';
+        } else if (page === 'webhooks') {
+          this.currentPage = 'webhooks';
+          if (parts[1] === 'radarr' || parts[1] === 'sonarr') this.webhookAppType = parts[1];
+          // Side-effects (loadWebhookSetupPage / loadWebhookRules)
+          // deferred to _dispatchPageMountEffects after loadConfig
+          // resolves — restoreFromHash fires during init BEFORE
+          // this.instances is populated, so iterating it here would
+          // wipe webhookConfigs. The post-loadConfig dispatcher
+          // re-fires the same side-effects with full data context.
+        } else if (page === 'settings') {
+          this.currentPage = 'settings';
+          if (parts[1] && validSettings.includes(parts[1])) this.section = parts[1];
+        }
+        // Mirror localStorage so a refresh without the hash also lands
+        // back here — both surfaces stay aligned.
+        localStorage.setItem('resolvarr-page', this.currentPage);
+        if (this.section) localStorage.setItem('resolvarr-settings-section', this.section);
+        if (this.scanSection) localStorage.setItem('resolvarr-scan-section', this.scanSection);
+        if (this.scanAppType) localStorage.setItem('resolvarr-scan-app-type', this.scanAppType);
+        if (this.tagsAppType) localStorage.setItem('resolvarr-tags-app-type', this.tagsAppType);
+        if (this.webhookAppType) localStorage.setItem('resolvarr-webhook-app-type', this.webhookAppType);
+        if (this.groupsSection) localStorage.setItem('resolvarr-groups-section', this.groupsSection);
+        return true;
+      } finally {
+        this._navSkipPush = false;
       }
     },
 
@@ -1229,6 +1629,7 @@ function app() {
         // background scans can happen any time after.
         this.loadDvCacheStats();
       }
+      this.pushNav();
     },
 
     // ---- Scan history (adhoc dumps) ----
@@ -1737,6 +2138,19 @@ function app() {
       // recoverResults is now null.
       this.recoverLoading = false;
       this.recoverApplying = false;
+
+      // Missing-episodes preview is keyed to a specific Sonarr instance —
+      // its episodeIDs / seriesIDs only mean anything against the
+      // instance that produced them. Switching instances and then
+      // hitting Search/Tag would otherwise pollute the new instance
+      // with orphan tag-applications or accidentally hit overlapping IDs.
+      // Same in-flight reset rule as recover: an orphan POST drops on the
+      // floor because missingEpisodesPreview is now null.
+      this.missingEpisodesPreview = null;
+      this.missingEpisodesSelected = {};
+      this.missingEpisodesError = '';
+      this.missingEpisodesLoading = false;
+      this.missingEpisodesApplying = false;
     },
     async runLibraryScan() {
       if (!this.scanInstanceId) {
@@ -1789,7 +2203,7 @@ function app() {
       }
     },
 
-    // ===== Tag release groups mini-wizard =====
+    // ===== Tag quality releases mini-wizard =====
     //
     // Replaces the legacy Tag library run-card with a guided flow
     // that walks the user through Use-active-vs-Use-Discover, filter
@@ -2056,7 +2470,7 @@ function app() {
 
     // ===== Discover-only mini-wizard =====
     //
-    // Opened by the "Run Discover" button on the Tag Release Groups
+    // Opened by the "Run Discover" button on the Tag quality releases
     // actions card. Walks the user through audit-mode + add-behavior
     // + filter selection before firing the existing runDiscover()
     // handler. Replaces the previous one-click button that fired
@@ -2158,7 +2572,7 @@ function app() {
             const searches = found.map(d => d.search);
             await this.addDiscoveredSearches(searches);
             // Dismiss the result modal — user lands back on the
-            // Tag Release Groups page with a toast + the updated
+            // Tag quality releases page with a toast + the updated
             // Active list. Otherwise the modal would still show
             // the auto-added candidates as if pending review.
             this.scanResults.discover = null;
@@ -3143,6 +3557,163 @@ function app() {
       }
     },
 
+    // ===== Missing episodes (Tag Library → Sonarr → Missing episodes) =====
+    //
+    // Three backend endpoints feed this surface:
+    //   - POST /api/scan/missing-episodes/preview  — run the scan
+    //   - POST /api/scan/missing-episodes/search   — trigger Sonarr search
+    //   - POST /api/scan/missing-episodes/tag      — apply / auto-cleanup tag
+    //
+    // The Search button goes straight to Sonarr's EpisodeSearch command
+    // (Sonarr queues + throttles internally). The Tag button writes a
+    // single configurable tag (default "missing-episodes") to every
+    // series with gaps, with auto-cleanup (removeFromOthers: true) so a
+    // re-scan after a series fills in retires the tag automatically.
+
+    async runMissingEpisodesScan() {
+      if (!this.scanInstanceId) {
+        this.showToast('Pick a Sonarr instance first', 'error');
+        return;
+      }
+      // C1: both filters disabled = no series will be scanned. Guard
+      // here so the user gets a clear toast instead of a backend 400 they
+      // can't see. The Run button is also :disabled in this state.
+      if (!this.missingEpisodesConfig.includeContinuing && !this.missingEpisodesConfig.includeEnded) {
+        this.showToast('Enable Continuing or Ended series first', 'error');
+        return;
+      }
+      this.missingEpisodesLoading = true;
+      this.missingEpisodesError = '';
+      try {
+        // C2/C3: bufferHours sent as a number with the explicit value the
+        // user typed (0 is a valid "any aired episode" sentinel). The
+        // backend uses *int to tell "not supplied" from "explicit 0",
+        // but the JSON wire format is just a number — we always send one.
+        const bufferHoursRaw = this.missingEpisodesConfig.bufferHours;
+        const bufferHours = (bufferHoursRaw === undefined || bufferHoursRaw === null || bufferHoursRaw === '')
+          ? 24
+          : Number(bufferHoursRaw);
+        const res = await fetch('/api/scan/missing-episodes/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            instanceId: this.scanInstanceId,
+            threshold: (this.missingEpisodesConfig.thresholdPercent || 70) / 100,
+            bufferHours: bufferHours,
+            includeContinuing: !!this.missingEpisodesConfig.includeContinuing,
+            includeEnded: !!this.missingEpisodesConfig.includeEnded,
+            includeSpecials: !!this.missingEpisodesConfig.includeSpecials,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        this.missingEpisodesPreview = data;
+        // Pre-select all missing episodes — the typical action after a
+        // scan is "search for everything that was found". The user can
+        // toggle off rows before hitting the bulk button.
+        const sel = {};
+        for (const s of (data.series || [])) {
+          for (const season of (s.seasons || [])) {
+            for (const ep of (season.missingEpisodes || [])) {
+              sel[ep.episodeID] = true;
+            }
+          }
+        }
+        this.missingEpisodesSelected = sel;
+        const tone = data.seriesWithGaps > 0 ? 'info' : 'success';
+        const msg = data.seriesWithGaps > 0
+          ? 'Scan complete: ' + data.totalMissingEpisodes + ' missing episodes across ' + data.seriesWithGaps + ' series'
+          : 'Scan complete: all ' + data.seriesScanned + ' series are complete';
+        this.showToast(msg, tone);
+      } catch (e) {
+        this.missingEpisodesError = String((e && e.message) || e);
+      } finally {
+        this.missingEpisodesLoading = false;
+      }
+    },
+
+    missingEpisodesSelectAll() {
+      const sel = {};
+      for (const s of ((this.missingEpisodesPreview && this.missingEpisodesPreview.series) || [])) {
+        for (const season of (s.seasons || [])) {
+          for (const ep of (season.missingEpisodes || [])) {
+            sel[ep.episodeID] = true;
+          }
+        }
+      }
+      this.missingEpisodesSelected = sel;
+    },
+    missingEpisodesSelectNone() { this.missingEpisodesSelected = {}; },
+    missingEpisodesSelectedCount() {
+      const sel = this.missingEpisodesSelected || {};
+      let n = 0;
+      for (const k of Object.keys(sel)) if (sel[k]) n++;
+      return n;
+    },
+
+    async missingEpisodesSearchSelected() {
+      const sel = this.missingEpisodesSelected || {};
+      const ids = Object.keys(sel).filter(k => sel[k]).map(k => Number(k));
+      if (ids.length === 0) return;
+      if (!confirm('Trigger Sonarr search for ' + ids.length + ' episodes? Sonarr will queue + throttle the search calls itself.')) return;
+      await this._missingEpisodesSearch(ids);
+    },
+    async missingEpisodesSearchOne(episodeID) {
+      await this._missingEpisodesSearch([episodeID]);
+    },
+    async _missingEpisodesSearch(episodeIDs) {
+      this.missingEpisodesApplying = true;
+      try {
+        const res = await fetch('/api/scan/missing-episodes/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instanceId: this.scanInstanceId, episodeIds: episodeIDs }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        this.showToast('Sonarr search triggered for ' + (data.triggered || episodeIDs.length) + ' episode(s)', 'success');
+      } catch (e) {
+        this.showToast('Search failed: ' + ((e && e.message) || e), 'error');
+      } finally {
+        this.missingEpisodesApplying = false;
+      }
+    },
+
+    async missingEpisodesTagSeries() {
+      const series = ((this.missingEpisodesPreview && this.missingEpisodesPreview.series) || []);
+      const seriesIDs = series.map(s => s.seriesID);
+      if (seriesIDs.length === 0) {
+        this.showToast('Run a scan first — no series to tag', 'error');
+        return;
+      }
+      const tagName = (this.missingEpisodesConfig.tagName || 'missing-episodes').trim();
+      if (!tagName) {
+        this.showToast('Tag name cannot be empty', 'error');
+        return;
+      }
+      if (!confirm('Tag ' + seriesIDs.length + ' series with "' + tagName + '"? Series that currently carry this tag but are no longer flagged will have it removed automatically.')) return;
+      this.missingEpisodesApplying = true;
+      try {
+        const res = await fetch('/api/scan/missing-episodes/tag', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            instanceId: this.scanInstanceId,
+            tagName: tagName,
+            seriesIds: seriesIDs,
+            removeFromOthers: true,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        this.showToast('Tagged ' + (data.applied || 0) + ' series, removed from ' + (data.removed || 0), 'success');
+      } catch (e) {
+        this.showToast('Tag failed: ' + ((e && e.message) || e), 'error');
+      } finally {
+        this.missingEpisodesApplying = false;
+      }
+    },
+
     // formatDate renders an ISO8601 timestamp in the CONTAINER'S host
     // context. Three controls feed in:
     //   - serverTimezone (from $TZ on init) — the moment is shown in
@@ -3420,9 +3991,14 @@ function app() {
     confirmRegenerateWebhookToken(instanceId, name) {
       const cfg = this.webhookConfigs[instanceId];
       const wasConfigured = !!(cfg && cfg.token);
+      const arrName = (this.instances.find(i => i.id === instanceId) || {}).type === 'sonarr' ? 'Sonarr' : 'Radarr';
+      // Rotation also rotates the Secret (Phase 2 Slice A) — surface
+      // that in the confirm message so users with Require-signature on
+      // know they'll need to re-paste the new Secret into Arr's
+      // Connect password field too.
       const msg = wasConfigured
-        ? 'Generate a new webhook URL for "' + name + '"?\n\nThe current URL will stop working immediately. You\'ll need to paste the new URL into ' + ((this.instances.find(i => i.id === instanceId) || {}).type === 'sonarr' ? 'Sonarr' : 'Radarr') + ' → Settings → Connect.'
-        : 'Generate a webhook URL for "' + name + '"?';
+        ? 'Generate a new webhook URL AND new Secret for "' + name + '"?\n\nThe current URL will stop working immediately. You\'ll need to paste BOTH the new URL and the new Secret into ' + arrName + ' → Settings → Connect → your Webhook (Secret goes in the password field).'
+        : 'Generate a webhook URL + Secret for "' + name + '"?';
       if (!confirm(msg)) return;
       this.regenerateWebhookToken(instanceId);
     },
@@ -3433,13 +4009,29 @@ function app() {
         // *bool and now distinguishes "field omitted" (preserve)
         // from "field present and false" (explicit disable). Old
         // behaviour silently flipped logging off on rotate.
+        //
+        // Backend also preserves RequireSignature across rotation,
+        // so users in strict mode stay in strict mode — but their
+        // Sonarr/Radarr config still has the OLD Secret in the
+        // password field, so events will start 401-ing until they
+        // re-paste. Toast surfaces this; the Setup-tab card's
+        // Require-signature toggle is still visible for an emergency
+        // downgrade to grace mode if the user wants events flowing
+        // while they go update Arr's config.
         const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook/rotate', {
           method: 'POST',
         });
         const d = await r.json();
         if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
         this.webhookConfigs = { ...this.webhookConfigs, [instanceId]: d };
-        this.showToast('New webhook URL generated', 'success');
+        if (d.requireSignature) {
+          this.showToast(
+            'New URL + Secret generated. Require-signature is ON — re-paste the new Secret into your Webhook password field in Sonarr/Radarr or events will be rejected.',
+            'success',
+          );
+        } else {
+          this.showToast('New webhook URL + Secret generated', 'success');
+        }
       } catch (e) {
         this.showToast('Rotate failed: ' + e.message, 'error');
       }
@@ -3593,14 +4185,25 @@ function app() {
     // § 3.
 
     openWebhookWizard() {
-      // Auto-pick the first Arr type that has any configured instance.
-      // Saves the user a click on first open. They can flip via the
-      // radio if they want the other type.
+      // Seed Arr-type from the page-level pill (webhookAppType).
+      // User picks the type out front via the pills, so the wizard
+      // mirrors that choice rather than re-deriving from instance
+      // pool. Wizard's internal Arr-type radios still let the user
+      // flip mid-configuration, mostly for users who haven't seen
+      // the pill yet.
       const insts = this.instances || [];
-      let appType = 'radarr';
-      const hasRadarr = insts.some(i => i.type === 'radarr');
-      const hasSonarr = insts.some(i => i.type === 'sonarr');
-      if (!hasRadarr && hasSonarr) appType = 'sonarr';
+      let appType = this.webhookAppType || 'radarr';
+      // Defence: if the picked app-type has no instances (shouldn't
+      // happen since the pill is :disabled in that state, but
+      // keyboard navigation could still trigger), fall back to
+      // whichever type does have one.
+      const hasPicked = insts.some(i => i.type === appType);
+      if (!hasPicked) {
+        const hasRadarr = insts.some(i => i.type === 'radarr');
+        const hasSonarr = insts.some(i => i.type === 'sonarr');
+        if (hasRadarr) appType = 'radarr';
+        else if (hasSonarr) appType = 'sonarr';
+      }
       // Seed instance: last-used remembered (when still in pool of
       // the picked appType — note: remembered may be from a different
       // type, in which case we ignore it) → first-of-type.
@@ -3615,7 +4218,9 @@ function app() {
         fnLogging: true,
         busy: false,
         generatedUrl: '',
+        generatedSecret: '',
         generatedLoggingEnabled: false,
+        requireSignature: false,
       };
     },
 
@@ -3729,6 +4334,13 @@ function app() {
         // previously-untracked instance key.
         this.webhookConfigs = { ...this.webhookConfigs, [instanceId]: result };
         this.webhookWizard.generatedUrl = result.url || '';
+        // Phase 2 Slice A: rotate response includes the new Secret +
+        // preserved RequireSignature flag. handleWebhookSetLogging's
+        // response doesn't carry these, but we re-fetched via GET
+        // /webhook above when the token already existed, so the
+        // result has them in both branches.
+        this.webhookWizard.generatedSecret = result.secret || '';
+        this.webhookWizard.requireSignature = !!result.requireSignature;
         this.webhookWizard.generatedLoggingEnabled = !!result.loggingEnabled;
         this.webhookWizard.step = 1;
       } catch (e) {
@@ -3785,6 +4397,99 @@ function app() {
         ok ? 'URL copied' : 'Copy failed — your browser blocked clipboard access',
         ok ? 'success' : 'error',
       );
+    },
+
+    // Copy the wizard's generated Secret. Same UX pattern as
+    // copyWebhookWizardUrl — toast on success/failure. The Secret is
+    // the shared password the user pastes into Sonarr/Radarr → Connect
+    // → Webhook → password. Phase 2 Slice A.
+    async copyWebhookWizardSecret() {
+      if (!this.webhookWizard.generatedSecret) return;
+      const ok = await this.copyToClipboard(this.webhookWizard.generatedSecret);
+      this.showToast(
+        ok ? 'Secret copied' : 'Copy failed — your browser blocked clipboard access',
+        ok ? 'success' : 'error',
+      );
+    },
+
+    // Toggle the Require-signature flag from within the wizard's
+    // Summary step. Optimistic update with revert-on-failure, same
+    // pattern as toggleWebhookLogging. Backend validator rejects
+    // {enabled:true} with 400 when stored Secret is empty — we
+    // shouldn't hit that here because the wizard reached Summary by
+    // generating both Token + Secret, but we surface the error
+    // through the toast just in case. Phase 2 Slice B.
+    async toggleWebhookWizardRequireSignature(enabled) {
+      const instanceId = this.webhookWizard.instanceId;
+      if (!instanceId) return;
+      const prev = this.webhookWizard.requireSignature;
+      this.webhookWizard.requireSignature = enabled;
+      try {
+        const r = await this.apiFetch(
+          '/api/instances/' + instanceId + '/webhook/require-signature',
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          },
+        );
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
+        // Mirror the new flag into the page-level cache so the
+        // Setup-tab card pill stays in sync without a refresh.
+        const cur = this.webhookConfigs[instanceId] || {};
+        this.webhookConfigs = {
+          ...this.webhookConfigs,
+          [instanceId]: { ...cur, requireSignature: enabled },
+        };
+        this.showToast(
+          enabled
+            ? 'Require signature on — events without the Secret will be rejected'
+            : 'Require signature off — events without the Secret pass with a warning',
+          'success',
+        );
+      } catch (e) {
+        // Revert optimistic update.
+        this.webhookWizard.requireSignature = prev;
+        this.showToast('Require-signature toggle failed: ' + e.message, 'error');
+      }
+    },
+
+    // Per-instance Require-signature toggle from the Setup tab's
+    // instance card. Same backend endpoint; this just lives outside
+    // the wizard so users can flip strict mode anytime. Phase 2
+    // Slice B.
+    async toggleWebhookRequireSignature(instanceId, enabled) {
+      const cfg = this.webhookConfigs[instanceId];
+      if (!cfg || !cfg.token) return;
+      const prev = !!cfg.requireSignature;
+      this.webhookConfigs = {
+        ...this.webhookConfigs,
+        [instanceId]: { ...cfg, requireSignature: enabled },
+      };
+      try {
+        const r = await this.apiFetch(
+          '/api/instances/' + instanceId + '/webhook/require-signature',
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled }),
+          },
+        );
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
+      } catch (e) {
+        // Revert.
+        this.webhookConfigs = {
+          ...this.webhookConfigs,
+          [instanceId]: { ...cfg, requireSignature: prev },
+        };
+        this.showToast('Require-signature toggle failed: ' + e.message, 'error');
+      }
     },
 
     // formatBytes renders a byte count in B / KB / MB / GB with one
@@ -4511,6 +5216,7 @@ function app() {
     setGroupsSection(section) {
       this.groupsSection = section;
       localStorage.setItem('resolvarr-groups-section', section);
+      this.pushNav();
     },
 
     async loadGroups() {
@@ -4548,13 +5254,13 @@ function app() {
     // Sub-tab visibility per active app-type.
     //
     // Restructure 2026-05-05: Tag library + Release Groups + Recover
-    // (Sonarr) all merged into one "Tag Release Groups" sub-tab
+    // (Sonarr) all merged into one "Tag quality releases" sub-tab
     // (internal id 'groups'). Standalone 'tag' and 'recover' sub-tabs
     // are unreachable from sidebar — kept in markup as legacy x-show
     // gates so any existing localStorage value or deep-linked state
     // doesn't 404, but new clicks always route through 'groups'.
     //
-    // Sonarr coverage today inside "Tag Release Groups": Recover
+    // Sonarr coverage today inside "Tag quality releases": Recover
     // works; Tag run + Discover are stubbed with M-Sonarr badges.
     // Filters + DV detail remain Radarr-only.
     scanSectionVisible(section) {
@@ -4564,14 +5270,17 @@ function app() {
       // moves to the wizard; Cleanup moves under Active groups.
       if (section === 'tag' || section === 'recover' || section === 'filters') return false;
       if (this.scanAppType === 'sonarr') {
-        // Sonarr's "Tag Release Groups" tab carries the Recover action
+        // Sonarr's "Tag quality releases" tab carries the Recover action
         // + stubbed Tag/Discover for naming consistency with Radarr.
-        // Filters + DV detail are Radarr-only.
+        // Filters + DV detail are Radarr-only. Missing episodes is
+        // Sonarr-only (Radarr doesn't have the per-episode model).
         return section === 'run'    || section === 'groups' ||
                section === 'audio'  || section === 'video'  ||
+               section === 'missing-episodes' ||
                section === 'history';
       }
-      // Radarr: every visible section.
+      // Radarr: every visible section EXCEPT missing-episodes (Sonarr-only).
+      if (section === 'missing-episodes') return false;
       return true;
     },
     setScanAppType(type) {
@@ -4593,6 +5302,7 @@ function app() {
       if (!this.scanSectionVisible(this.scanSection)) {
         this.setScanSection('run');
       }
+      this.pushNav();
     },
 
     // Returns 'radarr' | 'sonarr' for the active instance, defaulting to
@@ -5678,7 +6388,7 @@ function app() {
       if (!this.editingRule) return '';
       const m = this.editingRule.mode;
       const map = {
-        tag: 'Tag release groups',
+        tag: 'Tag quality releases',
         discover: 'Discover release groups',
         recover: 'Recover missing release groups',
         audiotags: 'Tag Audio',
@@ -6347,6 +7057,7 @@ function app() {
       // App-type switch invalidates the search cache (tags + items belong
       // to the previous instance) and clears the search field.
       this.resetTagSearchState({ clearCache: true });
+      this.pushNav();
     },
 
     // Resets the tag-search UI to its empty-query state. Used both on
@@ -9103,7 +9814,7 @@ function app() {
     // users on a Sonarr instance never see Radarr-only options that
     // would 501 at scan time.
     ruleModeCatalog: [
-      { value: 'tag',       label: 'Tag release groups — tag movies whose release group passes your filters',      appliesTo: ['radarr'] },
+      { value: 'tag',       label: 'Tag quality releases — tag movies whose release group passes your filters',      appliesTo: ['radarr'] },
       { value: 'discover',  label: 'Discover — find new release-groups in your library',                            appliesTo: ['radarr'] },
       { value: 'recover',   label: 'Recover — fill missing release-group fields from grab history',                 appliesTo: ['radarr', 'sonarr'] },
       { value: 'audiotags', label: 'Tag Audio — informative tags from audio mediaInfo (codec / channels / atmos)',  appliesTo: ['radarr', 'sonarr'] },
@@ -9127,7 +9838,7 @@ function app() {
     ruleCombinedSubstepCatalog: [
       { value: 'discover',  label: 'Discover new release-groups',         appliesTo: ['radarr'] },
       { value: 'recover',   label: 'Recover missing release-groups',      appliesTo: ['radarr', 'sonarr'] },
-      { value: 'tag',       label: 'Tag release groups',                  appliesTo: ['radarr'] },
+      { value: 'tag',       label: 'Tag quality releases',                  appliesTo: ['radarr'] },
       { value: 'audiotags', label: 'Tag Audio',                           appliesTo: ['radarr', 'sonarr'] },
       { value: 'videotags', label: 'Tag Video',                           appliesTo: ['radarr', 'sonarr'] },
       { value: 'dvdetail',  label: 'Tag DV Details',                      appliesTo: ['radarr'], optIn: true },
@@ -9165,9 +9876,111 @@ function app() {
       return 'tag';
     },
 
+    // ---- FUNCTION_INFO accessors ----
+    //
+    // Render-time helpers for the rule editor (and any future surface
+    // that wants the canonical short copy). Filters by current instance
+    // type + rule kind (schedule-only / webhook-only) so the same data
+    // object can drive both Basics blocks.
+    //
+    // List order matches the order the entries appear in FUNCTION_INFO
+    // — Object.values() preserves insertion order in modern JS engines.
+    functionInfoList(opts) {
+      const o = opts || {};
+      const wantWebhook = !!o.webhook;
+      const includeSeparate = !!o.includeSeparate;
+      const t = this.ruleEditorInstanceType();
+      return Object.values(this.FUNCTION_INFO).filter(fn => {
+        // Arr-type gate.
+        if (fn.appliesTo !== 'both' && t && fn.appliesTo !== t) return false;
+        // Schedule-only (Cleanup) — only on schedule rules.
+        if (fn.scheduleOnly && wantWebhook) return false;
+        // Webhook-only (file delete / grab rename / qbit S/E) — only
+        // on webhook rules.
+        if (fn.webhookOnly && !wantWebhook) return false;
+        // Separate-control (syncToSecondary) — excluded from lean
+        // checkbox lists; help-panel renders includes them via
+        // includeSeparate=true so the description still appears.
+        if (fn.separateControl && !includeSeparate) return false;
+        return true;
+      });
+    },
+    // Picks the right summary based on rule kind + instance type.
+    // Webhook context (single-file fire on Connect events) often differs
+    // from schedule context (full-library walk) — summaryWebhook /
+    // summaryWebhookSonarr override when present.  Falls through to
+    // summary / summarySonarr otherwise.
+    //
+    // Pass { webhook: true } to force webhook resolution; default reads
+    // the current ruleEditor kind so library-scan callers (which don't
+    // touch ruleEditor) still get the schedule wording.
+    functionInfoSummary(fn, opts) {
+      if (!fn) return '';
+      const o = opts || {};
+      const isWebhook = (o.webhook !== undefined) ? !!o.webhook : !!this.ruleEditorIsWebhook?.();
+      const t = this.ruleEditorInstanceType();
+      if (isWebhook) {
+        if (t === 'sonarr' && fn.summaryWebhookSonarr) return fn.summaryWebhookSonarr;
+        if (fn.summaryWebhook) return fn.summaryWebhook;
+      }
+      if (t === 'sonarr' && fn.summarySonarr) return fn.summarySonarr;
+      return fn.summary || '';
+    },
+    functionInfoTriggers(fn) {
+      if (!fn) return [];
+      const t = this.ruleEditorInstanceType();
+      if (t === 'sonarr' && fn.triggersSonarr) return fn.triggersSonarr;
+      return fn.triggers || [];
+    },
+    // Webhook-mode checkbox onChange — writes the value AND runs the
+    // same side-effects QFA's combined-mode toggle does, so dependent
+    // state stays consistent.  Mirror of ruleEditorCombinedToggle but
+    // for the webhook fn* flags.
+    //
+    // Side-effects today:
+    //   - Discover ON  → ensureDiscoverDefaults() (mirror QFA)
+    //   - Tag-RG OFF   → clear fnSyncToSecondary (Sync mirrors Tag-RG
+    //                    decisions — without Tag-RG it's invalid and
+    //                    backend would reject; rule-state stays clean)
+    webhookFnToggle(fn, checked) {
+      const r = this.editingRule;
+      if (!r || !r.options || !fn) return;
+      r.options[fn.optionFlag] = checked;
+      if (fn.id === 'discover' && checked) {
+        this.ensureDiscoverDefaults();
+      }
+      if (fn.id === 'tagReleaseGroups' && !checked) {
+        r.options.fnSyncToSecondary = false;
+      }
+    },
+    // Soft warning — DV detail layers profile/layer/CM-version tags on
+    // top of the base `dv` tag, which Tag Video → HDR emits. Ticking
+    // DV detail alone leaves files with profile tags but no base dv
+    // tag. Surfaces as a hint under the checkbox list, not a hard
+    // block — the user may know what they want.
+    webhookDvWithoutVideoWarning() {
+      const o = (this.editingRule && this.editingRule.options) || {};
+      return !!o.fnTagDvDetail && !o.fnTagVideo;
+    },
+
     // ---- Mode / tab visibility helpers ----
-    ruleAffectsTag()       { const r = this.editingRule; if (!r) return false; return r.mode === 'tag' || (r.mode === 'combined' && (r.options.combinedModes || []).includes('tag')); },
-    ruleAffectsDiscover()  { const r = this.editingRule; if (!r) return false; return r.mode === 'discover' || (r.mode === 'combined' && (r.options.combinedModes || []).includes('discover')); },
+    //
+    // Each helper checks BOTH the legacy schedule-mode flag (mode +
+    // combinedModes) AND the webhook-mode function flag (options.fnX,
+    // set by the Basics step's function checkboxes when kind='webhook').
+    // The unified rule editor uses the same RG / Filters / Audio /
+    // Video / DV / Recover / Sync steps for both kinds — these helpers
+    // are how the wizard decides which steps to show.
+    ruleAffectsTag()       {
+      const r = this.editingRule; if (!r) return false;
+      if (r.mode === 'tag' || (r.mode === 'combined' && (r.options.combinedModes || []).includes('tag'))) return true;
+      return !!(r.options && r.options.fnTagReleaseGroups);
+    },
+    ruleAffectsDiscover()  {
+      const r = this.editingRule; if (!r) return false;
+      if (r.mode === 'discover' || (r.mode === 'combined' && (r.options.combinedModes || []).includes('discover'))) return true;
+      return !!(r.options && r.options.fnDiscover);
+    },
 
     // Tag-phase release-group requirement. Returns true if validation
     // should reject an empty releaseGroupIds list. Bypassed when:
@@ -9222,7 +10035,21 @@ function app() {
       this.ensureDiscoverDefaults();
       r.options.tagSource = 'discover';
     },
-    ruleAffectsRecover()   { const r = this.editingRule; if (!r) return false; return r.mode === 'recover' || (r.mode === 'combined' && (r.options.combinedModes || []).includes('recover')); },
+    ruleAffectsRecover()   {
+      const r = this.editingRule; if (!r) return false;
+      if (r.mode === 'recover' || (r.mode === 'combined' && (r.options.combinedModes || []).includes('recover'))) return true;
+      return !!(r.options && r.options.fnRecover);
+    },
+    // Webhook-only function affects-helpers — schedule rules never
+    // set these so they stay false for that path.
+    ruleAffectsSyncToSecondaryFn() {
+      const o = (this.editingRule && this.editingRule.options) || {};
+      return !!o.fnSyncToSecondary;
+    },
+    ruleAffectsFileDeleteCleanFn() {
+      const o = (this.editingRule && this.editingRule.options) || {};
+      return !!o.fnFileDeleteClean;
+    },
     // ruleAffectsAutoTags: any of the three auto-tag sub-flows is
     // selected. Used for cross-cutting gates (e.g. the
     // AutoTagsRunOnSecondary checkbox + Review-step summary).
@@ -9234,8 +10061,8 @@ function app() {
       const r = this.editingRule;
       if (!r) return false;
       if (r.mode === 'audiotags') return true;
-      if (r.mode !== 'combined') return false;
-      return (r.options.combinedModes || []).includes('audiotags');
+      if (r.mode === 'combined' && (r.options.combinedModes || []).includes('audiotags')) return true;
+      return !!(r.options && r.options.fnTagAudio);
     },
     // ruleAffectsVideo: gates the Video tags wizard step (resolution
     // / codec / HDR buckets only — DV detail is its own step now).
@@ -9243,8 +10070,8 @@ function app() {
       const r = this.editingRule;
       if (!r) return false;
       if (r.mode === 'videotags') return true;
-      if (r.mode !== 'combined') return false;
-      return (r.options.combinedModes || []).includes('videotags');
+      if (r.mode === 'combined' && (r.options.combinedModes || []).includes('videotags')) return true;
+      return !!(r.options && r.options.fnTagVideo);
     },
     // ruleAffectsDvDetail: gates the DV detail wizard step. Lives
     // on its own fane + step because it requires extra tools and
@@ -9253,8 +10080,8 @@ function app() {
       const r = this.editingRule;
       if (!r) return false;
       if (r.mode === 'dvdetail') return true;
-      if (r.mode !== 'combined') return false;
-      return (r.options.combinedModes || []).includes('dvdetail');
+      if (r.mode === 'combined' && (r.options.combinedModes || []).includes('dvdetail')) return true;
+      return !!(r.options && r.options.fnTagDvDetail);
     },
     // Derived rule mode: when no quality / audio master is on, the
     // engine's CheckQuality + CheckAudio short-circuit to true, which
@@ -9287,18 +10114,410 @@ function app() {
     // own switch. Recover-only / cleanup-only rules show only Basics.
     ruleEditorTabVisible(tabId) {
       if (tabId === 'basics')   return true;
+      const isWebhook = this.ruleEditorIsWebhook();
       if (tabId === 'rg')       return this.ruleAffectsTag() || this.ruleAffectsDiscover();
       if (tabId === 'filters')  return this.ruleAffectsTag() || this.ruleAffectsDiscover();
       if (tabId === 'audio')    return this.ruleAffectsAudio();
       if (tabId === 'video')    return this.ruleAffectsVideo();
       if (tabId === 'dvdetail') return this.ruleAffectsDvDetail();
-      // Schedule step: visible only for cron-driven rules (not Manual
-      // run only) and never in quickfix mode (quickfix fires once and
-      // doesn't persist). Lets the wizard collapse Basics down to a
-      // simple "Schedule vs Manual" radio and put the cron pickers on
-      // their own step so the flow is shorter and clearer.
-      if (tabId === 'schedule') return !this.ruleEditor.isQuickFix && !!this.editingRule && !this.editingRule.manualOnly;
+      // Webhook-only steps. Hidden for schedule rules entirely; for
+      // webhook rules visible only when the corresponding function is
+      // ticked. Backend's webhook rule validate-then-persist requires
+      // the matching criteria/rules struct, so the step appears
+      // automatically the moment the user picks the function on
+      // Basics — same affects-X gate logic the other steps use.
+      if (tabId === 'grabrename') return isWebhook && this.ruleAffectsGrabRename();
+      if (tabId === 'qbitse')     return isWebhook && this.ruleAffectsQbitSe();
+      if (tabId === 'qbitcategoryfix') return isWebhook && this.ruleAffectsQbitCategoryFix();
+      // Schedule step: schedule rules only (cron-driven, not Manual
+      // and not quickfix). Webhook rules trigger on Connect events,
+      // not cron — the step hides entirely for kind='webhook'.
+      if (tabId === 'schedule') {
+        if (isWebhook) return false;
+        return !this.ruleEditor.isQuickFix && !!this.editingRule && !this.editingRule.manualOnly;
+      }
       return false;
+    },
+
+    // Convenience: the editor is in webhook-rule mode when ruleEditor.
+    // kind is explicitly 'webhook'. Empty / 'schedule' / undefined all
+    // route to the legacy schedule-rule flow so existing entry points
+    // (Create rule, QFA, per-action wizards) keep working unchanged.
+    ruleEditorIsWebhook() {
+      return !!(this.ruleEditor && this.ruleEditor.kind === 'webhook');
+    },
+
+    // True when the webhook-mode rule has at least one function ticked.
+    // Mirrors webhookWizardAnyFunctionTicked but reads off editingRule
+    // instead of the now-deprecated webhookWizard.fn* fields. Used by
+    // the Basics-step warning + Save-time validation.
+    webhookRuleAnyFunctionTicked() {
+      const o = (this.editingRule && this.editingRule.options) || {};
+      return !!(o.fnTagReleaseGroups || o.fnDiscover || o.fnTagAudio || o.fnTagVideo
+                || o.fnTagDvDetail || o.fnRecover || o.fnSyncToSecondary
+                || o.fnFileDeleteClean || o.fnGrabRename || o.fnQbitSeTag
+                || o.fnQbitCategoryFix);
+    },
+
+    // Entry point for the Webhooks page +Add rule button. Opens the
+    // unified rule editor in webhook mode against the picked instance.
+    // Mirrors openCreateRuleWizard's shape but seeds editingRule with
+    // a webhook-rule skeleton + sets ruleEditor.kind = 'webhook' so the
+    // Basics step + visibleSteps + save flow branch correctly.
+    openWebhookRuleEditor(instanceId) {
+      if (!instanceId) {
+        this.showToast('Pick an instance first', 'error');
+        return;
+      }
+      const inst = (this.instances || []).find(i => i.id === instanceId);
+      if (!inst) {
+        this.showToast('Instance not found — refresh the page', 'error');
+        return;
+      }
+      // Webhook rules don't have a mode-string the way schedule rules
+      // do (mode='tag'/'discover'/'combined'/etc. drives the schedule
+      // chain). For the webhook editor mode='webhook' is a sentinel
+      // value the editor recognises but the backend doesn't read —
+      // backend uses Functions[] directly. Empty options.combinedModes
+      // keeps the schedule-mode helpers correctly returning false.
+      this.editingRule = {
+        id: '',
+        name: '',
+        mode: 'webhook',
+        instanceId,
+        enabled: true,
+        manualOnly: true, // keeps schedule-step hidden via the existing manualOnly gate
+        options: {
+          // Function flags — start clean, user picks on Basics.
+          fnTagReleaseGroups: false,
+          fnDiscover:         false,
+          fnTagAudio:         false,
+          fnTagVideo:         false,
+          fnTagDvDetail:      false,
+          fnRecover:          false,
+          fnSyncToSecondary:  false,
+          fnFileDeleteClean:  false,
+          fnGrabRename:       false,
+          fnQbitSeTag:        false,
+          fnQbitCategoryFix:  false,
+          // Per-action shared options the schedule editor seeds —
+          // mirrored here so the per-step UIs (RG / Filters / Audio /
+          // Video / DV) read the same shape and don't NaN on undefined.
+          tagSource: '',
+          filterOnlyTag: 'lossless-web',
+          cleanupUnusedTags: false,
+          syncToSecondary: false,
+          syncToInstanceId: '',
+          discoverWriteBack: false,
+          discoverScanSecondary: false,
+          autoActivateDiscovered: false,
+          audioTagsTarget: 'primary',
+          videoTagsTarget: 'primary',
+          dvDetailTarget:  'primary',
+          recoverTarget:   'primary',
+        },
+        filters:         this.snapshotGlobalFilters(),
+        audioTags:       this.snapshotGlobalAudioTags(),
+        videoTags:       this.snapshotGlobalVideoTags(),
+        dvDetail:        this.snapshotGlobalDvDetail(),
+        releaseGroupIds: this.snapshotGlobalRGIds(instanceId),
+        // Seed Grab Rename + qBit S/E + qBit Category Fix criteria with
+        // sensible defaults. All three are pre-populated even when their
+        // fn flag is off so the user can tick the function on Basics and
+        // immediately have a hydrated form on Step 3b / 3c / 3d without
+        // defensive null-checks sprinkled through the templates. Save
+        // flow only sends them when the matching fn is enabled. Shape is
+        // shared with normalizeWebhookRuleClientShape (see below) — if
+        // you add a field here, mirror it in defaultWebhookRuleStructs()
+        // so old rules loaded from the server backfill cleanly.
+        ...this.defaultWebhookRuleStructs(),
+      };
+      this.ruleEditor = {
+        open: true,
+        isCreate: true,
+        isQuickFix: false,
+        step: 0,
+        activeTab: 'basics',
+        appType: inst.type,
+        kind: 'webhook',
+        busy: false,
+        error: '',
+        cronError: '',
+        nextFires: [],
+      };
+      // TODO: openEditWebhookRuleModal — when an Edit button lands on
+      // the webhook rules list (currently only Pause/Resume + Delete),
+      // populate editingRule.grabRename + editingRule.qbitSe +
+      // editingRule.qbitCategoryFix from the server response so the
+      // wizard re-opens with persisted criteria. Until then existing
+      // rules can only be deleted + recreated. IMPORTANT: pass the
+      // server rule through normalizeWebhookRuleClientShape() before
+      // assigning to editingRule — legacy rules saved before the qBit
+      // Category Fix / future struct-shaped fields landed don't have
+      // those keys, and the template's :value/x-model bindings on
+      // qbitCategoryFix.qbitInstanceId would throw on undefined.
+    },
+
+    // defaultWebhookRuleStructs is the single source of truth for the
+    // default shape of struct-typed webhook-rule fields. Used by:
+    //
+    //   - openWebhookRuleEditor — seeds fresh rules.
+    //   - normalizeWebhookRuleClientShape — backfills legacy rules
+    //     loaded from /api/webhook-rules that pre-date the addition of
+    //     a struct field.
+    //
+    // When adding a new struct-shaped rule field: add its default here
+    // FIRST, then reference via defaultWebhookRuleStructs()[fieldName]
+    // wherever a fresh-default is needed. Keeps create + edit + load
+    // paths from drifting apart silently.
+    defaultWebhookRuleStructs() {
+      return {
+        grabRename: {
+          renameTarget: 'torrent',
+          triggerOnMissingReleaseGroup: true,
+          triggerOnMovieVersionMismatch: false,
+          triggerOnSourceMismatch: false,
+          triggerOnAudioMismatch: false,
+          triggerOnSceneMismatch: false,
+          triggerAlways: false,
+          customTokens: [],
+          groupBlocklist: [],
+          qbitInstanceId: '',
+        },
+        qbitSe: {
+          // Three-rule first-match-wins model — mirror of community
+          // qbittorrent_auto_tagger.py. All three rules seeded ON so a
+          // brand-new rule produces tags out of the box.
+          qbitInstanceId: '',
+          episodeEnabled: true,  episodeTag: 'Episode',
+          seasonEnabled: true,   seasonTag: 'Season',
+          unmatchedEnabled: true, unmatchedTag: 'Unmatched',
+        },
+        // qBit Category Fix — defensive reconcile of stuck pre-import
+        // categories. Snapshot fields filled in by autoFillQbitCategories
+        // once the user picks a download client from the live Arr list.
+        qbitCategoryFix: {
+          qbitInstanceId: '',
+          arrDownloadClientId: 0,
+          preImportCategorySnapshot: '',
+          postImportCategorySnapshot: '',
+        },
+      };
+    },
+
+    // normalizeWebhookRuleClientShape backfills struct-typed fields that
+    // a saved rule may pre-date. The Go side encodes nil pointers as
+    // missing JSON keys (omitempty), so a rule saved before the qBit
+    // Category Fix landed would deserialise with rule.qbitCategoryFix
+    // === undefined. The wizard's Alpine bindings (x-model on
+    // editingRule.qbitCategoryFix.qbitInstanceId etc.) would throw on
+    // undefined. Run every server-sourced rule through this helper before
+    // assigning it to editingRule.
+    //
+    // Mutates + returns the same object for ergonomic chaining.
+    normalizeWebhookRuleClientShape(rule) {
+      if (!rule || typeof rule !== 'object') return rule;
+      const defaults = this.defaultWebhookRuleStructs();
+      for (const key of Object.keys(defaults)) {
+        if (rule[key] == null) {
+          rule[key] = JSON.parse(JSON.stringify(defaults[key]));
+        }
+      }
+      return rule;
+    },
+
+    // Function-affects helpers for the new webhook-only steps. Mirror
+    // the ruleAffects{Tag,Audio,Video,DvDetail,Discover}() pattern but
+    // read off editingRule.options.fn* (set by the Basics step's
+    // function checkboxes). Schedule rules never have these flags so
+    // the helpers correctly return false there.
+    ruleAffectsGrabRename() {
+      const o = (this.editingRule && this.editingRule.options) || {};
+      return !!o.fnGrabRename;
+    },
+    ruleAffectsQbitSe() {
+      const o = (this.editingRule && this.editingRule.options) || {};
+      return !!o.fnQbitSeTag;
+    },
+    ruleAffectsQbitCategoryFix() {
+      const o = (this.editingRule && this.editingRule.options) || {};
+      return !!o.fnQbitCategoryFix;
+    },
+
+    // ---- qBit Category Fix helpers ----
+    //
+    // Loads the Arr's download-client list on demand so the user picks
+    // a download client by name (not ID) and the pre/post category
+    // names auto-populate from Sonarr/Radarr's own config. Cached
+    // backend-side for 5min; forceRefresh=true invalidates that cache
+    // so a user who just edited a category in Sonarr/Radarr UI can
+    // see the change immediately.
+
+    arrDownloadClients: [],
+    arrDownloadClientsLoading: false,
+    arrDownloadClientsError: '',
+
+    async loadArrDownloadClients(arrInstanceId, forceRefresh) {
+      if (!arrInstanceId) return;
+      this.arrDownloadClientsLoading = true;
+      this.arrDownloadClientsError = '';
+      try {
+        const qs = forceRefresh ? '?refresh=1' : '';
+        const r = await this.apiFetch('/api/instances/' + arrInstanceId + '/download-clients' + qs);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        // Filter to qBit implementations only — other download-client
+        // types (sabnzbd, nzbget, deluge) don't use the qBit category
+        // pre/post model.
+        this.arrDownloadClients = (Array.isArray(data) ? data : [])
+          .filter(c => c.implementation && c.implementation.toLowerCase().includes('qbittorrent'));
+        // Auto-select when there's exactly one + nothing picked yet,
+        // so the typical single-qBit user lands with a working form
+        // immediately on entering the step.
+        const cf = this.editingRule && this.editingRule.qbitCategoryFix;
+        if (cf && this.arrDownloadClients.length === 1 && !cf.arrDownloadClientId) {
+          cf.arrDownloadClientId = this.arrDownloadClients[0].id;
+          this.autoFillQbitCategories();
+        }
+      } catch (e) {
+        this.arrDownloadClientsError = 'Failed to load download clients: ' + (e.message || e);
+        this.arrDownloadClients = [];
+      } finally {
+        this.arrDownloadClientsLoading = false;
+      }
+    },
+
+    // Pulls the pre/post category names out of the picked download
+    // client and copies them onto the rule's snapshot fields. Called
+    // on @change of the select + on auto-select.
+    autoFillQbitCategories() {
+      const cf = this.editingRule && this.editingRule.qbitCategoryFix;
+      if (!cf || !cf.arrDownloadClientId) return;
+      const dc = this.arrDownloadClients.find(c => c.id === cf.arrDownloadClientId);
+      if (!dc) return;
+      cf.preImportCategorySnapshot = dc.qbitPreCat || '';
+      cf.postImportCategorySnapshot = dc.qbitPostCat || '';
+    },
+
+    // Inline-warning string for the qBit Category Fix step. Empty
+    // string means the form is fillable / advancable; non-empty
+    // returns a short message the template renders + the Next button
+    // uses to gate advance.
+    qbitCategoryFixWarning() {
+      const cf = this.editingRule && this.editingRule.qbitCategoryFix;
+      if (!cf) return '';
+      if (!cf.qbitInstanceId) return 'Pick a qBit instance.';
+      if (!cf.arrDownloadClientId) return 'Pick a download client from Sonarr/Radarr.';
+      if (!cf.preImportCategorySnapshot || !cf.postImportCategorySnapshot) {
+        return 'The selected download client doesn\'t have both Pre-import and Post-import categories configured. Set them in Sonarr/Radarr → Settings → Download Clients first.';
+      }
+      if (cf.preImportCategorySnapshot === cf.postImportCategorySnapshot) {
+        return 'Pre-import and post-import categories must differ.';
+      }
+      return '';
+    },
+
+    // True when none of the three classifier rules (Episode / Season /
+    // Unmatched) is enabled — backend would reject save with "must
+    // enable at least one of episodeEnabled / seasonEnabled /
+    // unmatchedEnabled". Surfaces inline on Step 3c so the user catches
+    // it before clicking Save / Next.
+    qbitSeNoRuleEnabled() {
+      const q = (this.editingRule && this.editingRule.qbitSe) || {};
+      return !q.episodeEnabled && !q.seasonEnabled && !q.unmatchedEnabled;
+    },
+
+    // Tag-name regex check — mirrors backend's reTagName pattern
+    // (^[a-z0-9][a-z0-9_-]*$). Case-insensitive on input because
+    // Radarr's API is strict (all-lowercase) but qBit accepts any
+    // casing; backend lowercases the user's input before validating.
+    // Empty / whitespace returns true (the validator backfills the
+    // default name on save when the field is blank).
+    qbitSeTagNameValid(name) {
+      const trimmed = String(name || '').trim();
+      if (trimmed === '') return true;
+      return /^[a-z0-9][a-z0-9_-]*$/i.test(trimmed);
+    },
+
+    // ---- Grab Rename criteria editor helpers ----
+    //
+    // All read off editingRule.grabRename, which openWebhookRuleEditor
+    // seeds with default values. Defensive ?? || fallbacks keep the
+    // helpers safe even if a future entry path forgets to seed.
+
+    // True when ALL six built-in trigger flags are off AND no custom
+    // tokens are defined — backend would reject save with "must enable
+    // at least one trigger". Surfaces inline on Step 3b so the user
+    // catches it before clicking Save.
+    grabRenameNoTriggerSelected() {
+      const c = (this.editingRule && this.editingRule.grabRename) || {};
+      if (c.triggerOnMissingReleaseGroup) return false;
+      if (c.triggerOnMovieVersionMismatch) return false;
+      if (c.triggerOnSourceMismatch) return false;
+      if (c.triggerOnAudioMismatch) return false;
+      if (c.triggerOnSceneMismatch) return false;
+      if (c.triggerAlways) return false;
+      if ((c.customTokens || []).length > 0) return false;
+      return true;
+    },
+
+    // Group blocklist mutators — bind via @click / @input bindings on
+    // Step 3b. Direct array push/splice is fine; Alpine reactivity
+    // tracks modifications to arrays-on-objects.
+    addGrabRenameBlocklist() {
+      const c = this.editingRule && this.editingRule.grabRename;
+      if (!c) return;
+      if (!Array.isArray(c.groupBlocklist)) c.groupBlocklist = [];
+      c.groupBlocklist.push('');
+    },
+    removeGrabRenameBlocklist(idx) {
+      const c = this.editingRule && this.editingRule.grabRename;
+      if (!c || !Array.isArray(c.groupBlocklist)) return;
+      c.groupBlocklist.splice(idx, 1);
+    },
+    updateGrabRenameBlocklist(idx, val) {
+      const c = this.editingRule && this.editingRule.grabRename;
+      if (!c || !Array.isArray(c.groupBlocklist)) return;
+      c.groupBlocklist[idx] = val;
+    },
+
+    // Custom-token mutators — Label:regex pairs. Server-side regex
+    // compile is the load-bearing validation; the client try-compile
+    // (grabRenameRegexInvalid) catches obvious typos before save.
+    addGrabRenameCustomToken() {
+      const c = this.editingRule && this.editingRule.grabRename;
+      if (!c) return;
+      if (!Array.isArray(c.customTokens)) c.customTokens = [];
+      c.customTokens.push({ label: '', regex: '' });
+    },
+    removeGrabRenameCustomToken(idx) {
+      const c = this.editingRule && this.editingRule.grabRename;
+      if (!c || !Array.isArray(c.customTokens)) return;
+      c.customTokens.splice(idx, 1);
+    },
+    updateGrabRenameCustomTokenLabel(idx, val) {
+      const c = this.editingRule && this.editingRule.grabRename;
+      if (!c || !Array.isArray(c.customTokens) || !c.customTokens[idx]) return;
+      c.customTokens[idx].label = val;
+    },
+    updateGrabRenameCustomTokenRegex(idx, val) {
+      const c = this.editingRule && this.editingRule.grabRename;
+      if (!c || !Array.isArray(c.customTokens) || !c.customTokens[idx]) return;
+      c.customTokens[idx].regex = val;
+    },
+
+    // Returns true when the JS regex engine rejects the source — best-
+    // effort client-side check. Server's RE2 engine is the truth source;
+    // an empty regex returns false (not invalid, just unset — a separate
+    // "regex is required" check covers that on save).
+    grabRenameRegexInvalid(regex) {
+      if (!regex || !regex.trim()) return false;
+      try {
+        new RegExp(regex);
+        return false;
+      } catch (e) {
+        return true;
+      }
     },
     ruleEditorVisibleTabs()  { return this.ruleEditorTabs.filter(t => this.ruleEditorTabVisible(t.id)); },
     ruleEditorVisibleSteps() {
@@ -9359,13 +10578,13 @@ function app() {
         }
       }
       if (step === 'filters' && this.ruleAffectsTag()) {
-        // Filter is mandatory for Tag release groups runs after the
+        // Filter is mandatory for Tag quality releases runs after the
         // 2026-05-05 restructure. At least one master (Quality or
         // Audio) must be on. Per-group filtered/simple flag still
         // exists as override but globally we require a filter.
         const f = r.filters || {};
         if (!f.Quality && !f.Audio) {
-          return 'Tag release groups requires at least one filter — enable Quality or Audio above to continue.';
+          return 'Tag quality releases requires at least one filter — enable Quality or Audio above to continue.';
         }
       }
       if (step === 'audio' && this.ruleAffectsAudio()) {
@@ -9390,6 +10609,61 @@ function app() {
         const dd = r.dvDetail;
         if (!dd || !dd.enabled) {
           return 'Enable DV detail above before continuing — this rule includes the Dolby Vision detail phase.';
+        }
+      }
+      // Grab Rename — backend rejects rules with no qBit instance, no
+      // trigger selected, or a custom-token row missing label/regex /
+      // with bad regex. Catch at Next-button time so the user doesn't
+      // hit save-failures from the Review step.
+      if (step === 'grabrename' && this.ruleAffectsGrabRename()) {
+        const c = r.grabRename || {};
+        if (!c.qbitInstanceId) {
+          return 'Pick a qBit instance for Grab Rename before continuing.';
+        }
+        if (this.grabRenameNoTriggerSelected()) {
+          return 'Enable at least one trigger (or define a custom token) before continuing.';
+        }
+        const tokens = c.customTokens || [];
+        for (let i = 0; i < tokens.length; i++) {
+          const t = tokens[i] || {};
+          if (!t.label || !String(t.label).trim()) {
+            return 'Custom token #' + (i + 1) + ' is missing a label.';
+          }
+          if (!t.regex || !String(t.regex).trim()) {
+            return 'Custom token #' + (i + 1) + ' is missing a regex.';
+          }
+          if (this.grabRenameRegexInvalid(t.regex)) {
+            return 'Custom token #' + (i + 1) + ' has an invalid regex.';
+          }
+        }
+      }
+      // qBit Category Fix — backend rejects on empty qbit / missing
+      // download-client / equal-or-empty pre/post categories. Pull the
+      // canonical reason out of the dedicated helper so the gate and
+      // the inline warning stay in sync.
+      if (step === 'qbitcategoryfix' && this.ruleAffectsQbitCategoryFix()) {
+        const w = this.qbitCategoryFixWarning();
+        if (w) return w;
+      }
+      // qBit S/E tag — backend (webhook_rules.go) rejects with empty
+      // qbit instance OR no rule enabled OR an enabled rule's tag name
+      // failing the regex check. Mirror all three gates here.
+      if (step === 'qbitse' && this.ruleAffectsQbitSe()) {
+        const q = r.qbitSe || {};
+        if (!q.qbitInstanceId) {
+          return 'Pick a qBit instance for tagging before continuing.';
+        }
+        if (this.qbitSeNoRuleEnabled()) {
+          return 'Enable Episode, Season, or Unmatched before continuing.';
+        }
+        if (q.episodeEnabled && !this.qbitSeTagNameValid(q.episodeTag)) {
+          return 'Episode tag name must be letters, digits, underscores, or dashes.';
+        }
+        if (q.seasonEnabled && !this.qbitSeTagNameValid(q.seasonTag)) {
+          return 'Season tag name must be letters, digits, underscores, or dashes.';
+        }
+        if (q.unmatchedEnabled && !this.qbitSeTagNameValid(q.unmatchedTag)) {
+          return 'Unmatched tag name must be letters, digits, underscores, or dashes.';
         }
       }
       return null;
@@ -9505,6 +10779,27 @@ function app() {
       if (this.ruleEditorInstanceType() === 'sonarr' && r.options.combinedModes.length === 0) {
         r.options.combinedModes = ['recover'];
       }
+      // qBit Category Fix: the picked Arr-side download-client ID + the
+      // pre/post category snapshots are scoped to the OLD instance's
+      // /api/v3/downloadclient list. After switching to a new Arr the
+      // saved ID may not exist on the new instance — clear them so the
+      // user has to re-pick from the new instance's live list. Same for
+      // the loaded list itself (different Arr → different clients) and
+      // the error/loading status.
+      if (r.qbitCategoryFix) {
+        r.qbitCategoryFix.arrDownloadClientId = 0;
+        r.qbitCategoryFix.preImportCategorySnapshot = '';
+        r.qbitCategoryFix.postImportCategorySnapshot = '';
+      }
+      this.arrDownloadClients = [];
+      this.arrDownloadClientsError = '';
+      // If the rule currently has qBit Category Fix on, kick off a fresh
+      // load against the new instance so the user lands on Step 3d with
+      // a populated picker rather than an empty state.
+      if (typeof this.ruleAffectsQbitCategoryFix === 'function' &&
+          this.ruleAffectsQbitCategoryFix() && r.instanceId) {
+        this.loadArrDownloadClients(r.instanceId);
+      }
     },
 
     // ---- Release Groups picker ----
@@ -9564,6 +10859,13 @@ function app() {
       const r = this.editingRule;
       if (!r) return;
       this.ruleEditor.error = '';
+      // Webhook-rule branch — kind='webhook' takes precedence over the
+      // schedule path. Builds the webhook-rule body (functions array,
+      // per-rule snapshots, no cron) and POSTs to /api/webhook-rules.
+      // Schedule-rule path below stays untouched for kind='schedule'.
+      if (this.ruleEditorIsWebhook()) {
+        return this.saveWebhookRuleEditor();
+      }
       // Quickfix mode skips name/cron validation — the wizard hides
       // those fields. Save dispatches the chain instead of persisting
       // a rule (see runQuickFixChain in the dispatcher).
@@ -9647,6 +10949,578 @@ function app() {
       } finally {
         this.ruleEditor.busy = false;
       }
+    },
+
+    // Webhook-rule save flow. Branched off saveRuleEditor when
+    // ruleEditor.kind === 'webhook'. Builds the WebhookRule shape,
+    // POSTs to /api/webhook-rules (or PUTs on update), refreshes the
+    // local cache, closes the editor on success. Validation errors
+    // surface inline + leave the wizard open so the user can fix.
+    async saveWebhookRuleEditor() {
+      const r = this.editingRule;
+      const inst = (this.instances || []).find(i => i.id === r.instanceId);
+      if (!inst) {
+        this.ruleEditor.error = 'Pick a target instance';
+        return;
+      }
+      if (!r.name || !r.name.trim()) {
+        this.ruleEditor.error = 'Rule name is required';
+        return;
+      }
+      if (!this.webhookRuleAnyFunctionTicked()) {
+        this.ruleEditor.error = 'Pick at least one function on the Basics step';
+        return;
+      }
+      // Build canonical-ordered functions array — matches dispatcher
+      // execution order so saved Functions[] reads naturally in the
+      // rule list + audit logs.
+      const o = r.options || {};
+      const fnList = [];
+      if (o.fnDiscover)         fnList.push('discover');
+      if (o.fnRecover)          fnList.push('recover');
+      if (o.fnTagReleaseGroups) fnList.push('tagReleaseGroups');
+      if (o.fnTagAudio)         fnList.push('tagAudio');
+      if (o.fnTagVideo)         fnList.push('tagVideo');
+      if (o.fnTagDvDetail)      fnList.push('tagDvDetail');
+      if (o.fnSyncToSecondary)  fnList.push('syncToSecondary');
+      if (o.fnFileDeleteClean)  fnList.push('fileDeleteClean');
+      if (o.fnGrabRename)       fnList.push('grabRename');
+      if (o.fnQbitSeTag)        fnList.push('qbitSeTag');
+      if (o.fnQbitCategoryFix)  fnList.push('qbitCategoryFix');
+      const body = {
+        name: r.name.trim(),
+        enabled: r.enabled !== false,
+        instanceId: r.instanceId,
+        appType: inst.type,
+        functions: fnList,
+      };
+      // Per-rule snapshots — only sent when the corresponding step
+      // is relevant. Webhook rules use the same gates (ruleAffectsTag
+      // etc.) as schedule rules, so this mirrors saveRuleEditor's
+      // schedule branch.
+      if (this.ruleEditorTabVisible('rg'))       body.releaseGroupIds = [...(r.releaseGroupIds || [])];
+      if (this.ruleEditorTabVisible('filters'))  body.filters = { ...r.filters };
+      if (this.ruleEditorTabVisible('audio') && r.audioTags)    body.audioTags = JSON.parse(JSON.stringify(r.audioTags));
+      if (this.ruleEditorTabVisible('video') && r.videoTags)    body.videoTags = JSON.parse(JSON.stringify(r.videoTags));
+      if (this.ruleEditorTabVisible('dvdetail') && r.dvDetail)  body.dvDetail  = JSON.parse(JSON.stringify(r.dvDetail));
+      // Filter-only tag-source — only sent when the rule is in
+      // filter-only mode AND Tag-RG is enabled (otherwise the fields
+      // are meaningless and the backend would reject filterOnlyTag
+      // alone with an unrelated function set). Backend mirrors the
+      // schedule path's validator: tagSource clamps to active /
+      // filter-only; filterOnlyTag is required when filter-only +
+      // Tag-RG; tag must match Radarr's `^[a-z0-9-]+$` regex; tag
+      // must not collide with an existing per-group rule's Tag.
+      if ((o.tagSource || '').trim() === 'filter-only' && o.fnTagReleaseGroups) {
+        body.tagSource = 'filter-only';
+        body.filterOnlyTag = (o.filterOnlyTag || 'lossless-web').trim();
+      }
+
+      // Sync target — only meaningful when fnSyncToSecondary is on.
+      if (o.fnSyncToSecondary && o.syncToInstanceId) {
+        body.syncToInstanceId = o.syncToInstanceId;
+      }
+      // GrabRename / QbitSe criteria — only sent when the matching fn
+      // is enabled. Backend's validator (validateGrabRenameCriteria +
+      // qbitInstanceExists checks) requires the struct + a valid
+      // qbitInstanceId when the function is in the rule's Functions
+      // list, so this gate is symmetric with the wizard's tab gating.
+      if (o.fnGrabRename && r.grabRename) {
+        body.grabRename = JSON.parse(JSON.stringify(r.grabRename));
+      }
+      if (o.fnQbitSeTag && r.qbitSe) {
+        body.qbitSe = JSON.parse(JSON.stringify(r.qbitSe));
+      }
+      if (o.fnQbitCategoryFix && r.qbitCategoryFix) {
+        body.qbitCategoryFix = JSON.parse(JSON.stringify(r.qbitCategoryFix));
+      }
+      this.ruleEditor.busy = true;
+      try {
+        const url = r.id ? `/api/webhook-rules/${r.id}` : '/api/webhook-rules';
+        const method = r.id ? 'PUT' : 'POST';
+        const res = await this.apiFetch(url, {
+          method, headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(d.error || 'HTTP ' + res.status);
+        this.ruleEditor.open = false;
+        this.editingRule = null;
+        this.showToast(r.id ? 'Webhook rule updated' : 'Webhook rule created', 'success');
+        await this.loadWebhookRules();
+      } catch (e) {
+        this.ruleEditor.error = e.message || 'Save failed';
+      } finally {
+        this.ruleEditor.busy = false;
+      }
+    },
+
+    // Load the webhook-rules list from the server. Mirrors loadSchedules
+    // — populates this.webhookRules so the Webhooks page list +
+    // editor edit-flow can read off the same array.
+    async loadWebhookRules() {
+      try {
+        const r = await this.apiFetch('/api/webhook-rules');
+        if (r.ok) {
+          const d = await r.json();
+          this.webhookRules = Array.isArray(d) ? d : [];
+        }
+      } catch (e) {
+        // Silent — Webhooks page surfaces its own load-failed state.
+      }
+    },
+
+    // Filter the rules list to a specific instance. Used by the
+    // per-instance card on the Webhooks page.
+    webhookRulesForInstance(instanceId) {
+      return (this.webhookRules || []).filter(r => r.instanceId === instanceId);
+    },
+
+    // Compute the Connect event types this instance's webhook needs
+    // toggled on in Sonarr/Radarr. Logging-only mode → all events
+    // (logging captures everything). Otherwise derive from the
+    // enabled rules' functions:
+    //   tagReleaseGroups / discover / tagAudio / tagVideo / tagDvDetail
+    //     / recover / syncToSecondary  → On Import + On Upgrade
+    //     (Sonarr: On Download — download/import + upgrade)
+    //   fileDeleteClean → On Movie File Delete (Radarr) /
+    //                     On Episode File Delete (Sonarr)
+    //   grabRename / qbitSeTag → On Grab
+    // 'On Test' is always recommended so the user can verify the
+    // setup with a Test ping from Sonarr/Radarr's Connect config.
+    // Compute the Connect events Sonarr/Radarr needs toggled on
+    // for the picked function set. Names match the actual labels
+    // in Radarr v5 / Sonarr v4 Connect → Webhook config. Note:
+    // "On Test" is NOT a togglable event — it's a button in
+    // Connect that lets you fire a test ping. Listing it here
+    // would send users hunting for a checkbox that doesn't exist.
+    webhookEventsForFunctions(fnSet, isSonarr) {
+      const events = new Set();
+      const importLike = ['tagReleaseGroups', 'discover', 'tagAudio', 'tagVideo',
+                          'tagDvDetail', 'recover', 'syncToSecondary'];
+      if (importLike.some(f => fnSet.has(f))) {
+        events.add('On File Import');
+        events.add('On File Upgrade');
+      }
+      if (fnSet.has('fileDeleteClean')) {
+        events.add(isSonarr ? 'On Episode File Delete' : 'On Movie File Delete');
+      }
+      if (fnSet.has('grabRename') || fnSet.has('qbitSeTag')) {
+        events.add('On Grab');
+      }
+      return Array.from(events);
+    },
+
+    // Events for an instance — union of events across all enabled
+    // rules linked to that instance. Used by the per-instance card
+    // on the Webhooks page so the user can see at a glance "what
+    // do I need to keep enabled in Sonarr/Radarr Connect for these
+    // rules to work". Empty when no rules exist (Configure webhook
+    // alone doesn't dictate any events; the URL just sits ready
+    // for whatever events arrive).
+    webhookEventsForInstance(instanceId) {
+      const inst = (this.instances || []).find(i => i.id === instanceId);
+      if (!inst) return [];
+      const rules = this.webhookRulesForInstance(instanceId).filter(r => r.enabled);
+      const fnSet = new Set();
+      for (const rule of rules) {
+        for (const fn of (rule.functions || [])) fnSet.add(fn);
+      }
+      return this.webhookEventsForFunctions(fnSet, inst.type === 'sonarr');
+    },
+
+    // Events for a single rule — used in the rule editor's Review
+    // step. Reads off editingRule.options.fn* directly so the
+    // events list updates live as the user toggles function
+    // checkboxes on the Basics step, before the rule is saved.
+    webhookEventsForCurrentRule() {
+      const r = this.editingRule;
+      if (!r || !r.options) return [];
+      const o = r.options;
+      const fnSet = new Set();
+      if (o.fnTagReleaseGroups) fnSet.add('tagReleaseGroups');
+      if (o.fnDiscover)         fnSet.add('discover');
+      if (o.fnTagAudio)         fnSet.add('tagAudio');
+      if (o.fnTagVideo)         fnSet.add('tagVideo');
+      if (o.fnTagDvDetail)      fnSet.add('tagDvDetail');
+      if (o.fnRecover)          fnSet.add('recover');
+      if (o.fnSyncToSecondary)  fnSet.add('syncToSecondary');
+      if (o.fnFileDeleteClean)  fnSet.add('fileDeleteClean');
+      if (o.fnGrabRename)       fnSet.add('grabRename');
+      if (o.fnQbitSeTag)        fnSet.add('qbitSeTag');
+      const inst = (this.instances || []).find(i => i.id === r.instanceId);
+      const isSonarr = inst ? inst.type === 'sonarr' : false;
+      return this.webhookEventsForFunctions(fnSet, isSonarr);
+    },
+
+    // App-type setter — persists to localStorage + mirrors the
+    // hash via pushNav so back/forward + bookmark URLs include
+    // the picked type. Refuses to switch to a type with no
+    // instances (pills are :disabled in that state but a
+    // programmatic call should still no-op).
+    setWebhookAppType(type) {
+      if (type !== 'radarr' && type !== 'sonarr') return;
+      if (!this.webhookAppTypeAvailable(type)) return;
+      if (this.webhookAppType === type) return;
+      this.webhookAppType = type;
+      localStorage.setItem('resolvarr-webhook-app-type', type);
+      // Reset Recent activity instance picker if the currently-
+      // selected instance is no longer in the filtered pool. Keeps
+      // the dropdown + the events display in sync with the pill.
+      if (this.webhookActivityInstanceId) {
+        const inst = (this.instances || []).find(i => i.id === this.webhookActivityInstanceId);
+        if (!inst || inst.type !== type) {
+          // Auto-pick first instance of the new type (matches the
+          // first-load auto-pick behaviour in loadWebhookSetupPage).
+          const first = (this.instances || []).find(i => i.type === type);
+          this.webhookActivityInstanceId = first ? first.id : '';
+          if (this.webhookActivityInstanceId) {
+            this.loadWebhookEvents(this.webhookActivityInstanceId);
+          }
+        }
+      }
+      this.pushNav();
+    },
+
+    // True when there's at least one instance of the given type.
+    // Used to gate the pill's :disabled state.
+    webhookAppTypeAvailable(type) {
+      return (this.instances || []).some(i => i.type === type);
+    },
+
+    // Filtered instance list for the Webhooks page — matches the
+    // active app-type pill. Iterated by the per-instance card
+    // template instead of the raw `instances` array.
+    webhookInstancesForAppType() {
+      return (this.instances || []).filter(i => i.type === this.webhookAppType);
+    },
+
+    // Toggle a rule's enabled state via PUT. Lighter than a full
+    // edit-flow when the user just wants to pause/resume a rule
+    // without re-walking the wizard.
+    async toggleWebhookRuleEnabled(rule) {
+      try {
+        const body = {
+          name: rule.name,
+          enabled: !rule.enabled,
+          instanceId: rule.instanceId,
+          appType: rule.appType,
+          functions: rule.functions || [],
+        };
+        // Per-rule snapshots round-trip via the response from a fresh
+        // GET — toggling enabled doesn't need to re-send them.
+        // Backend's update path preserves nil-fields when not present,
+        // matching the schedule rule behaviour.
+        if (rule.filters)         body.filters = rule.filters;
+        if (rule.audioTags)       body.audioTags = rule.audioTags;
+        if (rule.videoTags)       body.videoTags = rule.videoTags;
+        if (rule.dvDetail)        body.dvDetail = rule.dvDetail;
+        if (rule.releaseGroupIds) body.releaseGroupIds = rule.releaseGroupIds;
+        if (rule.syncToInstanceId) body.syncToInstanceId = rule.syncToInstanceId;
+        if (rule.discoverAutoEnable) body.discoverAutoEnable = rule.discoverAutoEnable;
+        if (rule.grabRename)      body.grabRename = rule.grabRename;
+        if (rule.qbitSe)          body.qbitSe = rule.qbitSe;
+        const r = await this.apiFetch('/api/webhook-rules/' + rule.id, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        await this.loadWebhookRules();
+        this.showToast('Rule ' + (body.enabled ? 'resumed' : 'paused'), 'success');
+      } catch (e) {
+        this.showToast('Toggle failed: ' + e.message, 'error');
+      }
+    },
+
+    // Newest-first lookup of the rule's last fire. Returns null when
+    // the rule has never fired. Used by the rule-card last-status
+    // pill — shape is core.WebhookRuleRun (status + startedAt +
+    // durationMs + eventType + itemTitle + itemContext + summary).
+    lastWebhookRun(rule) {
+      const h = (rule && rule.history) || [];
+      return h.length > 0 ? h[h.length - 1] : null;
+    },
+
+    // Open the rule-fire history modal for this rule. Binds to the
+    // already-loaded rule object so re-entry of the modal post-fire
+    // (after Refresh) shows fresh entries. closeWebhookRuleHistory
+    // is the inverse.
+    openWebhookRuleHistory(rule) {
+      this.webhookRuleHistoryRule = rule;
+      this.webhookRuleHistoryOpen = true;
+    },
+    closeWebhookRuleHistory() {
+      this.webhookRuleHistoryOpen = false;
+      this.webhookRuleHistoryRule = null;
+    },
+
+    // Re-fetch /api/webhook-rules so a freshly-fired run shows up
+    // without closing + reopening the modal. We don't have an SSE
+    // channel for rule fires today (only /api/webhook/events for
+    // raw deliveries) — manual refresh keeps it lightweight. After
+    // the load, re-bind the modal to the freshly-loaded rule object
+    // so the History[] reactive read picks up new entries; if the
+    // rule was deleted server-side mid-poll the modal closes.
+    async refreshWebhookRuleHistory() {
+      if (!this.webhookRuleHistoryRule) return;
+      this.webhookRuleHistoryRefreshing = true;
+      try {
+        const ruleId = this.webhookRuleHistoryRule.id;
+        await this.loadWebhookRules();
+        const fresh = (this.webhookRules || []).find(r => r.id === ruleId);
+        if (fresh) {
+          this.webhookRuleHistoryRule = fresh;
+        } else {
+          // Rule deleted underneath us — close out cleanly.
+          this.closeWebhookRuleHistory();
+          this.showToast('Rule no longer exists', 'error');
+        }
+      } finally {
+        this.webhookRuleHistoryRefreshing = false;
+      }
+    },
+
+    // Confirm + delete a webhook rule. Uses a lightweight inline
+    // confirm via the browser dialog for now — a styled modal can
+    // come in polish.
+    async confirmDeleteWebhookRule(rule) {
+      if (!confirm('Delete rule "' + rule.name + '"?\n\nThis cannot be undone. The rule stops firing immediately. Webhook URL + delivery stay configured.')) return;
+      try {
+        const r = await this.apiFetch('/api/webhook-rules/' + rule.id, { method: 'DELETE' });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
+        await this.loadWebhookRules();
+        this.showToast('Rule deleted', 'success');
+      } catch (e) {
+        this.showToast('Delete failed: ' + e.message, 'error');
+      }
+    },
+
+    // ---- qBit S/E backlog scan modal ------------------------------
+    //
+    // Entry: per-rule "Backlog scan" button on the Webhooks Setup tab.
+    // Visible only on rules carrying the qbitSeTag function. The modal
+    // walks the rule's qBit instance, classifies each torrent name via
+    // engine.DetermineQbitTag (Episode → Season → Unmatched first-
+    // match-wins), and shows the user what the apply pass would do.
+    //
+    // Phase 1 (initial): Run preview button + optional category filter
+    // Phase 2 (preview loaded): per-row checkbox table + Apply selected
+    // Phase 3 (apply complete): summary of Applied / Failed
+    //
+    // Per-row apply selection: SelectedHashes is sent to the backend
+    // so unchecked rows are skipped by the apply pass (backend gate
+    // added in qbit_se_backlog.go in the same change).
+
+    // openQbitSeBacklog clears every modal-scoped state field then
+    // opens the modal in Phase 1. Keep state reset coupled to open()
+    // — opening a fresh scan must not leak Apply results from the
+    // previous rule.
+    openQbitSeBacklog(rule) {
+      this.qbitSeBacklogRule = rule;
+      this.qbitSeBacklogOpen = true;
+      this.qbitSeBacklogPreview = null;
+      this.qbitSeBacklogApplyResult = null;
+      this.qbitSeBacklogSelected = {};
+      this.qbitSeBacklogCategoryFilter = '';
+      this.qbitSeBacklogFilter = 'taggable';
+      this.qbitSeBacklogError = '';
+    },
+
+    closeQbitSeBacklog() {
+      this.qbitSeBacklogOpen = false;
+      this.qbitSeBacklogRule = null;
+      this.qbitSeBacklogPreview = null;
+      this.qbitSeBacklogApplyResult = null;
+      this.qbitSeBacklogSelected = {};
+      this.qbitSeBacklogError = '';
+    },
+
+    // Run the preview pass. Pre-selects every taggable row by
+    // default; already-tagged + skipped rows start unchecked (the
+    // user can flip them on if they want, though already-tagged is
+    // a no-op on apply and skipped has no proposed tag).
+    async runQbitSeBacklogPreview() {
+      if (!this.qbitSeBacklogRule) return;
+      // Re-entry guard — the disabled binding on the button already
+      // handles UI-layer double-clicks but defence-in-depth at the
+      // function boundary catches Alpine error-recovery retries.
+      if (this.qbitSeBacklogLoading) return;
+      this.qbitSeBacklogLoading = true;
+      this.qbitSeBacklogError = '';
+      // Clear any previous apply result — re-running preview after
+      // an apply means the user wants to see the fresh state, not
+      // stale results.
+      this.qbitSeBacklogApplyResult = null;
+      try {
+        const body = {
+          ruleId: this.qbitSeBacklogRule.id,
+          categoryFilter: (this.qbitSeBacklogCategoryFilter || '').trim(),
+        };
+        const r = await this.apiFetch('/api/webhook-rules/qbit-se-backlog/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || ('HTTP ' + r.status));
+        }
+        const data = await r.json();
+        this.qbitSeBacklogPreview = data;
+        // Pre-select every row that the apply pass would actually
+        // touch — taggable, has a proposed tag, no skip reason.
+        const sel = {};
+        for (const item of (data.items || [])) {
+          sel[item.hash] = !item.alreadyTagged && !!item.proposedTag && !item.skipReason;
+        }
+        this.qbitSeBacklogSelected = sel;
+        this.showToast('Preview complete: ' + (data.totalTaggable || 0) + ' taggable, ' + (data.totalAlreadyOk || 0) + ' already OK', 'success');
+      } catch (e) {
+        this.qbitSeBacklogError = String(e.message || e);
+        this.showToast('Preview failed: ' + this.qbitSeBacklogError, 'error');
+      } finally {
+        this.qbitSeBacklogLoading = false;
+      }
+    },
+
+    // Run the apply pass. Sends the SelectedHashes set so unchecked
+    // rows stay untouched. Backend gate in runQbitSeBacklogScan
+    // honours the filter; without it apply would tag every taggable
+    // item regardless of UI selection.
+    async runQbitSeBacklogApply() {
+      if (!this.qbitSeBacklogRule || !this.qbitSeBacklogPreview) return;
+      if (this.qbitSeBacklogApplying) return;
+      const selected = Object.keys(this.qbitSeBacklogSelected || {})
+        .filter(h => this.qbitSeBacklogSelected[h]);
+      if (selected.length === 0) {
+        this.showToast('No torrents selected', 'error');
+        return;
+      }
+      this.qbitSeBacklogApplying = true;
+      this.qbitSeBacklogError = '';
+      try {
+        const body = {
+          ruleId: this.qbitSeBacklogRule.id,
+          categoryFilter: (this.qbitSeBacklogCategoryFilter || '').trim(),
+          selectedHashes: selected,
+        };
+        const r = await this.apiFetch('/api/webhook-rules/qbit-se-backlog/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || ('HTTP ' + r.status));
+        }
+        this.qbitSeBacklogApplyResult = await r.json();
+        const applied = this.qbitSeBacklogApplyResult.applied || 0;
+        const failed = this.qbitSeBacklogApplyResult.failed || 0;
+        if (failed > 0) {
+          this.showToast('Apply finished: ' + applied + ' tagged, ' + failed + ' failed', 'error');
+        } else {
+          this.showToast('Apply complete: ' + applied + ' torrent' + (applied === 1 ? '' : 's') + ' tagged', 'success');
+        }
+      } catch (e) {
+        this.qbitSeBacklogError = String(e.message || e);
+        this.showToast('Apply failed: ' + this.qbitSeBacklogError, 'error');
+      } finally {
+        this.qbitSeBacklogApplying = false;
+      }
+    },
+
+    // Filter helper — drives the chip row in Phase 2. Re-derives
+    // every render; no caching because preview Items[] is short.
+    qbitSeBacklogVisibleItems() {
+      const p = this.qbitSeBacklogPreview;
+      if (!p || !p.items) return [];
+      switch (this.qbitSeBacklogFilter) {
+        case 'taggable':
+          return p.items.filter(i => !i.alreadyTagged && i.proposedTag && !i.skipReason);
+        case 'alreadyOk':
+          return p.items.filter(i => i.alreadyTagged);
+        case 'skipped':
+          return p.items.filter(i => i.skipReason || !i.proposedTag);
+        default:
+          return p.items;
+      }
+    },
+
+    // Selected-count helper — drives the "Apply selected (N)" button
+    // label + disabled binding. Counts only rows the apply pass would
+    // actually touch (taggable + has proposed tag + no skip reason);
+    // already-tagged rows are silently no-ops on the backend, and a
+    // legacy bug let stale checkbox state on those rows inflate the
+    // button label so the user saw "(50)" but only 12 were applied.
+    qbitSeBacklogSelectedCount() {
+      const sel = this.qbitSeBacklogSelected || {};
+      const items = (this.qbitSeBacklogPreview && this.qbitSeBacklogPreview.items) || [];
+      let n = 0;
+      for (const item of items) {
+        if (item.alreadyTagged || !item.proposedTag || item.skipReason) continue;
+        if (sel[item.hash]) n++;
+      }
+      return n;
+    },
+
+    // Format the parsed S/E for display. Empty parsed → em-dash.
+    // Joins multi-episode packs with E (S01E05E06) to match Sonarr's
+    // own convention. The (season=0, episodes=[…]) edge case falls
+    // back to em-dash because S00E… is not a meaningful Sonarr token
+    // for backlog-tagging purposes.
+    qbitSeBacklogParsedLabel(item) {
+      if (!item) return '—';
+      const s = item.parsedSeason || 0;
+      const eps = item.parsedEpisodes || [];
+      if (s === 0 && eps.length === 0) return '—';
+      if (s === 0 && eps.length > 0) return '—';
+      const sPart = 'S' + String(s).padStart(2, '0');
+      if (eps.length === 0) return sPart;
+      return sPart + eps.map(e => 'E' + String(e).padStart(2, '0')).join('');
+    },
+
+    // Convenience getter for "every taggable visible-row is checked"
+    // — used by the Phase-2 select-all checkbox in the table header.
+    // Already-OK + skipped rows are excluded from both the "all on?"
+    // calculation and the toggle action; their checkbox is hidden in
+    // the row template, so attempting to bulk-set them would be a
+    // no-op the user can't undo from the UI.
+    qbitSeBacklogAllTaggableSelected() {
+      const items = this.qbitSeBacklogVisibleItems();
+      const taggable = items.filter(i => !i.alreadyTagged && i.proposedTag && !i.skipReason);
+      if (taggable.length === 0) return false;
+      const sel = this.qbitSeBacklogSelected || {};
+      return taggable.every(i => !!sel[i.hash]);
+    },
+
+    // Toggle every taggable visible-row's checkbox. Bound to the
+    // header checkbox; respects the active filter so "select all"
+    // only touches what the user can see, and skips already-OK +
+    // skipped rows because the apply pass would no-op them anyway.
+    qbitSeBacklogToggleAll() {
+      const items = this.qbitSeBacklogVisibleItems();
+      const taggable = items.filter(i => !i.alreadyTagged && i.proposedTag && !i.skipReason);
+      if (taggable.length === 0) return;
+      const sel = { ...(this.qbitSeBacklogSelected || {}) };
+      const allOn = taggable.every(i => !!sel[i.hash]);
+      for (const i of taggable) sel[i.hash] = !allOn;
+      this.qbitSeBacklogSelected = sel;
+    },
+
+    // Resolve the qBit instance referenced by a webhook rule's QbitSe
+    // criteria. Returns null when the rule has no QbitSe block, no
+    // QbitInstanceID, or the referenced instance has been removed
+    // from config. Drives the Backlog-scan button's disabled-state +
+    // tooltip — see the per-rule button binding in index.html.
+    qbitInstanceForRule(rule) {
+      const id = rule && rule.qbitSe && rule.qbitSe.qbitInstanceId;
+      if (!id) return null;
+      return (this.qbitInstances || []).find(q => q.id === id) || null;
     },
 
     // Quick fix-all chain dispatcher. Fires the rule's chain phases

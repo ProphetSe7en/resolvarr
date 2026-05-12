@@ -443,6 +443,58 @@ func (c *Client) AddTags(ctx context.Context, hashes []string, tags []string) er
 	return fmt.Errorf("addTags HTTP %d: %s", resp.StatusCode, snippet)
 }
 
+// SetTorrentCategory changes the qBit torrent's category — the
+// post-import flow Sonarr/Radarr normally drives when a download
+// completes. Used by the M-Webhook qBit Category Fix function to
+// reconcile torrents stuck on their pre-import category after a real
+// import.
+//
+// qBit auto-creates categories that don't exist yet (with whatever
+// default save-path the user has configured for unknown categories,
+// which is qBit's behaviour — not ours to override). Empty category
+// is valid and removes the category from the torrent.
+//
+// API: POST /api/v2/torrents/setCategory with form-encoded
+// `hashes=<hash>&category=<name>`. qBit returns 200 on success;
+// 409 when the category name is invalid (e.g. contains slash on
+// older qBit versions); 404 isn't documented but we handle it
+// defensively.
+//
+// Idempotent — re-applying the same category is a no-op on qBit's
+// side (returns 200 either way).
+func (c *Client) SetTorrentCategory(ctx context.Context, hash, category string) error {
+	if hash == "" {
+		return fmt.Errorf("hash is required")
+	}
+	form := url.Values{}
+	form.Set("hashes", hash)
+	form.Set("category", category)
+	body := strings.NewReader(form.Encode())
+	resp, err := c.Do(ctx, "POST", "/api/v2/torrents/setCategory", body, func(h http.Header) {
+		h.Set("Content-Type", "application/x-www-form-urlencoded")
+	})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 200 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	snippet := strings.TrimSpace(string(bodyBytes))
+	switch resp.StatusCode {
+	case 404:
+		return fmt.Errorf("setTorrentCategory: hash not found in qBit (HTTP 404): %s", snippet)
+	case 409:
+		return fmt.Errorf("setTorrentCategory: category name rejected by qBit (HTTP 409): %s", snippet)
+	}
+	if snippet == "" {
+		return fmt.Errorf("setTorrentCategory HTTP %d", resp.StatusCode)
+	}
+	return fmt.Errorf("setTorrentCategory HTTP %d: %s", resp.StatusCode, snippet)
+}
+
 // Ping is the cheapest health-check call — used by the Settings →
 // qBit instances Test Connection button. Logs in (if not already)
 // and issues a tiny listTorrents to confirm the API actually

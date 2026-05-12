@@ -23,6 +23,21 @@ import (
 	"resolvarr/internal/core/engine"
 )
 
+// reQbitCategoryName mirrors qBit's actual permissive char rule for
+// category names. qBit accepts most printable strings — slashes (for
+// nested categories like `sonarr/imported`), spaces (`qbit movies`),
+// dots (`qbit.movies`), unicode etc. all work in practice on current
+// qBit releases. The only chars that genuinely break things are ASCII
+// control chars (0x00-0x1f) and `\` (Windows path separator — qBit
+// stores the category as a directory name on disk).
+//
+// Sonarr/Radarr's download-client UI is happy with any string; the
+// `autoFillQbitCategories` UI in resolvarr auto-populates from the live
+// Arr data, so a too-strict regex here rejects real-world configs at
+// save-time with a confusing error message. Permissive set keeps the
+// floor low while still blocking the two genuinely dangerous classes.
+var reQbitCategoryName = regexp.MustCompile(`^[^\x00-\x1f\\]+$`)
+
 // Bounds on user-supplied rule data — guard against direct-API misuse
 // or future-wizard bugs that would otherwise tank the renamer's hot
 // path or balloon the config file. Picked generously so honest users
@@ -58,8 +73,14 @@ type webhookRuleRequest struct {
 	SyncToInstanceID      string                    `json:"syncToInstanceId,omitempty"`
 	SyncSkipOrphanCleanup bool                      `json:"syncSkipOrphanCleanup,omitempty"`
 	DiscoverAutoEnable    bool                      `json:"discoverAutoEnable,omitempty"`
+	// TagSource + FilterOnlyTag mirror the same fields on
+	// ScheduledJob.options + scanRunRequest. Webhook frontend sends
+	// these only when the rule is in filter-only mode.
+	TagSource     string `json:"tagSource,omitempty"`
+	FilterOnlyTag string `json:"filterOnlyTag,omitempty"`
 	GrabRename            *core.GrabRenameCriteria  `json:"grabRename,omitempty"`
 	QbitSe                *core.QbitSeRules         `json:"qbitSe,omitempty"`
+	QbitCategoryFix       *core.QbitCategoryFixRules `json:"qbitCategoryFix,omitempty"`
 }
 
 // validate enforces the rule contract before persistence. Returns nil
@@ -149,7 +170,7 @@ func (req *webhookRuleRequest) validate(cfg core.Config) *apiError {
 		if !qbitInstanceExists(cfg, req.GrabRename.QbitInstanceID) {
 			return newAPIError(400, "grabRename.qbitInstanceId not found")
 		}
-		if apiErr := validateGrabRenameCriteria(req.GrabRename); apiErr != nil {
+		if apiErr := validateGrabRenameCriteria(req.GrabRename, appType); apiErr != nil {
 			return apiErr
 		}
 	}
@@ -157,14 +178,143 @@ func (req *webhookRuleRequest) validate(cfg core.Config) *apiError {
 		if req.QbitSe == nil {
 			return newAPIError(400, "qbitSe rules required when qbitSeTag function is enabled")
 		}
-		if !req.QbitSe.TagSeason && !req.QbitSe.TagEpisode {
-			return newAPIError(400, "qbitSe must enable at least one of tagSeason / tagEpisode")
+		if !req.QbitSe.EpisodeEnabled && !req.QbitSe.SeasonEnabled && !req.QbitSe.UnmatchedEnabled {
+			return newAPIError(400, "qbitSe must enable at least one of episodeEnabled / seasonEnabled / unmatchedEnabled")
 		}
 		if req.QbitSe.QbitInstanceID == "" {
 			return newAPIError(400, "qbitSe.qbitInstanceId is required")
 		}
 		if !qbitInstanceExists(cfg, req.QbitSe.QbitInstanceID) {
 			return newAPIError(400, "qbitSe.qbitInstanceId not found")
+		}
+		// Trim each enabled tag name in place + backfill blanks with
+		// the documented defaults so the persisted shape is canonical.
+		// Validate non-blank values against the strict tag-label regex
+		// (Radarr's rule is the strictest; Sonarr is permissive but
+		// cross-compatible values land cleanly on both Arrs).
+		if req.QbitSe.EpisodeEnabled {
+			req.QbitSe.EpisodeTag = strings.TrimSpace(req.QbitSe.EpisodeTag)
+			if req.QbitSe.EpisodeTag == "" {
+				req.QbitSe.EpisodeTag = "Episode"
+			}
+			if !reTagName.MatchString(strings.ToLower(req.QbitSe.EpisodeTag)) {
+				return newAPIError(400, "qbitSe.episodeTag must be letters, digits, underscores, or dashes")
+			}
+		}
+		if req.QbitSe.SeasonEnabled {
+			req.QbitSe.SeasonTag = strings.TrimSpace(req.QbitSe.SeasonTag)
+			if req.QbitSe.SeasonTag == "" {
+				req.QbitSe.SeasonTag = "Season"
+			}
+			if !reTagName.MatchString(strings.ToLower(req.QbitSe.SeasonTag)) {
+				return newAPIError(400, "qbitSe.seasonTag must be letters, digits, underscores, or dashes")
+			}
+		}
+		if req.QbitSe.UnmatchedEnabled {
+			req.QbitSe.UnmatchedTag = strings.TrimSpace(req.QbitSe.UnmatchedTag)
+			if req.QbitSe.UnmatchedTag == "" {
+				req.QbitSe.UnmatchedTag = "Unmatched"
+			}
+			if !reTagName.MatchString(strings.ToLower(req.QbitSe.UnmatchedTag)) {
+				return newAPIError(400, "qbitSe.unmatchedTag must be letters, digits, underscores, or dashes")
+			}
+		}
+	}
+	// qBit Category Fix validation — required struct + qBit pairing
+	// + non-empty distinct categories. The validator only enforces what
+	// the user is actually saving (snapshot fields); fire-time may
+	// re-resolve fresh values via the Arr download-client cache, but
+	// snapshots are the floor.
+	if seen[core.WebhookFnQbitCategoryFix] {
+		if req.QbitCategoryFix == nil {
+			return newAPIError(400, "qbitCategoryFix criteria required when qbitCategoryFix function is enabled")
+		}
+		if req.QbitCategoryFix.QbitInstanceID == "" {
+			return newAPIError(400, "qbitCategoryFix.qbitInstanceId is required")
+		}
+		if !qbitInstanceExists(cfg, req.QbitCategoryFix.QbitInstanceID) {
+			return newAPIError(400, "qbitCategoryFix.qbitInstanceId not found")
+		}
+		if req.QbitCategoryFix.ArrDownloadClientID <= 0 {
+			return newAPIError(400, "qbitCategoryFix.arrDownloadClientId must be a positive integer (pick a download client from Sonarr/Radarr)")
+		}
+		preCat := strings.TrimSpace(req.QbitCategoryFix.PreImportCategorySnapshot)
+		postCat := strings.TrimSpace(req.QbitCategoryFix.PostImportCategorySnapshot)
+		if preCat == "" || postCat == "" {
+			return newAPIError(400, "qbitCategoryFix requires both preImportCategorySnapshot and postImportCategorySnapshot — Sonarr/Radarr's download-client config doesn't have both fields set, edit it there first")
+		}
+		if strings.EqualFold(preCat, postCat) {
+			return newAPIError(400, "qbitCategoryFix pre-import and post-import categories must differ")
+		}
+		// qBit category char-rule check — rejects only ASCII control chars
+		// + backslash. Slashes, spaces, dots, unicode are all valid qBit
+		// categories in the wild; autoFillQbitCategories surfaces whatever
+		// the Arr's download-client UI saved, so the validator's floor is
+		// "what qBit itself accepts on disk", not "what a Go identifier
+		// would accept".
+		if !reQbitCategoryName.MatchString(preCat) {
+			return newAPIError(400, "qbitCategoryFix.preImportCategorySnapshot contains forbidden characters (control chars or backslash)")
+		}
+		if !reQbitCategoryName.MatchString(postCat) {
+			return newAPIError(400, "qbitCategoryFix.postImportCategorySnapshot contains forbidden characters (control chars or backslash)")
+		}
+		// Persist the trimmed values back so the canonical shape is
+		// stored.
+		req.QbitCategoryFix.PreImportCategorySnapshot = preCat
+		req.QbitCategoryFix.PostImportCategorySnapshot = postCat
+	}
+	// TagSource + FilterOnlyTag — symmetric with the schedule path's
+	// validator at schedules.go (and scan.go for live HTTP scan calls).
+	// Trim before evaluating so a wizard payload with " filter-only "
+	// (whitespace) lands in the canonical "filter-only" branch.
+	tagSource := strings.TrimSpace(req.TagSource)
+	filterOnlyTag := strings.TrimSpace(req.FilterOnlyTag)
+	switch tagSource {
+	case "", "active", "filter-only":
+		// ok
+	default:
+		return newAPIError(400, "tagSource must be 'active' or 'filter-only' (or empty for active)")
+	}
+	// Filter-only is a Radarr-only feature today. Library scan
+	// (runTagFilterOnly) lives in the Radarr scan path; Sonarr's
+	// per-episode aggregation model has no filter-only equivalent.
+	// Reject up-front so a Sonarr rule can't silently dispatch into
+	// the filter-only branch on Tag-RG / Sync (where AppType isn't
+	// gated) or be inconsistently mirrored on file-delete (where it
+	// IS gated). Symmetric with scan_tag.go's "filter-only is Radarr-
+	// only" stance.
+	if tagSource == "filter-only" && !strings.EqualFold(appType, "radarr") {
+		return newAPIError(400, "filter-only tag mode is supported on Radarr only")
+	}
+	// Filter-only requires a tag whenever ANY consumer of FilterOnlyTag
+	// is enabled — Tag-RG (the primary tagger), Sync-to-secondary (the
+	// secondary mirror also evaluates filter-only and writes the tag),
+	// or File-Delete-Clean (strip-on-delete + the secondary mirror both
+	// pull the tag from rule.FilterOnlyTag). Without a tag the dispatcher
+	// would self-protect with a fire-time error per function — cleaner to
+	// reject at save-time so the user knows up-front the rule is
+	// half-configured.
+	requiresFilterOnlyTag := tagSource == "filter-only" && (seen[core.WebhookFnTagReleaseGroups] || seen[core.WebhookFnSyncToSecondary] || seen[core.WebhookFnFileDeleteClean])
+	if requiresFilterOnlyTag {
+		if filterOnlyTag == "" {
+			return newAPIError(400, "filterOnlyTag is required when tagSource=filter-only and any of tagReleaseGroups / syncToSecondary / fileDeleteClean is enabled")
+		}
+		if !reTagName.MatchString(filterOnlyTag) {
+			return newAPIError(400, "filterOnlyTag must be lowercase letters, digits, underscores, or dashes")
+		}
+		// Conflict check — symmetric with runTagFilterOnly's guard
+		// (scan_tag.go:619-623). A filter-only tag whose name matches
+		// any existing per-group rule's Tag for the same Arr type
+		// would silently fight the per-group decision; reject up-front.
+		// Disabled groups still hold the reservation (flipping Enabled
+		// back on would re-introduce the conflict).
+		for _, g := range cfg.ReleaseGroups {
+			if !strings.EqualFold(g.Type, appType) {
+				continue
+			}
+			if strings.EqualFold(g.Tag, filterOnlyTag) {
+				return newAPIError(409, "filterOnlyTag '"+filterOnlyTag+"' collides with an Active group rule (group: "+g.Display+"). Pick a different name or remove the conflicting group.")
+			}
 		}
 	}
 	return nil
@@ -199,7 +349,7 @@ func qbitInstanceExists(cfg core.Config, id string) bool {
 //     fails silently every fire (per the previous "deferred to runtime"
 //     comment, which masked exactly the kind of bug save-time
 //     validation catches).
-func validateGrabRenameCriteria(c *core.GrabRenameCriteria) *apiError {
+func validateGrabRenameCriteria(c *core.GrabRenameCriteria, appType string) *apiError {
 	if !core.ValidGrabRenameTarget(c.RenameTarget) {
 		return newAPIError(400, "grabRename.renameTarget must be 'torrent', 'file', 'both', or empty (defaults to torrent)")
 	}
@@ -208,6 +358,15 @@ func validateGrabRenameCriteria(c *core.GrabRenameCriteria) *apiError {
 	// no-ops because the file/both adapter paths aren't implemented yet.
 	if c.RenameTarget == core.GrabRenameTargetFile || c.RenameTarget == core.GrabRenameTargetBoth {
 		return newAPIError(400, "grabRename.renameTarget '"+c.RenameTarget+"' not yet supported in this version (file/both rename lands when torrent-only proves insufficient)")
+	}
+	// Movie-version trigger is Radarr-only — applies to movie versions
+	// like Director's Cut / IMAX / Theatrical that TV releases don't use.
+	// UI hides the checkbox via x-show="ruleEditorInstanceType()==='radarr'"
+	// but a direct-API caller could still set it on a Sonarr rule, where
+	// it would silently never match. Reject up-front so the user knows
+	// the trigger is misconfigured.
+	if !strings.EqualFold(appType, "radarr") && c.TriggerOnMovieVersionMismatch {
+		return newAPIError(400, "grabRename.triggerOnMovieVersionMismatch is Radarr-only — movie versions like Director's Cut / IMAX don't apply to TV releases")
 	}
 	// At least one trigger must be active — otherwise the rule fires
 	// every Grab event but always skips with "no enabled trigger
@@ -300,6 +459,8 @@ func (req *webhookRuleRequest) applyTo(rule *core.WebhookRule, isUpdate bool) {
 	rule.SyncToInstanceID = strings.TrimSpace(req.SyncToInstanceID)
 	rule.SyncSkipOrphanCleanup = req.SyncSkipOrphanCleanup
 	rule.DiscoverAutoEnable = req.DiscoverAutoEnable
+	rule.TagSource = strings.TrimSpace(req.TagSource)
+	rule.FilterOnlyTag = strings.TrimSpace(req.FilterOnlyTag)
 	if !isUpdate || req.Filters != nil {
 		rule.Filters = req.Filters
 	}
@@ -320,6 +481,9 @@ func (req *webhookRuleRequest) applyTo(rule *core.WebhookRule, isUpdate bool) {
 	}
 	if !isUpdate || req.QbitSe != nil {
 		rule.QbitSe = req.QbitSe
+	}
+	if !isUpdate || req.QbitCategoryFix != nil {
+		rule.QbitCategoryFix = req.QbitCategoryFix
 	}
 	core.NormalizeWebhookRule(rule)
 }
@@ -366,6 +530,7 @@ func collectApplicableFunctions(appType string) []core.WebhookFunction {
 		core.WebhookFnFileDeleteClean,
 		core.WebhookFnGrabRename,
 		core.WebhookFnQbitSeTag,
+		core.WebhookFnQbitCategoryFix,
 	}
 	out := []core.WebhookFunction{}
 	for _, fn := range all {

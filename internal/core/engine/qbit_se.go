@@ -1,120 +1,123 @@
 package engine
 
 // qbit_se.go — pure helpers for qBit Season/Episode tagging.
-// Container-only feature; no bash baseline.
 //
-// Tag-format conventions (hardcoded for v1):
+// Three-rule first-match-wins model — direct port of the community
+// Python reference qbittorrent_auto_tagger.py. Each torrent name is
+// run against Episode → Season → Unmatched in order; the first
+// matching enabled rule contributes ONE tag.
 //
-//   Season-pack:           S01            (single tag for the season)
-//   Single episode:        S01E05
-//   Multi-episode (split): S01E05E06     (one tag covering both)
+// Hardcoded patterns (battle-tested defaults from the Python script):
 //
-// Detection rules:
+//	Episode:   (?i)S\d{1,3}E\d{1,3}                — S01E05 / S01E05E06 multi-ep
+//	           OR  \b\d{4}\D+\d{2}\D+\d{2}\b       — 2024.10.15 daily-show date
+//	Season:    (?i)(?:S\d{1,3}|Season[\s\.]\d{1,3}) AND NOT episode-token
+//	Unmatched: catch-all when neither matched
 //
-//   - Empty episodeNumbers → assumed season-pack regardless of toggle
-//     state (Sonarr emits this on whole-season grabs where the indexer
-//     listing wraps a season-archive without per-episode IDs).
-//   - len(episodeNumbers) >= totalEpsInSeason (when known) → season-pack
-//     even with explicit episode IDs (Sonarr can emit all 24 IDs for a
-//     full-season grab).
-//   - Otherwise → episode tag in S01E05 / S01E05E06 form.
-//
-// Total-eps-in-season is optional. When 0 (caller doesn't know), the
-// "all episodes covered" heuristic falls back to len(episodeNumbers)>=10
-// as a "probably a season pack" trigger. 10 is a generous threshold:
-// most modern Sonarr libraries have 8-13 episodes per season; multi-
-// episode grabs (S01E05E06) are 2-3 episodes. The threshold keeps
-// "S01E05E06" off the season-only path while letting genuine season
-// packs (12-13 episodes emitted in one grab) collapse to S01.
+// Why fully hardcoded instead of user-configurable: the patterns have
+// soaked for years in the Python community (battle-tested across
+// thousands of users). Letting users edit them is a foot-gun without
+// upside; exposing only the per-rule Enabled toggle + tag name gives
+// a clean migration path off the Python script with zero ambiguity
+// about behaviour. If a user needs different patterns they can run
+// both the script and resolvarr until we have a stronger reason to
+// ship a custom-pattern UI.
 
 import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // QbitSeRulesView is the engine-facing read-only view of the rule's
-// per-tag toggles. Mirrors core.QbitSeRules to keep the engine
-// independent of the persistent shape.
+// per-tag toggles + custom tag names. Mirrors core.QbitSeRules to
+// keep the engine independent of the persistent shape.
 type QbitSeRulesView struct {
-	TagSeason  bool
-	TagEpisode bool
+	EpisodeEnabled   bool
+	EpisodeTag       string
+	SeasonEnabled    bool
+	SeasonTag        string
+	UnmatchedEnabled bool
+	UnmatchedTag     string
 }
 
-// QbitSeasonEpisodeTags returns the qBit tag labels to apply for a
-// Sonarr Grab event. Pure function; no I/O.
+// qbitEpisodePatterns is the ordered list of regexes considered an
+// "episode-token match" — any one matching makes the torrent name
+// episode-classified for the first-match-wins ordering. Two patterns:
+//   - Standard scene S01E05 / S01E05E06 multi-ep
+//   - Daily-show ISO-ish date pattern (e.g. "Show.2024.10.15")
 //
-// Inputs:
-//   - seasonNum: Sonarr's release.seasonNumber (>=1 for valid grabs).
-//   - episodeNums: release.episodeNumbers — may be empty (season pack),
-//     single-element (one episode), multi-element (multi-ep release or
-//     season pack). De-duplicated + sorted ascending in the output tag.
-//   - totalEpsInSeason: optional hint from arr.Series.Statistics. 0
-//     when caller doesn't know; helper falls back to the "10+ episodes
-//     = season pack" heuristic.
-//   - cfg: per-rule toggles.
-//
-// Empty result when:
-//   - seasonNum < 1 (invalid input)
-//   - both TagSeason + TagEpisode are false
-//
-// Order: season tag first when emitted, then episode tag. Adapter
-// adds them as a single qBit AddTags call (qBit accepts a comma-list).
-func QbitSeasonEpisodeTags(seasonNum int, episodeNums []int, totalEpsInSeason int, cfg QbitSeRulesView) []string {
-	if seasonNum < 1 {
-		return nil
-	}
-	if !cfg.TagSeason && !cfg.TagEpisode {
-		return nil
-	}
-
-	// Normalise episode list: dedup + sort ascending.
-	epsNorm := normalizeEpisodeList(episodeNums)
-
-	// Detect season-pack:
-	//   1. Explicit empty episode list (Sonarr's whole-season-archive form)
-	//   2. Episode count covers the full season (>= totalEpsInSeason if known)
-	//   3. Fallback heuristic: ≥10 episode IDs = "probably season pack"
-	isSeasonPack := len(epsNorm) == 0
-	if !isSeasonPack && totalEpsInSeason > 0 && len(epsNorm) >= totalEpsInSeason {
-		isSeasonPack = true
-	}
-	if !isSeasonPack && totalEpsInSeason == 0 && len(epsNorm) >= 10 {
-		isSeasonPack = true
-	}
-
-	var out []string
-	if cfg.TagSeason {
-		out = append(out, formatSeasonTag(seasonNum))
-	}
-	if cfg.TagEpisode && !isSeasonPack {
-		// Episode tag — single (S01E05) or multi (S01E05E06).
-		out = append(out, formatEpisodeTag(seasonNum, epsNorm))
-	}
-	return out
+// The daily-show pattern matches "<4 digits><non-digits><2 digits><non-
+// digits><2 digits>" — cheap heuristic that catches Show.2024.10.15,
+// Show.2024-10-15, Show 2024 10 15, etc. Year-range component is
+// not bounded (could match 9999 03 04) but in practice torrents only
+// have plausible release dates, and the worst case (false positive on
+// a non-date 4+2+2 string) is just "this torrent gets the Episode tag
+// instead of Unmatched" — recoverable.
+var qbitEpisodePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)S\d{1,3}E\d{1,3}`),
+	regexp.MustCompile(`\b\d{4}\D+\d{2}\D+\d{2}\b`),
 }
 
-// formatSeasonTag returns the season-only tag, e.g. "S01" / "S12".
-func formatSeasonTag(season int) string {
-	return fmt.Sprintf("S%02d", season)
+// qbitSeasonPattern matches season-pack tokens: bare S01 / S12 / etc.
+// or worded "Season 1" / "Season.1". Combined with !epMatched in the
+// caller so a torrent with S01E05 doesn't also count as a season match.
+var qbitSeasonPattern = regexp.MustCompile(`(?i)(?:S\d{1,3}|Season[\s\.]\d{1,3})`)
+
+// DetermineQbitTag returns the qBit tag to apply for a torrent name,
+// or "" when no rule matches (or all matching rules are disabled).
+// First-match-wins: Episode → Season → Unmatched.
+//
+// Each rule honours its Enabled toggle. Empty Tag string falls back
+// to the default ("Episode" / "Season" / "Unmatched") so legacy or
+// cleared configs still produce sensible output.
+//
+// Note on disabled-rule behaviour: disabling Episode does NOT push
+// an episode-named torrent into Season or Unmatched. The first-match-
+// wins ordering looks at what the NAME matches first, then checks if
+// that rule is enabled. A name with S01E05 always classifies as
+// "episode" — disabling the Episode rule means that torrent gets no
+// tag rather than falling through to Season/Unmatched. Mirrors the
+// Python reference's behaviour exactly.
+func DetermineQbitTag(torrentName string, r QbitSeRulesView) string {
+	if torrentName == "" {
+		return ""
+	}
+	epMatched := false
+	for _, p := range qbitEpisodePatterns {
+		if p.MatchString(torrentName) {
+			epMatched = true
+			break
+		}
+	}
+	if epMatched {
+		if r.EpisodeEnabled {
+			return defaultStr(r.EpisodeTag, "Episode")
+		}
+		// Episode-classified but rule disabled — no fall-through.
+		return ""
+	}
+	seasonMatched := qbitSeasonPattern.MatchString(torrentName)
+	if seasonMatched {
+		if r.SeasonEnabled {
+			return defaultStr(r.SeasonTag, "Season")
+		}
+		// Season-classified but rule disabled — no fall-through.
+		return ""
+	}
+	if r.UnmatchedEnabled {
+		return defaultStr(r.UnmatchedTag, "Unmatched")
+	}
+	return ""
 }
 
-// formatEpisodeTag returns the episode tag, e.g. "S01E05" or "S01E05E06"
-// or "S01E05E06E07". Multi-episode form concatenates each episode's
-// "E<NN>" suffix in ascending order.
-//
-// Empty episode list returns the season-only tag — defensive; callers
-// that want season-pack semantics handle the empty case separately
-// before reaching here.
-func formatEpisodeTag(season int, epsNorm []int) string {
-	if len(epsNorm) == 0 {
-		return formatSeasonTag(season)
+// defaultStr returns def when s is empty / whitespace-only.
+func defaultStr(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
 	}
-	out := formatSeasonTag(season)
-	for _, e := range epsNorm {
-		out += fmt.Sprintf("E%02d", e)
-	}
-	return out
+	return s
 }
 
 // seasonEpisodeRE captures S01E05 / S01E05E06 / s01.e05.e06 etc. — the
@@ -123,8 +126,9 @@ func formatEpisodeTag(season int, epsNorm []int) string {
 // torrent names without requiring Sonarr API lookups.
 //
 // Group structure:
-//   1 = season number ("01", "1", etc. — caller atoi)
-//   2 = trailing episode segment ("E05" / "E05E06" / "E05.E06" / etc.)
+//
+//	1 = season number ("01", "1", etc. — caller atoi)
+//	2 = trailing episode segment ("E05" / "E05E06" / "E05.E06" / etc.)
 var seasonEpisodeRE = regexp.MustCompile(`(?i)\bS(\d{1,3})((?:[._ ]?E\d{1,3})*)\b`)
 
 // seasonOnlyRE matches season-pack patterns: "S01" with no trailing
@@ -140,17 +144,18 @@ var episodeNumRE = regexp.MustCompile(`(?i)E(\d{1,3})`)
 // doesn't carry a recognisable S/E token.
 //
 // Patterns recognised:
-//   "Show.S01E05.WEB-DL-FLUX"      → (1, [5], true)
-//   "Show.S01E05E06.WEB-DL-FLUX"   → (1, [5, 6], true)   // multi-ep
-//   "Show.S01E05.E06.FLUX"         → (1, [5, 6], true)
-//   "Show.S01.WEB-DL.FLUX"         → (1, nil, true)      // season pack
-//   "Show.Season.1.Complete.FLUX"  → (1, nil, true)      // season pack
-//   "Show.2024.WEB-DL"             → (0, nil, false)     // no S/E token
 //
-// Used by the backlog-fix scan to compute proposed tags from existing
-// qBit torrents WITHOUT requiring a Sonarr API lookup. False-positive
-// risk is low because the regex requires the literal "S" prefix at a
-// word boundary.
+//	"Show.S01E05.WEB-DL-FLUX"      → (1, [5], true)
+//	"Show.S01E05E06.WEB-DL-FLUX"   → (1, [5, 6], true)   // multi-ep
+//	"Show.S01E05.E06.FLUX"         → (1, [5, 6], true)
+//	"Show.S01.WEB-DL.FLUX"         → (1, nil, true)      // season pack
+//	"Show.Season.1.Complete.FLUX"  → (1, nil, true)      // season pack
+//	"Show.2024.WEB-DL"             → (0, nil, false)     // no S/E token
+//
+// Used by the backlog-fix scan to surface "what would this torrent
+// match" data in the preview UI. Apply path uses DetermineQbitTag for
+// the actual tag decision; this parser only provides the displayed
+// "parsed season X / episodes [Y...]" hint.
 func ParseSeasonEpisodeFromTitle(title string) (seasonNum int, episodes []int, ok bool) {
 	if title == "" {
 		return 0, nil, false

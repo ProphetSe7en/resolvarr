@@ -3,15 +3,14 @@ package api
 // qbit_se_backlog.go — backlog-fix preview/apply for qBit S/E tagging.
 // Wizard step 3c "Run backlog fix" button calls these endpoints to
 // retroactively tag torrents that were grabbed before the rule
-// existed (or before the user's current Tag-Season/Tag-Episode
+// existed (or before the user's current Episode / Season / Unmatched
 // toggles were enabled).
 //
 // Architecture: NOT a webhook adapter. User-triggered batch operation
-// that walks the qBit instance's torrents, parses S/E tokens from
-// each torrent name (via engine.ParseSeasonEpisodeFromTitle), and
-// computes proposed tag-list per the rule's TagSeason/TagEpisode
-// toggles. Preview returns the action plan; apply runs the same
-// scan + actually adds the tags.
+// that walks the qBit instance's torrents, classifies each torrent
+// name via engine.DetermineQbitTag (three-rule first-match-wins),
+// and computes the single proposed tag per torrent. Preview returns
+// the action plan; apply runs the same scan + actually adds the tag.
 //
 // Sonarr-only (validator gates the parent WebhookFnQbitSeTag function
 // for "sonarr" appType, and the API endpoints reject non-Sonarr
@@ -44,34 +43,58 @@ import (
 // CategoryFilter narrows the qBit walk to a specific category (when
 // the user maintains Sonarr-grabbed torrents in a dedicated category
 // like "sonarr" or "tv-shows"). Empty = consider all torrents.
+//
+// SelectedHashes (apply pass only) — when non-empty, only torrents
+// whose hash appears in this set are eligible for the AddTags call.
+// The full preview is still returned so the UI can show the user the
+// complete plan with the selected subset highlighted as Applied. An
+// empty / omitted SelectedHashes means "apply to every taggable
+// item" (legacy preview-then-apply-all behaviour). Preview pass
+// ignores this field.
 type qbitSeBacklogScanRequest struct {
-	RuleID         string `json:"ruleId"`
-	CategoryFilter string `json:"categoryFilter,omitempty"`
+	RuleID          string   `json:"ruleId"`
+	CategoryFilter  string   `json:"categoryFilter,omitempty"`
+	SelectedHashes  []string `json:"selectedHashes,omitempty"`
 }
 
 // qbitSeBacklogPreviewItem is one row in the preview response —
 // represents one torrent that COULD be tagged by the apply pass.
+//
+// ParsedSeason / ParsedEpisodes are populated when the torrent name
+// carries an S/E token (purely informational — the apply path uses
+// ProposedTag from the engine classifier). Movies / music / oddly-
+// named TV will have ParsedSeason=0 + nil ParsedEpisodes but may
+// still have a ProposedTag (the Unmatched bucket).
 type qbitSeBacklogPreviewItem struct {
-	Hash            string   `json:"hash"`
-	TorrentName     string   `json:"torrentName"`
-	Category        string   `json:"category,omitempty"`
-	CurrentTags     []string `json:"currentTags,omitempty"`
-	ParsedSeason    int      `json:"parsedSeason"`
-	ParsedEpisodes  []int    `json:"parsedEpisodes,omitempty"`
-	ProposedTags    []string `json:"proposedTags"`
-	AlreadyTagged   bool     `json:"alreadyTagged"`        // true → apply would no-op
-	SkipReason      string   `json:"skipReason,omitempty"` // populated when ProposedTags is empty
+	Hash           string   `json:"hash"`
+	TorrentName    string   `json:"torrentName"`
+	Category       string   `json:"category,omitempty"`
+	CurrentTags    []string `json:"currentTags,omitempty"`
+	ParsedSeason   int      `json:"parsedSeason,omitempty"`
+	ParsedEpisodes []int    `json:"parsedEpisodes,omitempty"`
+	ProposedTag    string   `json:"proposedTag,omitempty"`
+	AlreadyTagged  bool     `json:"alreadyTagged"`        // true → apply would no-op
+	SkipReason     string   `json:"skipReason,omitempty"` // populated when ProposedTag is empty
 }
 
 // qbitSeBacklogPreviewResponse summarises the scan result. Totals
 // drive the wizard's preview-row "X torrents to tag" / "Y already
-// tagged" / "Z unparsable" counters.
+// tagged" / "Z skipped" counters.
+//
+// TotalCategoryFiltered reports how many torrents the qBit instance
+// returned that were dropped by the optional CategoryFilter (the
+// per-request "limit to category X" knob). When non-zero the UI
+// surfaces this so the user understands why TotalScanned can be much
+// larger than the visible plan — without it a user with 5000 torrents
+// + a "sonarr" category filter would see "Total scanned: 5000" with
+// 4800 invisible.
 type qbitSeBacklogPreviewResponse struct {
-	Items          []qbitSeBacklogPreviewItem `json:"items"`
-	TotalScanned   int                        `json:"totalScanned"`
-	TotalTaggable  int                        `json:"totalTaggable"`  // ProposedTags non-empty + !AlreadyTagged
-	TotalAlreadyOK int                        `json:"totalAlreadyOk"` // AlreadyTagged
-	TotalSkipped   int                        `json:"totalSkipped"`   // ProposedTags empty (no S/E token / no formats enabled)
+	Items                 []qbitSeBacklogPreviewItem `json:"items"`
+	TotalScanned          int                        `json:"totalScanned"`
+	TotalTaggable         int                        `json:"totalTaggable"`         // ProposedTag non-empty + !AlreadyTagged
+	TotalAlreadyOK        int                        `json:"totalAlreadyOk"`        // AlreadyTagged
+	TotalSkipped          int                        `json:"totalSkipped"`          // ProposedTag empty (no rule matched / all rules disabled)
+	TotalCategoryFiltered int                        `json:"totalCategoryFiltered"` // dropped by CategoryFilter pre-classification
 }
 
 // qbitSeBacklogApplyResponse summarises an apply pass. Items mirror
@@ -144,8 +167,8 @@ func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScan
 		return nil, newAPIError(400, "rule has no QbitSe criteria")
 	}
 	rules := rule.QbitSe
-	if !rules.TagSeason && !rules.TagEpisode {
-		return nil, newAPIError(400, "rule has both TagSeason and TagEpisode disabled — nothing to tag")
+	if !rules.EpisodeEnabled && !rules.SeasonEnabled && !rules.UnmatchedEnabled {
+		return nil, newAPIError(400, "rule has every tag rule disabled — enable Episode, Season, or Unmatched before running backlog fix")
 	}
 
 	// Resolve qBit instance.
@@ -171,8 +194,31 @@ func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScan
 		return nil, newAPIError(502, "qbit listTorrents: "+err.Error())
 	}
 
-	cfgView := engine.QbitSeRulesView{TagSeason: rules.TagSeason, TagEpisode: rules.TagEpisode}
+	cfgView := engine.QbitSeRulesView{
+		EpisodeEnabled:   rules.EpisodeEnabled,
+		EpisodeTag:       rules.EpisodeTag,
+		SeasonEnabled:    rules.SeasonEnabled,
+		SeasonTag:        rules.SeasonTag,
+		UnmatchedEnabled: rules.UnmatchedEnabled,
+		UnmatchedTag:     rules.UnmatchedTag,
+	}
 	categoryFilter := strings.TrimSpace(req.CategoryFilter)
+
+	// Build a hash-allowlist set for the apply pass when the caller
+	// passed SelectedHashes. nil set = legacy "apply to all taggable"
+	// behaviour. Hashes are compared case-insensitively because qBit
+	// returns hashes in lowercase but the UI may have cached an
+	// uppercase variant from a different endpoint.
+	var selectedSet map[string]bool
+	if apply && len(req.SelectedHashes) > 0 {
+		selectedSet = make(map[string]bool, len(req.SelectedHashes))
+		for _, h := range req.SelectedHashes {
+			h = strings.ToLower(strings.TrimSpace(h))
+			if h != "" {
+				selectedSet[h] = true
+			}
+		}
+	}
 
 	preview := qbitSeBacklogPreviewResponse{}
 	var applyItems []qbitSeBacklogPreviewItem
@@ -183,6 +229,7 @@ func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScan
 	for _, t := range torrents {
 		preview.TotalScanned++
 		if categoryFilter != "" && !strings.EqualFold(t.Category, categoryFilter) {
+			preview.TotalCategoryFiltered++
 			continue
 		}
 		item := qbitSeBacklogPreviewItem{
@@ -191,29 +238,27 @@ func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScan
 			Category:    t.Category,
 			CurrentTags: splitQbitTags(t.Tags),
 		}
-		// Parse S/E from torrent name.
-		seasonNum, eps, ok := engine.ParseSeasonEpisodeFromTitle(t.Name)
-		if !ok {
-			item.SkipReason = "no S/E token in torrent name"
+		// Informational parse — purely for UI display ("parsed season X
+		// / episodes [...]"). The classification path uses
+		// DetermineQbitTag below which is name-based + first-match-wins.
+		if seasonNum, eps, ok := engine.ParseSeasonEpisodeFromTitle(t.Name); ok {
+			item.ParsedSeason = seasonNum
+			item.ParsedEpisodes = eps
+		}
+
+		// Classify via engine — single-tag winner per Episode → Season
+		// → Unmatched first-match-wins.
+		proposed := engine.DetermineQbitTag(t.Name, cfgView)
+		if proposed == "" {
+			item.SkipReason = "no rule matched (every classifier disabled, or matching rule is disabled)"
 			preview.TotalSkipped++
 			preview.Items = append(preview.Items, item)
 			continue
 		}
-		item.ParsedSeason = seasonNum
-		item.ParsedEpisodes = eps
+		item.ProposedTag = proposed
 
-		// Build proposed tag list.
-		proposed := engine.QbitSeasonEpisodeTags(seasonNum, eps, 0, cfgView)
-		if len(proposed) == 0 {
-			item.SkipReason = "engine returned no tags (formats off or invalid season)"
-			preview.TotalSkipped++
-			preview.Items = append(preview.Items, item)
-			continue
-		}
-		item.ProposedTags = proposed
-
-		// AlreadyTagged: every proposed tag is already on the torrent.
-		if hasAllTags(item.CurrentTags, proposed) {
+		// AlreadyTagged: the proposed tag is already on the torrent.
+		if hasAllTags(item.CurrentTags, []string{proposed}) {
 			item.AlreadyTagged = true
 			preview.TotalAlreadyOK++
 			preview.Items = append(preview.Items, item)
@@ -223,7 +268,13 @@ func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScan
 		preview.TotalTaggable++
 		preview.Items = append(preview.Items, item)
 		if apply {
-			applyItems = append(applyItems, item)
+			// When the caller supplied a SelectedHashes filter, only
+			// apply tags to hashes the user explicitly checked in the
+			// preview UI. Otherwise (legacy callers / apply-all path)
+			// every taggable item gets applied.
+			if selectedSet == nil || selectedSet[strings.ToLower(item.Hash)] {
+				applyItems = append(applyItems, item)
+			}
 		}
 	}
 
@@ -248,7 +299,7 @@ func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScan
 			}, nil
 		default:
 		}
-		if err := client.AddTags(ctx, []string{item.Hash}, item.ProposedTags); err != nil {
+		if err := client.AddTags(ctx, []string{item.Hash}, []string{item.ProposedTag}); err != nil {
 			failed++
 			errs = append(errs, fmt.Sprintf("%s: %v", item.TorrentName, err))
 			continue

@@ -26,6 +26,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -60,6 +61,15 @@ var canonicalFunctionOrder = []core.WebhookFunction{
 	core.WebhookFnFileDeleteClean,
 	core.WebhookFnGrabRename,
 	core.WebhookFnQbitSeTag,
+	// QbitCategoryFix runs LAST in the chain because it's defensive
+	// only — checking + reconciling the qBit-side category after
+	// Sonarr/Radarr's own Import handling. The Arr-side dispatchers
+	// (Recover / Tag-RG / Tag-Audio etc.) don't depend on the qBit
+	// category being right, and qBit Category Fix doesn't read or
+	// write Arr state, so order between siblings doesn't matter —
+	// putting it at the tail keeps the chain easy to reason about
+	// ("everything else happens first; then we reconcile qBit").
+	core.WebhookFnQbitCategoryFix,
 }
 
 // functionResult is one (rule × function) outcome. Aggregated into the
@@ -165,7 +175,7 @@ func (s *Server) dispatchWebhookRules(
 		}
 		pending = append(pending, pendingRuleRun{
 			ruleID: rule.ID,
-			run:    buildWebhookRuleRun(env, started, results),
+			run:    buildWebhookRuleRun(env, body, started, results),
 		})
 	}
 	if len(pending) > 0 {
@@ -247,6 +257,11 @@ func (s *Server) dispatchWebhookFunction(
 		// qBit S/E Tag adds qBit tags only; doesn't touch Arr.
 		// Sonarr-only per validator.
 		return s.dispatchQbitSeTag(ctx, rule, cfg, env, body)
+	case core.WebhookFnQbitCategoryFix:
+		// qBit Category Fix reads Arr history (read-only) + writes to
+		// qBit (category swap). Doesn't read or write Arr tags — no
+		// requireTagDetails gate.
+		return s.dispatchQbitCategoryFix(ctx, rule, cfg, env, body)
 	}
 	return functionResult{
 		Function: fn,
@@ -304,7 +319,7 @@ func (s *Server) tagDetailsFor(
 //   - "ok"      every function succeeded
 //   - "partial" at least one function succeeded AND at least one failed
 //   - "error"   every function failed
-func buildWebhookRuleRun(env *connectEventEnvelope, started time.Time, results []functionResult) core.WebhookRuleRun {
+func buildWebhookRuleRun(env *connectEventEnvelope, body []byte, started time.Time, results []functionResult) core.WebhookRuleRun {
 	var okCount, errCount int
 	parts := make([]string, 0, len(results))
 	for _, r := range results {
@@ -327,15 +342,72 @@ func buildWebhookRuleRun(env *connectEventEnvelope, started time.Time, results [
 		status = "partial"
 	}
 	title, ctxStr := summariseEvent(env)
+	releaseTitle, filePath := extractReleaseAndFilePath(body)
 	return core.WebhookRuleRun{
-		StartedAt:   started,
-		DurationMs:  time.Since(started).Milliseconds(),
-		Status:      status,
-		EventType:   env.EventType,
-		ItemTitle:   title,
-		ItemContext: ctxStr,
-		Summary:     strings.Join(parts, "; "),
+		StartedAt:    started,
+		DurationMs:   time.Since(started).Milliseconds(),
+		Status:       status,
+		EventType:    env.EventType,
+		ItemTitle:    title,
+		ItemContext:  ctxStr,
+		ReleaseTitle: releaseTitle,
+		FilePath:     filePath,
+		Summary:      strings.Join(parts, "; "),
 	}
+}
+
+// extractReleaseAndFilePath pulls the indexer release-title +
+// post-import file path from the raw Connect-event body. Defensive:
+// every field absence is fine — empty strings render as "—" in the
+// History modal. Used by buildWebhookRuleRun so the user can see
+// grab-name vs import-name without cross-referencing Recent activity.
+//
+// Field-source map (matches Sonarr + Radarr Connect schemas):
+//   Grab event:           release.releaseTitle  → ReleaseTitle (no FilePath yet)
+//   Download event:       movieFile.sceneName / episodeFile.sceneName  → ReleaseTitle (when present)
+//                         movieFile.relativePath / episodeFile.relativePath → FilePath
+//   MovieFileDelete /
+//   EpisodeFileDelete:    movieFile.relativePath / episodeFile.relativePath → FilePath
+//                         (no ReleaseTitle on delete events — the indexer
+//                         release-title isn't carried in deletion payloads)
+func extractReleaseAndFilePath(body []byte) (releaseTitle, filePath string) {
+	if len(body) == 0 {
+		return "", ""
+	}
+	var probe struct {
+		Release *struct {
+			ReleaseTitle string `json:"releaseTitle"`
+		} `json:"release,omitempty"`
+		MovieFile *struct {
+			RelativePath string `json:"relativePath"`
+			SceneName    string `json:"sceneName"`
+		} `json:"movieFile,omitempty"`
+		EpisodeFile *struct {
+			RelativePath string `json:"relativePath"`
+			SceneName    string `json:"sceneName"`
+		} `json:"episodeFile,omitempty"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return "", ""
+	}
+	if probe.Release != nil {
+		releaseTitle = strings.TrimSpace(probe.Release.ReleaseTitle)
+	}
+	if probe.MovieFile != nil {
+		filePath = strings.TrimSpace(probe.MovieFile.RelativePath)
+		if releaseTitle == "" {
+			releaseTitle = strings.TrimSpace(probe.MovieFile.SceneName)
+		}
+	}
+	if probe.EpisodeFile != nil {
+		if filePath == "" {
+			filePath = strings.TrimSpace(probe.EpisodeFile.RelativePath)
+		}
+		if releaseTitle == "" {
+			releaseTitle = strings.TrimSpace(probe.EpisodeFile.SceneName)
+		}
+	}
+	return releaseTitle, filePath
 }
 
 // appendWebhookRuleRunsBatch pushes the collected runs onto each rule's

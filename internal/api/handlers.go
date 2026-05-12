@@ -247,6 +247,15 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		if cfg.Instances[i].Webhook.Token != "" {
 			cfg.Instances[i].Webhook.Token = maskSentinel
 		}
+		// Webhook Secret is the shared password Sonarr/Radarr sends in
+		// the Authorization: Basic header — bearer credential, never
+		// leaked through the broad config endpoint. The dedicated
+		// /api/instances/{id}/webhook surface returns it unmasked for
+		// the wizard's Summary step where the user copy-pastes it into
+		// Sonarr/Radarr's Connect → Webhook → password field.
+		if cfg.Instances[i].Webhook.Secret != "" {
+			cfg.Instances[i].Webhook.Secret = maskSentinel
+		}
 	}
 	// qBit passwords masked for the same reason as Arr API keys —
 	// bearer credentials must not appear in plaintext on /api/config.
@@ -626,6 +635,12 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "instance not found")
 		return
 	}
+	// Drop the cached download-client list for this instance — URL or API key
+	// may have changed, so any cached entry is now potentially stale (it could
+	// point at the OLD Arr, or at a download-client ID that no longer exists).
+	// 5-min TTL would otherwise serve stale data after a re-point until the
+	// entry naturally expired.
+	s.ArrDLCache().Invalidate(id)
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -651,6 +666,10 @@ func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "instance not found")
 		return
 	}
+	// Drop the cached download-client list — the instance is gone, no future
+	// fetch should ever read from this cache entry. Belt-and-braces against a
+	// future ID reuse pulling a stale list from a dead Arr.
+	s.ArrDLCache().Invalidate(id)
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -1082,4 +1101,75 @@ func (s *Server) handleRenameTag(w http.ResponseWriter, r *http.Request) {
 		"movedCount": moved,
 		"merged":     merged,
 	})
+}
+
+// handleListArrDownloadClients — GET /api/instances/{id}/download-clients
+//
+// Returns the Arr's qBit download-client entries, projected to a
+// frontend-friendly shape that surfaces the pre/post category names
+// already extracted. Used by the qBit Category Fix rule editor so the
+// user picks a download client by name and the category names auto-
+// populate from Sonarr/Radarr's own config — no typing required.
+//
+// Query: ?refresh=1 invalidates the 5-min cache for this instance
+// before fetching, so a user who just edited a category in Sonarr/
+// Radarr can see the change immediately without waiting for TTL.
+//
+// Response shape:
+//
+//	[
+//	  { "id": 3, "name": "qbt-main", "implementation": "QBittorrent",
+//	    "protocol": "torrent", "enable": true,
+//	    "qbitPreCat": "qbit-movies", "qbitPostCat": "qbit-movies-imp" }
+//	]
+//
+// Filter — we DO NOT filter to qBit-only here; the frontend can
+// choose to filter by implementation. The backend stays implementation-
+// agnostic so other download-client-aware features can reuse the same
+// endpoint without surface duplication.
+func (s *Server) handleListArrDownloadClients(w http.ResponseWriter, r *http.Request) {
+	inst := s.instanceByID(w, r.PathValue("id"))
+	if inst == nil {
+		return
+	}
+	if r.URL.Query().Get("refresh") == "1" {
+		s.ArrDLCache().Invalidate(inst.ID)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	client := s.arrClientFor(inst)
+	clients, err := s.ArrDLCache().Get(ctx, inst, client)
+	if err != nil {
+		writeError(w, 502, "list download clients: "+err.Error())
+		return
+	}
+	type clientOut struct {
+		ID             int    `json:"id"`
+		Name           string `json:"name"`
+		Implementation string `json:"implementation"`
+		Protocol       string `json:"protocol,omitempty"`
+		Enable         bool   `json:"enable"`
+		// qbitPreCat + qbitPostCat are populated for QBittorrent
+		// implementations; empty for everything else. Frontend uses
+		// them to seed the qBit Category Fix snapshot fields.
+		QbitPreCat  string `json:"qbitPreCat,omitempty"`
+		QbitPostCat string `json:"qbitPostCat,omitempty"`
+	}
+	out := make([]clientOut, 0, len(clients))
+	for i := range clients {
+		row := clientOut{
+			ID:             clients[i].ID,
+			Name:           clients[i].Name,
+			Implementation: clients[i].Implementation,
+			Protocol:       clients[i].Protocol,
+			Enable:         clients[i].Enable,
+		}
+		if strings.Contains(strings.ToLower(clients[i].Implementation), "qbittorrent") {
+			row.QbitPreCat = clients[i].QbitPreImportCategory(inst.Type)
+			row.QbitPostCat = clients[i].QbitPostImportCategory(inst.Type)
+		}
+		out = append(out, row)
+	}
+	writeJSON(w, out)
 }

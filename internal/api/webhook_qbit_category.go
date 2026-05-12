@@ -1,0 +1,290 @@
+package api
+
+// webhook_qbit_category.go — qBit category-fix adapter for the
+// M-Webhook dispatcher. Reconciles the pre→post-import category swap
+// that Sonarr/Radarr normally drives at import-time but sometimes
+// silently fails to apply (qBit API timeout, version-specific bug,
+// import race). Fires on Connect Download events; never on Grab.
+//
+// Three-layer verification before mutating qBit (defence in depth — a
+// false positive could land a stuck-on-pre-category torrent in the
+// "imported" bucket without the file actually being imported):
+//
+//   Layer 1 — Payload sanity: movieFile / episodeFile populated +
+//             non-empty downloadId (extractDownload returns OK +
+//             ed.DownloadID != "").
+//   Layer 2 — Arr's own history confirms an import landed:
+//             GET /api/v3/history?downloadId=<id> + look for the
+//             import-confirmation event (downloadFolderImported on
+//             Radarr / episodeFileImported on Sonarr).
+//   Layer 3 — qBit still has the torrent AND its current category
+//             matches the pre-import name. If the torrent's gone (user
+//             deleted) or the category is already correct (Arr did its
+//             job), skip without touching qBit.
+//
+// Only when all three checks pass do we call qBit's SetTorrentCategory.
+//
+// Category names come from the Arr's live download-client config —
+// fetched at fire-time via the 5-min cache. The rule's snapshot fields
+// are the fallback if the live fetch fails (Arr unreachable, API key
+// revoked, etc.).
+//
+// Architectural rule: the adapter NEVER decides categories itself.
+// Pre/post category names always come from the Arr's download-client
+// config (live or snapshot). No regex / inference / "guess from the
+// torrent name" logic.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"resolvarr/internal/arr"
+	"resolvarr/internal/core"
+	"resolvarr/internal/qbit"
+)
+
+// dispatchQbitCategoryFix runs the import-confirmation + qBit-category-
+// reconcile flow on Connect Download events. Returns OK=true with a
+// descriptive summary on every clean path (skip-due-to-* / changed
+// category). OK=false only on actual failures (qBit unreachable,
+// malformed payload, missing instance, history-fetch error).
+//
+// Idempotent: layer 3's "category already matches post-import" branch
+// makes Connect retries free — re-applying the fix is a no-op.
+func (s *Server) dispatchQbitCategoryFix(
+	ctx context.Context,
+	rule *core.WebhookRule,
+	cfg core.Config,
+	env *connectEventEnvelope,
+	body []byte,
+) functionResult {
+	if env.EventType != string(core.WebhookEventDownload) {
+		return functionResult{Function: core.WebhookFnQbitCategoryFix, OK: true, Summary: "skipped (not a Download event)"}
+	}
+	if rule.QbitCategoryFix == nil {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: false,
+			Summary: "rule has QbitCategoryFix function but no criteria struct",
+		}
+	}
+	cfgRule := rule.QbitCategoryFix
+
+	// Layer 1 — payload sanity.
+	var payload downloadEventPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: false,
+			Summary: "decode payload failed", Err: err,
+		}
+	}
+	ed := extractDownload(rule.AppType, payload)
+	if !ed.OK {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: true,
+			Summary: "skipped (no movieFile/episodeFile on event — not an import)",
+		}
+	}
+	if ed.DownloadID == "" {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: true,
+			Summary: "skipped (no downloadId on event — manual import?)",
+		}
+	}
+
+	// Resolve Arr client. Instance must still exist (deleted between
+	// receive and dispatch produces a clean error result).
+	arrInst := findInstanceByID(cfg, rule.InstanceID)
+	if arrInst == nil {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: false,
+			Summary: "instance vanished between event receive and dispatch",
+		}
+	}
+	arrClient := s.arrClientFor(arrInst)
+
+	// Layer 2 — verify via Arr's history that an import actually
+	// landed. Some Connect setups emit Download events on rejected
+	// imports too (older Radarr versions); the history walk is the
+	// canonical "did this import succeed?" question.
+	//
+	// Race window: Sonarr/Radarr's NotificationService fires Connect
+	// events from a separate goroutine than the history-row writer.
+	// Connect event can arrive BEFORE the history INSERT commits on
+	// busy systems. Single-shot lookup would skip these races and the
+	// stuck category would never get fixed.
+	//
+	// Retry with exponential backoff covers the realistic race window
+	// (~100ms-2s typically; we go to ~10s for safety). Mirrors the
+	// waitForTorrent pattern Grab Rename + qBit S/E use on the qBit
+	// side. If the import truly failed (rejected, not just delayed),
+	// the history event never appears and we skip cleanly after the
+	// retry budget.
+	historyBackoffMs := []int{0, 500, 1500, 3000, 5000} // total ~10s
+	var importedEvent *arr.HistoryRecord
+	for attempt, delay := range historyBackoffMs {
+		if delay > 0 {
+			select {
+			case <-ctx.Done():
+				return functionResult{
+					Function: core.WebhookFnQbitCategoryFix, OK: false,
+					Summary: "context cancelled during history retry", Err: ctx.Err(),
+				}
+			case <-time.After(time.Duration(delay) * time.Millisecond):
+			}
+		}
+		history, err := arrClient.ListHistoryByDownloadID(ctx, ed.DownloadID)
+		if err != nil {
+			// Hard error (timeout, 5xx). Don't retry — fail loudly.
+			return functionResult{
+				Function: core.WebhookFnQbitCategoryFix, OK: false,
+				Summary: fmt.Sprintf("fetch Arr history (attempt %d/%d)", attempt+1, len(historyBackoffMs)),
+				Err:     err,
+			}
+		}
+		importedEvent = arr.FindImportedEvent(history, rule.AppType)
+		if importedEvent != nil {
+			break
+		}
+	}
+	if importedEvent == nil {
+		// Exhausted the retry budget. Either the import really failed
+		// (rejected, blocked) or Arr is severely lagged. Either way,
+		// safe behaviour is to leave qBit alone — the file isn't in
+		// the library, the pre-import category is correct.
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: true,
+			Summary: "skipped (no import-confirmation event in Arr history after retry budget — import may have failed or Arr is heavily lagged)",
+		}
+	}
+
+	// Resolve pre/post categories — live fetch (cached 5min) with
+	// snapshot fallback. Empty / equal values short-circuit before
+	// touching qBit (validator catches the bad-config case at save-
+	// time, but defence-in-depth for older saved rules).
+	preCat, postCat := s.resolveQbitCategories(ctx, arrInst, arrClient, rule)
+	if preCat == "" || postCat == "" {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: false,
+			Summary: "invalid category config (pre or post category empty after live + snapshot fallback)",
+		}
+	}
+	if strings.EqualFold(preCat, postCat) {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: false,
+			Summary: fmt.Sprintf("invalid category config (pre %q equals post %q)", preCat, postCat),
+		}
+	}
+
+	// Resolve qBit instance + client.
+	qbitInst := findQbitInstanceByID(cfg, cfgRule.QbitInstanceID)
+	if qbitInst == nil {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: false,
+			Summary: fmt.Sprintf("qbit instance %q not found in config", cfgRule.QbitInstanceID),
+		}
+	}
+	qbitClient, err := qbit.New(qbit.Config{
+		URL:          qbitInst.URL,
+		Username:     qbitInst.Username,
+		Password:     qbitInst.Password,
+		TrustedCerts: qbitInst.TrustedCerts,
+	})
+	if err != nil {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: false,
+			Summary: "qbit client init", Err: err,
+		}
+	}
+
+	// Layer 3a — qBit still has the torrent.
+	torrent, found, err := waitForTorrent(ctx, qbitClient, ed.DownloadID)
+	if err != nil {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: false,
+			Summary: "qbit GetTorrent", Err: err,
+		}
+	}
+	if !found {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: true,
+			Summary: fmt.Sprintf("skipped (torrent hash %s removed from qBit before fix)", ed.DownloadID),
+		}
+	}
+	// Layer 3b — category already correct? Two subcases:
+	//   - matches post-import: Arr did its job, no-op.
+	//   - matches neither pre- nor post-import: user customised the
+	//     category manually; don't override.
+	currentCat := torrent.Category
+	if strings.EqualFold(currentCat, postCat) {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: true,
+			Summary: fmt.Sprintf("skipped (category already %q — Arr did its job)", currentCat),
+		}
+	}
+	if !strings.EqualFold(currentCat, preCat) {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: true,
+			Summary: fmt.Sprintf("skipped (category %q matches neither pre %q nor post %q — leaving user-set value alone)", currentCat, preCat, postCat),
+		}
+	}
+
+	// All three layers pass. Apply the post-import category.
+	if err := qbitClient.SetTorrentCategory(ctx, ed.DownloadID, postCat); err != nil {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: false,
+			Summary: "qbit set category", Err: err,
+		}
+	}
+	return functionResult{
+		Function: core.WebhookFnQbitCategoryFix, OK: true,
+		Summary: fmt.Sprintf("changed category %q → %q", preCat, postCat),
+	}
+}
+
+// resolveQbitCategories returns the pre/post category names for the
+// rule. Tries the live fetch from the Arr's download-client config
+// first (cached 5min); falls back to the rule's snapshot fields if the
+// live fetch fails OR if the matched download-client entry doesn't
+// have both pre + post populated.
+//
+// Empty-return ("", "") means "neither live nor snapshot produced a
+// usable pair" — the adapter treats that as a hard error rather than a
+// silent skip (the rule is mis-configured and the user should know).
+func (s *Server) resolveQbitCategories(
+	ctx context.Context,
+	arrInst *core.Instance,
+	arrClient *arr.Client,
+	rule *core.WebhookRule,
+) (preCat, postCat string) {
+	cfgRule := rule.QbitCategoryFix
+	if cfgRule == nil {
+		return "", ""
+	}
+	// Live fetch via the per-instance cache.
+	clients, err := s.ArrDLCache().Get(ctx, arrInst, arrClient)
+	if err == nil {
+		for i := range clients {
+			if clients[i].ID != cfgRule.ArrDownloadClientID {
+				continue
+			}
+			pre := clients[i].QbitPreImportCategory(rule.AppType)
+			post := clients[i].QbitPostImportCategory(rule.AppType)
+			if pre != "" && post != "" {
+				return pre, post
+			}
+			// Matched ID but one or both categories empty — fall
+			// through to snapshot. The user may have un-set a category
+			// in Sonarr/Radarr after creating the rule; snapshot
+			// preserves the original intent for the duration of the
+			// rule's life.
+			break
+		}
+	}
+	// Snapshot fallback. Empty strings still possible if the snapshot
+	// was never populated (rule saved before snapshot fields landed —
+	// shouldn't happen via the validator, but defensive).
+	return cfgRule.PreImportCategorySnapshot, cfgRule.PostImportCategorySnapshot
+}

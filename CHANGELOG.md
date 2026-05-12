@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.5.0-dev — Webhook security, new functions, Missing-episodes scanner (2026-05-11)
+
+### What you get
+
+- **Webhook rules now run on every Connect event from Sonarr/Radarr.** Pick the functions you want (tag the imported file, recover missing release-group, mirror tags to a second instance, rename the qBit torrent, tag with episode/season, fix stuck qBit categories) — they fire in real time as files import, upgrade, or get deleted. The full Library-scan engine — same release-group matcher, same filters, same audio/video/DV detectors — runs in single-file mode on each event. No more waiting for the next scheduled scan to catch up.
+
+- **Webhook signing — your webhook URL is no longer the only key.** Each instance gets a unique Secret on top of the URL token. Paste it into Sonarr/Radarr's Webhook **password** field and flip on "Require signature" — resolvarr will reject any event that doesn't have the matching Secret. Legacy mode (no Secret) still works for upgrade-friendliness; flip the toggle on when you're ready to lock down. Rate-limited audit log (5-min window) so a leaked URL can't flood the activity view.
+
+- **qBit Category Fix — auto-correct stuck post-import categories.** Sonarr/Radarr's "change category after import" sometimes silently fails (qBit busy, API timeout, version-specific bug) and leaves your torrent stuck with the pre-import category. Resolvarr now listens for import events, double-verifies the import actually completed (event payload + Arr's own history with retry-backoff for the race window), and finishes the category swap. Category names auto-load from your Sonarr/Radarr Download Client config — no typing required.
+
+- **qBit Episode/Season tagging redesigned to match the popular community auto-tagger.** Three rules: Episode (matches S01E05, multi-episode, daily-show date patterns like 2024.10.15), Season (matches S01, Season 1), Unmatched (catch-all for movies, music, anything non-TV). Customisable tag names per rule. First-match-wins ordering. Drop your auto-tagger Python script — resolvarr does the same job with a cleaner UI + better diagnostics.
+
+- **Retro-tag your existing qBit library.** "Backlog scan" button on every qBit episode/season-tag rule walks all your torrents and shows what would be tagged. Per-row checkboxes + bulk apply. Solves the "I just configured this rule but my existing 5000 torrents have no tags" problem.
+
+- **Tag Library: find missing episodes in fully-aired seasons** (Sonarr-only). New "Missing episodes" sub-tab walks your monitored series, finds seasons that have fully aired but you're missing one or two episodes in the middle. Configurable threshold (default 70% — won't pester you about brand-new series you haven't downloaded yet) and a 24-hour airing buffer (gives indexers time to register new releases). One-click search the missing episodes via Sonarr's normal indexer flow, or tag the series so you can filter them in Sonarr's UI. Auto-cleans the tag when the series becomes complete.
+
+- **Per-rule fire history — see exactly what happened.** Click "History" on any webhook rule to see the last 7 fires with: status (ok/partial/error), event type, item title, release name (from the indexer), file path (after Radarr's rename), and a per-function summary string like *"tagReleaseGroups: applied 'flux'; syncToSecondary: mirrored to Radarr (Remux); fileDeleteClean: skipped (not a Delete event)"*. Lets you diagnose "why didn't my movie get tagged?" without digging through container logs.
+
+- **`Tag release groups` renamed to `Tag quality releases`.** Since it now covers per-group tagging, Discover auto-add, AND filter-only mode (one shared tag for everything passing the filter), the old name was misleading. All UI surfaces use the new name.
+
+- **Mirror-to-secondary is its own dedicated control** (separate from the function checkboxes). Reads naturally: tick Tag quality releases → an "Also mirror to <secondary Radarr>" toggle appears below. Works for both per-group tags AND filter-only tag (`lossless-web` by default).
+
+### Smaller polish
+
+- Function descriptions across the rule editor are now driven by one canonical source — no more drift between the schedule-mode help and the webhook-mode checkboxes.
+- Webhook setup tab has a "How it works" panel that covers URL setup vs Rules vs Secret vs Require-signature.
+- Help panels everywhere clarify the per-file (webhook) vs library-wide (scan) scope of the orphan-cleanup toggles. Plain-language explanations of what every option does.
+- NON-IMAX titles no longer false-trigger the IMAX rename rule.
+- Step 3b (qBit Grab Rename) + Step 3c (qBit S/E) UIs are fully wired in the rule editor.
+- Sonarr-side rule editor steps hide options that don't apply (e.g. movie-version triggers only show on Radarr instances).
+- Browser back/forward navigation works across all tabs.
+
+### Heads-up if you used v0.4.0-dev
+
+- Webhook rules saved on v0.4.0-dev still work as-is. New fields (Secret, RequireSignature, qBit Category Fix, etc.) default to off/empty.
+- Categories typed by hand on v0.4.0-dev (none — feature is new) — no action needed.
+- "Tag release groups" → "Tag quality releases" is a UI rename only; nothing about behaviour changed.
+
+### Tested but not soak-tested
+
+This is a substantial release. Every feature has unit tests + the new webhook functions went through multi-agent code review before commit, but they haven't been exercised in real-world flow yet — try them, file what breaks. The Configure webhook → Add rule walkthrough is the next thing we'll sit down with.
+
+---
+
 ## v0.4.0-dev — Filter-only tag mode + Apply-now polish (2026-05-09)
 
 ### What you get

@@ -53,9 +53,46 @@ type Instance struct {
 // WebhookConfig is the per-Arr-instance webhook subscription state.
 // Token-empty == webhook not configured. Per-function flags default
 // false; the configuration wizard flips them on per the user's picks.
+//
+// Migration story for Secret + RequireSignature: existing WebhookConfigs
+// decoded from disk before this field landed get Secret="" + Require-
+// Signature=false (the zero values), keeping legacy webhook URLs
+// working without any user action. The user generates Secret on the
+// next Configure-webhook click (the rotate handler now stamps it
+// alongside Token); the require-signature toggle stays off until the
+// user explicitly opts in after pasting the Secret into Sonarr/Radarr's
+// Connect config and verifying a Test event arrives.
 type WebhookConfig struct {
-	Token          string `json:"token,omitempty"`          // base64url-encoded random — empty when not configured
-	LoggingEnabled bool   `json:"loggingEnabled,omitempty"` // when true, every received event is appended to the in-memory + on-disk ring
+	Token string `json:"token,omitempty"` // base64url-encoded random — empty when not configured
+	// Secret is the shared password Sonarr/Radarr's Webhook config
+	// sends in the Authorization: Basic <base64(user:pass)> header.
+	// Sonarr/Radarr Webhook implementation does NOT support custom
+	// HMAC headers — it does support HTTP Basic auth on outgoing
+	// webhook calls. We therefore encode the shared secret as the
+	// password field of Basic auth and validate it server-side with
+	// a constant-time compare.
+	//
+	// Generated alongside Token at Configure-webhook time. The user
+	// pastes this as the password field in Sonarr/Radarr → Settings
+	// → Connect → Edit Webhook → password. Any non-empty username
+	// works (e.g. "resolvarr") — only the password is checked.
+	//
+	// Empty Secret + RequireSignature=true is INVALID — the validator
+	// on handleWebhookSetRequireSignature rejects the combination so
+	// the receiver never has to fail-close at fire-time on a config
+	// that can't be satisfied. Empty Secret + RequireSignature=false
+	// is the legacy unsigned mode — the receiver accepts but logs
+	// a warning to the ring-buffer so the user sees it in Recent
+	// activity.
+	Secret string `json:"secret,omitempty"`
+	// RequireSignature gates strict-mode enforcement. Default false
+	// for backwards compatibility (existing webhook URLs configured
+	// before this change keep working without paste-the-secret-into-
+	// Sonarr-Connect ceremony). User flips it on per-instance once
+	// they've pasted the Secret into Sonarr/Radarr's Connect config
+	// and verified a Test event arrives.
+	RequireSignature bool `json:"requireSignature,omitempty"`
+	LoggingEnabled   bool `json:"loggingEnabled,omitempty"` // when true, every received event is appended to the in-memory + on-disk ring
 }
 
 // PathMapping is a single from→to prefix translation. The "from"
@@ -782,6 +819,11 @@ func (s *ConfigStore) Load() error {
 	for i := range s.cfg.WebhookRules {
 		if s.cfg.WebhookRules[i].GrabRename != nil {
 			s.cfg.WebhookRules[i].GrabRename.MigrateLegacyTriggerFlags()
+		}
+		// QbitSe legacy flags → three-rule first-match-wins model.
+		// Idempotent — a rule already on the new shape short-circuits.
+		if s.cfg.WebhookRules[i].QbitSe != nil {
+			s.cfg.WebhookRules[i].QbitSe.MigrateLegacyQbitSeFlags()
 		}
 	}
 

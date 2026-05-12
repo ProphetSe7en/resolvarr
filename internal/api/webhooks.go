@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"resolvarr/internal/core"
@@ -33,6 +34,80 @@ import (
 // run ~1-50 KB; 1 MB is 20× margin, prevents a hostile/buggy client
 // from streaming gigabytes into our memory.
 const webhookBodyMaxBytes = 1 << 20 // 1 MiB
+
+// authLogWindow is the per-(instance,reason) coalescing window for
+// rejected-auth and unsigned-grace-mode ring-buffer appends. After the
+// first matching event in a window, subsequent matching events are
+// dropped silently; the first event in the next window logs again,
+// giving the user a "still happening" nudge without drowning the
+// 100-entry ring buffer in repeated warnings.
+//
+// Five minutes is a tradeoff: short enough that the user sees a fresh
+// warning if they refresh the UI 10 minutes after a misconfiguration
+// started, long enough that a 30-second Health-poll loop or an
+// auth-flood attacker can't push real events out of the ring within
+// a typical browse session.
+const authLogWindow = 5 * time.Minute
+
+// authLogRateLimiter coalesces (rejected) / (unsigned) ring-buffer
+// appends per instance to prevent log poisoning. State lives on the
+// Server (one map per Server lifetime). Per-instance + per-reason
+// keying so a flooding token's "auth failed" doesn't suppress a
+// different real-issue warning. Different rejection reasons
+// (missing-header vs wrong-secret) stay separately rate-limited so
+// each distinct misconfiguration gets at least one log entry per
+// window.
+//
+// now is injectable for tests (defaults to time.Now). Server restart
+// resets state — acceptable; a fresh start logs the first event again.
+type authLogRateLimiter struct {
+	mu       sync.Mutex
+	lastSeen map[string]time.Time // key: instanceID + ":" + reason
+	now      func() time.Time     // nil → time.Now
+}
+
+// shouldLog returns true the first time a given (instance, reason)
+// pair is seen within authLogWindow, false otherwise. Mutating the
+// lastSeen map on every call (including suppressed ones would be
+// fine too) is intentional: we record the "last attempt" only on
+// the first log of a window, so a steady attack stream with one
+// log every 5 minutes shows the user a "still happening" cadence
+// rather than going completely silent.
+func (l *authLogRateLimiter) shouldLog(instanceID, reason string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lastSeen == nil {
+		l.lastSeen = make(map[string]time.Time)
+	}
+	nowFn := l.now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn()
+	key := instanceID + ":" + reason
+	if last, seen := l.lastSeen[key]; seen && now.Sub(last) < authLogWindow {
+		return false
+	}
+	l.lastSeen[key] = now
+	return true
+}
+
+// shouldLogAuthEvent is the Server-side entry point for the auth log
+// rate-limiter. Lazily allocates the limiter on first use — older
+// tests build `Server{}` directly without going through NewServer,
+// and we don't want them to nil-deref here.
+//
+// Concurrent-safe via authLogRateLimiter's internal mutex; the
+// lazy-alloc itself races against parallel callers but the worst case
+// is one wasted struct (the second writer's struct gets dropped on
+// the floor when the first wins). Production goes through NewServer
+// which sets the field up-front, so this race is test-only.
+func (s *Server) shouldLogAuthEvent(instanceID, reason string) bool {
+	if s.authLogLimiter == nil {
+		s.authLogLimiter = &authLogRateLimiter{}
+	}
+	return s.authLogLimiter.shouldLog(instanceID, reason)
+}
 
 // connectEventEnvelope is the lowest-common-denominator decode target
 // across Sonarr + Radarr Connect events. We only pull out the fields
@@ -156,6 +231,96 @@ func generateWebhookToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// generateWebhookSecret returns a fresh base64url-encoded random secret
+// for the shared-secret-as-Basic-auth-password authentication. Same
+// entropy + encoding as the URL token because the same threat model
+// applies (must be infeasible to brute-force, must be URL-safe enough
+// to copy-paste into Sonarr/Radarr's password field which sometimes
+// disallows specific characters).
+func generateWebhookSecret() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// validateWebhookAuth checks the Authorization: Basic header against
+// the instance's stored Secret. Returns (true, "") on pass.
+//
+// Modes:
+//   - RequireSignature=false + no auth header → pass (legacy/grace
+//     mode). Caller should log a warning to the ring-buffer so the user
+//     sees the "you should turn on Require signature" reminder.
+//   - RequireSignature=false + auth header present + matches → pass
+//   - RequireSignature=false + auth header present + mismatch → fail.
+//     The user TRIED to authenticate (they pasted SOMETHING into the
+//     password field), the mismatch means a misconfiguration we should
+//     surface rather than silently accept.
+//   - RequireSignature=true + no auth header → fail
+//   - RequireSignature=true + auth header present + matches → pass
+//   - RequireSignature=true + auth header present + mismatch → fail
+//
+// Empty Secret on the instance is a config-time error — the validator
+// on the require-signature endpoint prevents saving RequireSignature=
+// true with empty Secret. If we hit that combination at fire-time
+// anyway (manually-edited config.json, future bug), fail closed.
+//
+// Constant-time compare against the secret defangs a per-byte timing
+// oracle. Probably not weaponisable over HTTP for a 256-bit secret,
+// but subtle.ConstantTimeCompare is one line and keeps the receiver
+// honest if entropy ever drops in a future change.
+func validateWebhookAuth(r *http.Request, secret string, requireSignature bool) (bool, string) {
+	authHeader := r.Header.Get("Authorization")
+
+	// Grace mode: no auth header AND not required → pass (legacy).
+	if authHeader == "" {
+		if requireSignature {
+			return false, "missing Authorization header (require-signature is on)"
+		}
+		return true, ""
+	}
+
+	// Decode Basic auth. Reject non-Basic schemes outright — Sonarr/
+	// Radarr only emits Basic, so anything else is either a bug or an
+	// attempt to probe for a different auth surface.
+	//
+	// RFC 7235 §2.1 says the auth scheme is case-insensitive. Sonarr/
+	// Radarr emit canonical "Basic " today, but a future client-library
+	// change could ship "basic " / "bAsIc " and we'd reject a perfectly
+	// valid request. EqualFold on the scheme token keeps us spec-correct.
+	// The single-space separator between scheme and value is what RFC
+	// 7235 specifies (and what every real Connect client sends); we
+	// don't try to tolerate tabs or multiple spaces here.
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Basic") {
+		return false, "Authorization scheme must be Basic"
+	}
+	encoded := parts[1]
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return false, "malformed base64 in Authorization header"
+	}
+	credParts := strings.SplitN(string(decoded), ":", 2)
+	if len(credParts) != 2 {
+		return false, "malformed credentials format"
+	}
+	suppliedSecret := credParts[1]
+
+	// Empty stored Secret is a configuration error — the validator
+	// on /require-signature prevents saving the strict+empty
+	// combination, and even in grace mode a request with an auth
+	// header that hits an empty stored Secret can never compare
+	// equal in a meaningful way. Fail closed.
+	if secret == "" {
+		return false, "instance has no Secret configured"
+	}
+	if subtle.ConstantTimeCompare([]byte(suppliedSecret), []byte(secret)) != 1 {
+		return false, "Authorization secret does not match"
+	}
+	return true, ""
+}
+
 // handleWebhookReceive is the public Connect endpoint. URL form:
 //
 //	POST /api/webhooks/{token}
@@ -182,6 +347,70 @@ func (s *Server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
 	if inst == nil {
 		writeError(w, 404, "not found")
 		return
+	}
+
+	// Shared-secret-as-Basic-auth-password validation. Sonarr/Radarr's
+	// Webhook implementation sends the user-configured username +
+	// password as standard HTTP Basic auth (Authorization: Basic
+	// <base64(user:pass)>). The user pastes the resolvarr-generated
+	// Secret as the password field; any non-empty username works.
+	//
+	// Grace mode (RequireSignature=false): unsigned events pass with
+	// a warning to the ring-buffer so the user sees the "you should
+	// turn on Require signature" reminder in Recent activity.
+	//
+	// Strict mode (RequireSignature=true): missing/wrong Auth header
+	// rejects with 401 + a rejected-event entry in the ring-buffer
+	// so debugging is straightforward from the UI.
+	authOK, authReason := validateWebhookAuth(r, inst.Webhook.Secret, inst.Webhook.RequireSignature)
+	if !authOK {
+		// Log to ring-buffer for visibility in Recent activity. The
+		// EventType "(rejected)" makes the row obviously distinct from
+		// real Connect events; the rejection reason lands in the
+		// Title field so it's visible without expanding the row.
+		//
+		// Rate-limited per (instance, reason): an attacker spamming
+		// the URL with bad creds, or a misconfigured client looping
+		// at 30 s intervals, would otherwise evict every legitimate
+		// event from the 100-entry ring within ~50 seconds and
+		// hammer the on-disk persist (~500 KB × 100 / minute).
+		// First event in the 5-minute window logs; subsequent
+		// matching events are dropped silently. Different reasons
+		// (missing header vs wrong secret) stay separately limited,
+		// so a distinct misconfiguration still surfaces.
+		if s.WebhookLog != nil && s.shouldLogAuthEvent(inst.ID, "auth-rejected:"+authReason) {
+			s.WebhookLog.append(WebhookEvent{
+				ID:         genID(),
+				InstanceID: inst.ID,
+				ReceivedAt: time.Now().UTC(),
+				EventType:  "(rejected)",
+				Title:      "Authentication rejected: " + authReason,
+				Raw:        json.RawMessage(`null`),
+			})
+		}
+		writeError(w, 401, "authentication failed: "+authReason)
+		return
+	}
+	// Grace-mode soft-warning: auth header was absent + RequireSignature
+	// is off. Log to the ring-buffer so the user sees the nudge to flip
+	// strict mode once they've pasted the Secret into Sonarr/Radarr.
+	// We only emit the warning on the unsigned path (no Authorization
+	// header at all) — a present-but-matching header in grace mode is
+	// the happy path during opt-in transition and doesn't need a warning.
+	//
+	// Rate-limited per instance via the same limiter as rejections,
+	// keyed separately ("auth-unsigned") so a chatty Connect setup
+	// emitting Health events every 30 seconds doesn't fill 99 of 100
+	// ring slots with (unsigned) warnings.
+	if !inst.Webhook.RequireSignature && r.Header.Get("Authorization") == "" && s.WebhookLog != nil && s.shouldLogAuthEvent(inst.ID, "auth-unsigned") {
+		s.WebhookLog.append(WebhookEvent{
+			ID:         genID(),
+			InstanceID: inst.ID,
+			ReceivedAt: time.Now().UTC(),
+			EventType:  "(unsigned)",
+			Title:      "Received without Authorization header — paste the Secret into Sonarr/Radarr's Webhook password field and turn on 'Require signature'",
+			Raw:        json.RawMessage(`null`),
+		})
 	}
 
 	// Read body with cap. Sonarr/Radarr send ~1-50 KB; 1 MiB ceiling
@@ -421,10 +650,25 @@ func (s *Server) handleWebhookRotateToken(w http.ResponseWriter, r *http.Request
 		writeError(w, 500, "generate token: "+err.Error())
 		return
 	}
+	// Generate Secret alongside Token so the user gets both artifacts
+	// in one click. The Secret is the shared password they paste into
+	// Sonarr/Radarr → Connect → Webhook → password.
+	//
+	// On rotate (instance already had a token), the existing
+	// RequireSignature flag is preserved BUT the user will need to
+	// re-paste the new Secret into Sonarr/Radarr's Connect config
+	// before strict mode keeps working — the UI surfaces this in
+	// the rotation toast and in the rotate-button title text.
+	secret, err := generateWebhookSecret()
+	if err != nil {
+		writeError(w, 500, "generate secret: "+err.Error())
+		return
+	}
 	if err := s.App.Config.Update(func(c *core.Config) {
 		for i := range c.Instances {
 			if c.Instances[i].ID == inst.ID {
 				c.Instances[i].Webhook.Token = token
+				c.Instances[i].Webhook.Secret = secret
 				if req.LoggingEnabled != nil {
 					c.Instances[i].Webhook.LoggingEnabled = *req.LoggingEnabled
 				}
@@ -449,20 +693,34 @@ func (s *Server) handleWebhookRotateToken(w http.ResponseWriter, r *http.Request
 	url := fmt.Sprintf("%s://%s/api/webhooks/%s", scheme, host, token)
 	// Re-read the persisted state so the response reflects what
 	// actually got saved (including the preserved-or-changed
-	// LoggingEnabled flag — see the *bool dance above).
+	// LoggingEnabled + RequireSignature flags). RequireSignature is
+	// preserved by Update (we only wrote Token/Secret/LoggingEnabled),
+	// so the UI can tell the user "your old strict mode is still on,
+	// but you need to paste the new Secret into Sonarr/Radarr to keep
+	// events flowing".
 	loggingEnabled := false
+	requireSignature := false
 	if cfg := s.App.Config.Get(); cfg.Instances != nil {
 		for _, in := range cfg.Instances {
 			if in.ID == inst.ID {
 				loggingEnabled = in.Webhook.LoggingEnabled
+				requireSignature = in.Webhook.RequireSignature
 				break
 			}
 		}
 	}
+	// TODO(M-Webhook Phase 2 Slices C-H): when Auto-configure ships,
+	// the response will optionally include the Arr-side notification
+	// ID + a "wired" flag so the UI can show "Auto-configured — Sonarr
+	// knows the new Secret" instead of "paste this into Sonarr". Until
+	// then the manual paste-flow is the only path and the UI surfaces
+	// the Secret prominently in the wizard's Summary step.
 	writeJSON(w, map[string]any{
-		"token":          token,
-		"url":            url,
-		"loggingEnabled": loggingEnabled,
+		"token":            token,
+		"secret":           secret,
+		"url":              url,
+		"loggingEnabled":   loggingEnabled,
+		"requireSignature": requireSignature,
 	})
 }
 
@@ -471,15 +729,23 @@ func (s *Server) handleWebhookRotateToken(w http.ResponseWriter, r *http.Request
 // configuration wizard's Summary step + the Webhooks UI's "Copy URL"
 // button both call this. Admin-side auth-gated. Returns an empty token
 // + URL when no webhook is configured.
+//
+// Secret and RequireSignature are also unmasked here — the wizard's
+// Summary step renders the Secret in a copy-to-clipboard input so the
+// user can paste it into Sonarr/Radarr's Connect → Webhook → password
+// field. The broader /api/config endpoint masks both Token and Secret
+// (see handleGetConfig) for any consumer that might log the response.
 func (s *Server) handleWebhookGet(w http.ResponseWriter, r *http.Request) {
 	inst := s.instanceByID(w, r.PathValue("id"))
 	if inst == nil {
 		return
 	}
 	resp := map[string]any{
-		"token":          inst.Webhook.Token,
-		"loggingEnabled": inst.Webhook.LoggingEnabled,
-		"url":            "",
+		"token":            inst.Webhook.Token,
+		"secret":           inst.Webhook.Secret,
+		"requireSignature": inst.Webhook.RequireSignature,
+		"loggingEnabled":   inst.Webhook.LoggingEnabled,
+		"url":              "",
 	}
 	if inst.Webhook.Token != "" {
 		scheme := "http"
@@ -508,6 +774,8 @@ func (s *Server) handleWebhookDelete(w http.ResponseWriter, r *http.Request) {
 		for i := range c.Instances {
 			if c.Instances[i].ID == inst.ID {
 				c.Instances[i].Webhook.Token = ""
+				c.Instances[i].Webhook.Secret = ""
+				c.Instances[i].Webhook.RequireSignature = false
 				c.Instances[i].Webhook.LoggingEnabled = false
 				return
 			}
@@ -517,6 +785,56 @@ func (s *Server) handleWebhookDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"status": "ok"})
+}
+
+// handleWebhookSetRequireSignature toggles the RequireSignature flag
+// on an existing webhook config. Body: `{"enabled": bool}`.
+//
+// Validator: rejects {enabled:true} with 400 when the instance's
+// stored Secret is empty — flipping strict mode on with no secret
+// configured would brick the receiver path (the validator would
+// fail-close on every incoming event with "instance has no Secret
+// configured"). The user must click Configure webhook first to
+// generate a Secret, then come back to flip strict mode.
+//
+// Returns 409 if no token is configured at all (same idempotency
+// gate as handleWebhookSetLogging — "configure first, then tune
+// flags").
+func (s *Server) handleWebhookSetRequireSignature(w http.ResponseWriter, r *http.Request) {
+	inst := s.instanceByID(w, r.PathValue("id"))
+	if inst == nil {
+		return
+	}
+	if inst.Webhook.Token == "" {
+		writeError(w, 409, "webhook not configured for this instance — generate a token first")
+		return
+	}
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		writeError(w, 400, "invalid body: "+err.Error())
+		return
+	}
+	// Validator: turning strict mode on requires a stored Secret. If
+	// the user is turning it OFF that's always allowed (downgrades to
+	// grace mode never need the secret to validate).
+	if req.Enabled && inst.Webhook.Secret == "" {
+		writeError(w, 400, "Generate a secret first by clicking Configure webhook")
+		return
+	}
+	if err := s.App.Config.Update(func(c *core.Config) {
+		for i := range c.Instances {
+			if c.Instances[i].ID == inst.ID {
+				c.Instances[i].Webhook.RequireSignature = req.Enabled
+				return
+			}
+		}
+	}); err != nil {
+		writeError(w, 500, "save: "+err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok", "requireSignature": req.Enabled})
 }
 
 // handleWebhookSetLogging toggles just the LoggingEnabled flag on an
