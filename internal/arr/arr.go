@@ -348,8 +348,54 @@ type MediaInfo struct {
 // Quality is the top-level quality envelope Radarr/Sonarr wraps around
 // the file. We read .Quality.Resolution as a fallback when mediaInfo
 // is missing — it's populated even on legacy imports.
+//
+// Two wire shapes exist on the same field name:
+//
+//   1. Arr API responses (GET /api/v3/moviefile/{id}) wrap the value
+//      in a nested struct: { "quality": { "id": 7, "name":
+//      "WEBDL-2160p", "resolution": 2160 } }.
+//
+//   2. Connect webhook events flatten it to a bare string: "quality":
+//      "WEBDL-2160p". Resolution is absent — callers fall back to
+//      mediaInfo.height for the numeric width.
+//
+// UnmarshalJSON below accepts both. String form unwraps into
+// QualityValue{Name: <s>}; struct form decodes the standard way.
+// Without this, every Download/Import event with the flat string
+// fails JSON-decode and the whole rule errors out.
 type Quality struct {
 	Quality QualityValue `json:"quality"`
+}
+
+// UnmarshalJSON handles Quality coming in as either:
+//   - struct form (Arr API responses) → standard decode
+//   - string form (Webhook Connect events) → wrap into QualityValue.Name
+//   - null / missing → zero value (Quality{})
+func (q *Quality) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*q = Quality{}
+		return nil
+	}
+	// String form — webhook Connect events flatten quality to a bare
+	// label like "WEBDL-2160p". Wrap into QualityValue{Name}.
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		*q = Quality{Quality: QualityValue{Name: s}}
+		return nil
+	}
+	// Struct form — use a type alias to bypass this UnmarshalJSON
+	// (avoids infinite recursion).
+	type qualityAlias Quality
+	var alias qualityAlias
+	if err := json.Unmarshal(trimmed, &alias); err != nil {
+		return err
+	}
+	*q = Quality(alias)
+	return nil
 }
 
 // QualityValue carries the integer resolution alongside the quality
