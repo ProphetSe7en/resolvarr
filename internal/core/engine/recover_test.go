@@ -79,6 +79,12 @@ func TestParseReleaseGroupTolerant(t *testing.T) {
 		{"Matilda — same pattern with apostrophes elsewhere",
 			"Roald Dahls Matilda the Musical 2022 Hybrid 2160p WEB-DL HEVC TrueHD Atmos 7.1 DoVi - SumVision.mkv",
 			"SumVision", true},
+		{"Atmos - Flux — short space-dash-space form",
+			"Movie 2024 1080p WEB-DL Atmos - Flux",
+			"Flux", true},
+		{"Plain ' - GROUP' with no qualifiers between",
+			"Movie 2024 - Flux",
+			"Flux", true},
 		{"standard -RG no space (fallthrough to strict parser)",
 			"Movie.2024.1080p.WEB-DL-FLUX.mkv", "FLUX", true},
 		{"standard -RG with directory",
@@ -119,6 +125,12 @@ func TestNormalizeRgSegment(t *testing.T) {
 		{"126811 with trailing garbage (preserves bash fix)",
 			"Movie 2024 1080p WEB-DL-126811 x ATM05 @HDT18", "126811",
 			"Movie 2024 1080p WEB-DL-126811"},
+		{"Garfield 2024 — real-world Atmos-126811 x ATM05",
+			"The Garfield Movie 2024 Hybrid 2160p iT WEB-DL HDR H.265 TrueHD 7.1 Atmos-126811 x ATM05", "126811",
+			"The Garfield Movie 2024 Hybrid 2160p iT WEB-DL HDR H.265 TrueHD 7.1 Atmos-126811"},
+		{"No Hard Feelings 2023 — Atmos-126811 x ATM05 @HDT18",
+			"No Hard Feelings 2023 Hybrid 2160p MA WEB-DL DoVi HDR10+ H.265 TrueHD 7.1 Atmos-126811 x ATM05 @HDT18", "126811",
+			"No Hard Feelings 2023 Hybrid 2160p MA WEB-DL DoVi HDR10+ H.265 TrueHD 7.1 Atmos-126811"},
 		{"FLUX with bracketed indexer suffix",
 			"Movie 2024 1080p-FLUX [MEGUSTA]", "FLUX",
 			"Movie 2024 1080p-FLUX"},
@@ -235,6 +247,17 @@ func TestParseReleaseGroupFromFilename_RejectionReasons(t *testing.T) {
 		{"Movie-Group_with_underscore.mkv", "Group_with_underscore", true, ""},
 		// path with directory prefix
 		{"/data/movies/Movie/Movie.2024-FLUX.mkv", "FLUX", true, ""},
+		// Extensionless torrent .Name — qBit grabRename call site
+		// receives the torrent's display name which is often
+		// extensionless. Regression: filepath.Ext greedily stripped
+		// ".265-APEX" as if it were a media extension, leaving
+		// ".../H" + LastIndex of '-' landing in WEB-DL → candidate
+		// "DL.TrueHD..." → multi-token reject. Fix uses mediaExtRE so
+		// only real media extensions get stripped. Thor's exact qBit
+		// .Name on 2026-05-13:
+		{"Thor.2011.2160p.MA.WEB-DL.TrueHD.Atmos.7.1.HDR.H.265-APEX", "APEX", true, ""},
+		// Same pattern with .mkv extension behaves identically.
+		{"Thor.2011.2160p.MA.WEB-DL.TrueHD.Atmos.7.1.HDR.H.265-APEX.mkv", "APEX", true, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.filename, func(t *testing.T) {

@@ -20,8 +20,8 @@ func TestEvaluateGrabRenameTriggers_MissingReleaseGroup(t *testing.T) {
 	current := "Rango 2011 1080p WEB-DL DTS-HD MA 5.1 DoVi - SumVision"
 	grab := "Rango 2011 1080p WEB-DL DTS-HD MA 5.1 DoVi - SumVision"
 	got := evaluateGrabRenameTriggers(current, grab, "SumVision", c)
-	if len(got) != 1 || got[0] != "missing-release-group" {
-		t.Errorf("got %v, want [missing-release-group] (Rango space-dash-space pattern)", got)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "missing-release-group") {
+		t.Errorf("got %v, want [missing-release-group (...)] (Rango space-dash-space pattern)", got)
 	}
 }
 

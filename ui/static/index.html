@@ -570,9 +570,9 @@
           <a class="settings-nav" :class="scanSection === 'run' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'run' })" @click="setScanSection('run')">Run mode</a>
         </template>
         <template x-if="scanSectionVisible('groups')">
-          <a class="settings-nav" :class="scanSection === 'groups' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'groups' })" @click="setScanSection('groups'); loadGroups()" title="Tag movies that pass your quality bar — by release group, by filter, or both. Active list + Discover + Recover + Tag run all live here.">
-            Tag quality releases
-            <template x-if="groups.length > 0"><span class="count" x-text="groups.filter(g => g.enabled).length"></span></template>
+          <a class="settings-nav" :class="scanSection === 'groups' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'groups' })" @click="setScanSection('groups'); loadGroups()" :title="scanAppType === 'sonarr' ? 'Sonarr only offers Recover here today — Discover + Tag quality releases come with M-Sonarr Phase 2.' : 'Tag movies that pass your quality bar — by release group, by filter, or both. Active list + Discover + Recover + Tag run all live here.'">
+            <span x-text="scanAppType === 'sonarr' ? 'Recover release groups' : 'Tag quality releases'"></span>
+            <template x-if="scanAppType !== 'sonarr' && groups.length > 0"><span class="count" x-text="groups.filter(g => g.enabled).length"></span></template>
           </a>
         </template>
         <!-- Filters sub-tab REMOVED 2026-05-05.
@@ -1016,8 +1016,8 @@
                Standardised order across the UI: header → desc → help → action.
                Same heading + structure as the Radarr branch so users moving
                between Arr types see consistent layout. -->
-          <div class="settings-section-title">Tag quality releases</div>
-          <div class="settings-section-desc">Recover walks Sonarr's grab history per series, finds episode files with empty <code>releaseGroup</code>, and writes the recovered group back. Tag quality releases (Discover + tag) is <span style="color:var(--accent-orange)">coming with M-Sonarr</span> — Sonarr's per-episode-file model needs different aggregation than Radarr's per-movie walk.</div>
+          <div class="settings-section-title">Recover release groups</div>
+          <div class="settings-section-desc">Walks Sonarr's grab history per series, finds episode files with empty <code>releaseGroup</code>, and writes the recovered group back. <span style="color:var(--text-muted-secondary)">Tag quality releases (Discover + tag) for Sonarr is <span style="color:var(--accent-orange)">coming with M-Sonarr Phase 2</span> — Sonarr's per-episode-file model needs different aggregation than Radarr's per-movie walk. Until then this Tag Library tab offers Recover only on Sonarr.</span></div>
 
           <button class="help-toggle" :class="helpOpen.sonarrRecover && 'is-open'" @click="helpOpen.sonarrRecover = !helpOpen.sonarrRecover" style="margin-top:8px;margin-bottom:8px">
             <span class="help-icon">i</span>
@@ -7138,7 +7138,7 @@
               <ul>
                 <li><strong>Missing release-group</strong> — the qBit name doesn't have a parseable release group (<code>-GROUP</code> suffix). Catches the Rango/Matilda failure mode where the group is visually present but Radarr's strict parser rejects it.</li>
                 <li><strong>Movie-version mismatch</strong> — Radarr only. Grab title has Director's Cut / Theatrical / Extended / Unrated / etc. but qBit name lacks it.</li>
-                <li><strong>Source mismatch</strong> — grab title has a streaming-source token (<code>AMZN</code>, <code>NF</code>, <code>DSNP</code>, <code>HMAX</code>, <code>MA</code>, <code>Play</code>, <code>HULU</code>, <code>PCOK</code>, <code>CR</code>, <code>ATVP</code>) the qBit name lacks.</li>
+                <li><strong>Source mismatch</strong> — grab title has a streaming-source token the qBit name lacks. Checked tokens: <code>MA WEB-DL</code>, <code>Play WEB-DL</code>, <code>AMZN</code>, <code>NF</code>, <code>DSNP</code>, <code>HMAX</code>, <code>HULU</code>, <code>PCOK</code>, <code>CR</code>, <code>ATVP</code>, and plain <code>WEB-DL</code> as a fallback. (<code>MA</code> and <code>Play</code> only count when paired with <code>WEB-DL</code> — that's the premium-source TRaSH CFs key on.)</li>
                 <li><strong>Audio mismatch</strong> — grab title has an audio token (<code>TrueHD Atmos</code>, <code>DTS-HD MA</code>, <code>DTS-X</code>, etc.) the qBit name lacks.</li>
                 <li><strong>Scene mismatch</strong> — nuanced: fires when the qBit name <em>looks</em> scene-stripped (<code>WEB</code> without <code>WEB-DL</code>) AND the release group is NOT on the TRaSH scene-CF list. Legit scene releases (group IS on the list) are left alone to preserve scene-CF scoring.</li>
                 <li><strong>Always rename</strong> — bypass token detection; rename whenever qBit and grab title differ. Cosmetic-churn risk.</li>
@@ -7216,7 +7216,7 @@
               </template>
               <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body);line-height:1.5">
                 <input type="checkbox" x-model="editingRule.grabRename.triggerOnSourceMismatch" style="accent-color:var(--accent-blue);margin-top:2px">
-                <span><strong>Source mismatch</strong> — rename when the grab title has a streaming-source token (<code>AMZN</code>, <code>NF</code>, <code>DSNP</code>, <code>HMAX</code>, <code>MA</code>, <code>Play</code>, <code>HULU</code>, <code>PCOK</code>, <code>CR</code>, <code>ATVP</code>) the qBit name lacks.</span>
+                <span><strong>Source mismatch</strong> — rename when the grab title has a streaming-source token the qBit name lacks: <code>MA WEB-DL</code>, <code>Play WEB-DL</code>, <code>AMZN</code>, <code>NF</code>, <code>DSNP</code>, <code>HMAX</code>, <code>HULU</code>, <code>PCOK</code>, <code>CR</code>, <code>ATVP</code>, or plain <code>WEB-DL</code> as fallback.</span>
               </label>
               <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body);line-height:1.5">
                 <input type="checkbox" x-model="editingRule.grabRename.triggerOnAudioMismatch" style="accent-color:var(--accent-blue);margin-top:2px">

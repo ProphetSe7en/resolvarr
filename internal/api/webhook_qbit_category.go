@@ -231,7 +231,60 @@ func (s *Server) dispatchQbitCategoryFix(
 		}
 	}
 
-	// All three layers pass. Apply the post-import category.
+	// Layer 3c — grace window. Arr's history confirmed the import is
+	// committed, but Arr's qBit-category-swap runs on a separate post-
+	// commit goroutine and can take a few seconds. Without this grace
+	// poll, resolvarr would race Arr to the swap and steal the work
+	// even when Arr would have completed it normally in 2-5 seconds.
+	//
+	// Poll qBit's category with backoff up to ~10s. Break early when:
+	//   - Category flips to post → Arr did its job, skip.
+	//   - Category flips to anything else → user manually changed, skip.
+	//
+	// Only swap when the category STAYS on pre-import through the
+	// entire budget — that's the genuinely-stuck case the function
+	// exists to fix.
+	graceBackoffMs := []int{2000, 3000, 5000} // total ~10s
+	for _, delay := range graceBackoffMs {
+		select {
+		case <-ctx.Done():
+			return functionResult{
+				Function: core.WebhookFnQbitCategoryFix, OK: false,
+				Summary: "context cancelled during grace poll", Err: ctx.Err(),
+			}
+		case <-time.After(time.Duration(delay) * time.Millisecond):
+		}
+		recheck, recheckFound, recheckErr := qbitClient.GetTorrent(ctx, ed.DownloadID)
+		if recheckErr != nil {
+			// Transient qBit error mid-poll — treat as "still pre", let
+			// the next iteration retry. If the final SetTorrentCategory
+			// also fails, that surfaces the real qBit problem.
+			continue
+		}
+		if !recheckFound {
+			return functionResult{
+				Function: core.WebhookFnQbitCategoryFix, OK: true,
+				Summary: fmt.Sprintf("skipped (torrent hash %s removed from qBit during grace poll)", ed.DownloadID),
+			}
+		}
+		recheckCat := recheck.Category
+		if strings.EqualFold(recheckCat, postCat) {
+			return functionResult{
+				Function: core.WebhookFnQbitCategoryFix, OK: true,
+				Summary: fmt.Sprintf("skipped (category became %q during grace window — Arr completed the swap)", recheckCat),
+			}
+		}
+		if !strings.EqualFold(recheckCat, preCat) {
+			return functionResult{
+				Function: core.WebhookFnQbitCategoryFix, OK: true,
+				Summary: fmt.Sprintf("skipped (category changed to %q during grace window — user customised manually)", recheckCat),
+			}
+		}
+		// Still on pre — continue polling.
+	}
+
+	// All three layers + grace window pass. Apply the post-import
+	// category — Arr genuinely dropped the ball.
 	if err := qbitClient.SetTorrentCategory(ctx, ed.DownloadID, postCat); err != nil {
 		return functionResult{
 			Function: core.WebhookFnQbitCategoryFix, OK: false,
@@ -240,7 +293,7 @@ func (s *Server) dispatchQbitCategoryFix(
 	}
 	return functionResult{
 		Function: core.WebhookFnQbitCategoryFix, OK: true,
-		Summary: fmt.Sprintf("changed category %q → %q", preCat, postCat),
+		Summary: fmt.Sprintf("changed category %q → %q (Arr did not complete the swap within ~10s grace window)", preCat, postCat),
 	}
 }
 

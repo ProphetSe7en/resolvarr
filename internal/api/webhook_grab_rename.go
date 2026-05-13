@@ -207,7 +207,7 @@ func (s *Server) dispatchGrabRename(
 	if target == currentName {
 		return functionResult{
 			Function: core.WebhookFnGrabRename, OK: true,
-			Summary: fmt.Sprintf("skipped (target equals current after normalisation; triggers fired: %s)", strings.Join(reasons, ", ")),
+			Summary: fmt.Sprintf("skipped (target equals current after normalisation; from=%q; triggers fired: %s)", currentName, strings.Join(reasons, ", ")),
 		}
 	}
 
@@ -215,9 +215,13 @@ func (s *Server) dispatchGrabRename(
 	if err := client.RenameTorrent(ctx, hash, target); err != nil {
 		return functionResult{Function: core.WebhookFnGrabRename, OK: false, Summary: "qbit rename", Err: err}
 	}
+	// Summary includes both from + to so the History modal shows the
+	// exact comparison qBit returned — no need to query qBit live to
+	// understand why a given rename fired. Per-trigger diagnostics
+	// (parser output, missing tokens) live inside reasons[].
 	return functionResult{
 		Function: core.WebhookFnGrabRename, OK: true,
-		Summary: fmt.Sprintf("renamed → %q (triggers: %s)", target, strings.Join(reasons, ", ")),
+		Summary: fmt.Sprintf("renamed %q → %q (triggers: %s)", currentName, target, strings.Join(reasons, ", ")),
 	}
 }
 
@@ -238,10 +242,17 @@ func evaluateGrabRenameTriggers(currentName, grabTitle, rg string, c *core.GrabR
 	// Missing release group — uses Radarr's strict filename parser to
 	// answer "would Radarr extract rg from the current name?" If parser
 	// returns rg → no diff. If returns different value or empty → diff.
+	//
+	// Diagnostic suffix lands in the History summary so users can see
+	// EXACTLY what the parser extracted vs what the grab payload claimed
+	// — without needing live qBit access. Helps debug "rename fired but
+	// the name looked fine" cases by surfacing the actual comparison.
 	if c.TriggerOnMissingReleaseGroup && rg != "" {
-		got, ok, _ := engine.ParseReleaseGroupFromFilename(currentName)
-		if !ok || !strings.EqualFold(got, rg) {
-			reasons = append(reasons, "missing-release-group")
+		got, ok, reason := engine.ParseReleaseGroupFromFilename(currentName)
+		if !ok {
+			reasons = append(reasons, fmt.Sprintf("missing-release-group (parser rejected: %s)", reason))
+		} else if !strings.EqualFold(got, rg) {
+			reasons = append(reasons, fmt.Sprintf("missing-release-group (parsed=%q expected=%q)", got, rg))
 		}
 	}
 

@@ -97,12 +97,22 @@ func ParseReleaseGroupFromFilename(relativePath string) (string, bool, FilenameR
 	if relativePath == "" {
 		return "", false, FilenameRejectNoHyphen
 	}
-	// Strip directory prefix and file extension. filepath.Base handles
-	// both POSIX and Windows-style separators since Radarr can be running
-	// on either. ext-strip via filepath.Ext is the same as bash `${filename%.*}`.
+	// Strip directory prefix; use a media-extension-aware strip (NOT
+	// filepath.Ext) for the suffix. filepath.Ext walks back to the
+	// final dot in the entire string, which for an extensionless
+	// torrent name like "Thor.2011.[...].H.265-APEX" wrongly returns
+	// ".265-APEX" — eating half the name before we look for the
+	// release-group hyphen. The grabRename dispatcher passes qBit's
+	// torrent .Name field which is often extensionless (multi-file
+	// torrents) or uses dots throughout (single-file scene-style),
+	// so we only strip when the suffix is actually a media extension.
+	//
+	// Matches the strategy the tolerant parser already uses
+	// (mediaExtRE) — the strict parser's old assumption that "input
+	// always has a real filename" turned out to be false for the
+	// webhook grabRename call site.
 	filename := filepath.Base(relativePath)
-	ext := filepath.Ext(filename)
-	base := strings.TrimSuffix(filename, ext)
+	base := mediaExtRE.ReplaceAllString(filename, "")
 
 	// No hyphen at all → no candidate.
 	if !strings.Contains(base, "-") {

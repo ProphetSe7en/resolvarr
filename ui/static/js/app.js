@@ -3887,6 +3887,11 @@ function app() {
         // a malformed URL, which we control. Swallow + leave the
         // panel in poll-via-↻ mode.
       }
+      // Start the 10-second polling safety-net regardless of SSE
+      // outcome — proxies sometimes silently buffer SSE responses, or
+      // EventSource fails to reconnect after long idle. Polling makes
+      // sure the panel reflects new events even when push is broken.
+      this.startWebhookEventPolling(instanceId);
     },
 
     stopWebhookEventStream() {
@@ -3895,6 +3900,60 @@ function app() {
       }
       this._webhookEventSource = null;
       this._webhookEventSourceInstanceId = null;
+      // Stop polling fallback too — paired lifecycle with the SSE stream.
+      if (this._webhookEventPollHandle) {
+        clearInterval(this._webhookEventPollHandle);
+        this._webhookEventPollHandle = null;
+      }
+    },
+
+    // startWebhookEventPolling is a safety-net fallback that runs
+    // alongside the SSE stream. SSE is the primary push channel, but
+    // it's fragile in real deployments — reverse proxies (SWAG /
+    // nginx) sometimes buffer event-stream responses, or drop the
+    // connection silently after the heartbeat window. Without a poll,
+    // the user has to click ↻ to see new events.
+    //
+    // 10-second poll is cheap (the GET endpoint returns a JSON list
+    // capped at 100 entries) and small enough that it doesn't fight
+    // SSE — when SSE works, the poll just re-fetches the same list
+    // we already have. The Activity panel re-renders against the new
+    // list (Alpine spread-assign on webhookEvents).
+    //
+    // Stops cleanly via stopWebhookEventStream — paired lifecycle.
+    startWebhookEventPolling(instanceId) {
+      if (this._webhookEventPollHandle) {
+        clearInterval(this._webhookEventPollHandle);
+      }
+      if (!instanceId) return;
+      this._webhookEventPollHandle = setInterval(async () => {
+        // Stale-tab guard: if the user navigated away the instance
+        // dropdown will have changed; skip in that case.
+        if (instanceId !== this._webhookEventSourceInstanceId) return;
+        try {
+          const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook/events', {
+            headers: { 'X-Skip-Login-Redirect': '1' },
+          });
+          if (r.ok) {
+            const d = await r.json();
+            if (Array.isArray(d)) {
+              this.webhookEvents = { ...this.webhookEvents, [instanceId]: d };
+            }
+          }
+        } catch (e) {
+          // Network blip — next tick will retry. No user-facing error.
+        }
+        // Piggyback: refresh the rules list too. Each rule's History
+        // field carries its per-fire summaries — without this call,
+        // the per-rule History modal stays stale until the user
+        // manually clicks Reload. Cheap GET (small JSON, capped at
+        // a handful of rules per instance).
+        try {
+          await this.loadWebhookRules();
+        } catch (e) {
+          // loadWebhookRules already swallows errors silently.
+        }
+      }, 10000); // 10s
     },
 
     // Handler for one SSE 'webhook' event payload. Prepends the new
