@@ -12,13 +12,14 @@ import (
 type JobMode string
 
 const (
-	JobModeTag       JobMode = "tag"
-	JobModeDiscover  JobMode = "discover"
-	JobModeRecover   JobMode = "recover"
-	JobModeAudioTags JobMode = "audiotags" // M4 — audio-stream auto-tags from mediaInfo
-	JobModeVideoTags JobMode = "videotags" // M4 — video-stream auto-tags (resolution / codec / HDR) from mediaInfo
-	JobModeDvDetail  JobMode = "dvdetail"  // M4b — Dolby Vision profile / CM tags via ffmpeg+dovi_tool
-	JobModeCombined  JobMode = "combined"
+	JobModeTag             JobMode = "tag"
+	JobModeDiscover        JobMode = "discover"
+	JobModeRecover         JobMode = "recover"
+	JobModeAudioTags       JobMode = "audiotags"       // M4 — audio-stream auto-tags from mediaInfo
+	JobModeVideoTags       JobMode = "videotags"       // M4 — video-stream auto-tags (resolution / codec / HDR) from mediaInfo
+	JobModeDvDetail        JobMode = "dvdetail"        // M4b — Dolby Vision profile / CM tags via ffmpeg+dovi_tool
+	JobModeMissingEpisodes JobMode = "missingepisodes" // Sonarr only — gap scan + optional Tag/Search
+	JobModeCombined        JobMode = "combined"
 )
 
 // ValidJobMode returns true when m is one of the accepted values.
@@ -27,7 +28,7 @@ func ValidJobMode(m JobMode) bool {
 	switch m {
 	case JobModeTag, JobModeDiscover, JobModeRecover,
 		JobModeAudioTags, JobModeVideoTags, JobModeDvDetail,
-		JobModeCombined:
+		JobModeMissingEpisodes, JobModeCombined:
 		return true
 	}
 	return false
@@ -216,12 +217,53 @@ type ScheduledJob struct {
 	// for every schedule.
 	ReleaseGroupIDs []string `json:"releaseGroupIds,omitempty"`
 
+	// MissingEpisodes is the per-schedule snapshot for the
+	// missingepisodes phase (Sonarr-only — Tag Library → Missing
+	// episodes / QFA combined mode). nil = phase not enabled on this
+	// schedule. When present, the chain runner + scheduler runner
+	// read threshold / bufferHours / include filters / action toggles
+	// off this snapshot rather than a global (no global for this
+	// phase today — it lives only as a per-rule snapshot).
+	MissingEpisodes *MissingEpisodesConfig `json:"missingEpisodes,omitempty"`
+
 	// History holds the last N runs — N=5 today, configurable later.
 	// Runs older than the cap land in the log file (LogPath on each
 	// JobRun) and are no longer surfaced in the UI's rolling table.
 	// Cap is maxInMemoryHistory in scheduler.go (currently 7); files
 	// for runs beyond the cap are deleted from disk in the same step.
 	History []JobRun `json:"history,omitempty"`
+}
+
+// MissingEpisodesConfig is the per-schedule (and per-webhook-rule-
+// snapshot if that ever lands) configuration for the Sonarr-only
+// missing-episodes phase. Mirrors the standalone Library scan tab's
+// config plus per-rule action toggles.
+//
+// ThresholdPercent: 0-100 percent of aired episodes that must be on
+// disk before the season is considered "covered". Default 70.
+//
+// BufferHours: 0-672 hours. Episodes that aired within this window
+// are NOT flagged as missing (gives indexers time to publish). 0
+// means "any aired episode is fair game"; the dispatcher honours
+// 0 explicitly. Default 24 (matches Sonarr's own default check).
+//
+// Action toggles: at fire-time, the chain runner / scheduler runner
+// fires preview always; tag-apply when ActionTag is true; Sonarr
+// search-trigger when ActionSearch is true. Both can be on. Both
+// off = preview only (still produces a result row).
+//
+// TagName: tag label written to Sonarr when ActionTag is true.
+// Validated against `^[a-z0-9_-]+$` (Sonarr's tag-label regex);
+// empty / whitespace defaults to "missing-episodes" at fire-time.
+type MissingEpisodesConfig struct {
+	ThresholdPercent  int    `json:"thresholdPercent"`
+	BufferHours       int    `json:"bufferHours"`
+	IncludeContinuing bool   `json:"includeContinuing"`
+	IncludeEnded      bool   `json:"includeEnded"`
+	IncludeSpecials   bool   `json:"includeSpecials"`
+	TagName           string `json:"tagName"`
+	ActionTag         bool   `json:"actionTag"`
+	ActionSearch      bool   `json:"actionSearch"`
 }
 
 // JobRun summarises one execution of a schedule. Kept narrow on

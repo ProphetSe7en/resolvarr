@@ -1,5 +1,22 @@
 # Changelog
 
+> ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
+
+## v0.6.0-dev — Per-bucket strip-on-delete + Missing Episodes everywhere (2026-05-13)
+
+### What you get
+
+- **Strip-on-delete is now per-bucket.** The old single "Strip managed tags on file delete" checkbox is replaced by three checkboxes — one on the Audio step, one on the Video step, one on the DV-detail step. You can now strip only the buckets you want (e.g. audio only) when Radarr/Sonarr deletes a file.
+- **Release-group tags drop off automatically on file delete.** If a rule has "Tag quality releases" on and a file gets deleted, the release-group tag (or filter-only tag) is removed from the item — no extra checkbox needed. If the rule also mirrors to a secondary instance, the tag falls off there too.
+- **Missing Episodes can run in Quick fix-all and as a saved rule.** Pick "Find missing episodes" on the Basics step of QFA or Create Rule (Sonarr only). Configure threshold / buffer / Tag / Search choice on the Review step — all in one place. Saved rules fire on cron the same way Tag and Recover do.
+- **Bug fix — Missing Episodes scan no longer fails with "CSRF token missing".** The standalone Library scan tab works again. Button label changed to "Preview missing episodes" so it's clear the scan itself doesn't write anything until you click Tag or Search.
+
+### Upgrade notes
+
+- **Your existing rules are migrated automatically on first start.** Rules that had the old toggle on get the three new per-bucket checkboxes ticked — same behaviour, just split. Open the rule afterwards if you want to untick one of the buckets.
+
+---
+
 ## v0.5.0-dev — Webhook security, new functions, Missing-episodes scanner (2026-05-11)
 
 ### What you get

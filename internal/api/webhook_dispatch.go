@@ -58,7 +58,11 @@ var canonicalFunctionOrder = []core.WebhookFunction{
 	core.WebhookFnTagVideo,
 	core.WebhookFnTagDvDetail,
 	core.WebhookFnSyncToSecondary,
-	core.WebhookFnFileDeleteClean,
+	// WebhookFnFileDeleteClean retired in C7/C8 — per-bucket
+	// StripOnFileDelete flags + dispatchFileDeleteCleanup-via-
+	// FiresPerBucketStripOnDelete-gate replace it. Adapter still
+	// callable for legacy-shaped rules slipping through validation,
+	// but the canonical iteration no longer touches it.
 	core.WebhookFnGrabRename,
 	core.WebhookFnQbitSeTag,
 	// QbitCategoryFix runs LAST in the chain because it's defensive
@@ -136,7 +140,18 @@ func (s *Server) dispatchWebhookRules(
 		if rule.InstanceID != inst.ID || !rule.Enabled {
 			continue
 		}
-		if !rule.FiresOn(event) {
+		// FiresOn covers user-toggleable functions; FiresAutoStripOnDelete
+		// covers the automatic Tag-RG strip-on-delete invariant (no
+		// user function needed beyond Tag-RG itself); FiresPerBucketStripOnDelete
+		// covers the post-C5 per-bucket opt-in model (Audio / Video /
+		// DV-detail snapshots with StripOnFileDelete=true) without
+		// requiring the legacy WebhookFnFileDeleteClean function. OR-
+		// combine so a rule firing for any reason enters the per-rule
+		// block.
+		firesByFn := rule.FiresOn(event)
+		firesAutoStrip := rule.FiresAutoStripOnDelete(event)
+		firesPerBucketStrip := rule.FiresPerBucketStripOnDelete(event)
+		if !firesByFn && !firesAutoStrip && !firesPerBucketStrip {
 			continue
 		}
 		// Canonical execution order — iterate canonicalFunctionOrder
@@ -164,6 +179,52 @@ func (s *Server) dispatchWebhookRules(
 			// stored too so a failing fetch doesn't retry per rule.
 			tagDetails, tagErr := s.tagDetailsFor(ctx, inst, tagDetailsByInst, tagDetailsErrs)
 			res := s.dispatchWebhookFunction(ctx, &rule, cfg, tagDetails, tagErr, fn, env, body)
+			results = append(results, res)
+		}
+		// Per-bucket strip-on-delete: triggers dispatchFileDeleteCleanup
+		// for rules opting in via Audio/Video/DV snapshot StripOnFileDelete
+		// flags rather than the legacy WebhookFnFileDeleteClean function
+		// (C6 of the M-webhook delete-semantics refactor). Skipped when
+		// the rule still carries the legacy function — the function-loop
+		// above already routed through the same dispatcher on that path,
+		// and the legacy bridge in buildFileDeleteManagedSet covers
+		// non-flagged buckets. Without this skip, post-C5-migration would
+		// be fine but legacy-shape rules (pre-migration or hand-rolled)
+		// would double-fire the strip.
+		if firesPerBucketStrip && !rule.HasFunction(core.WebhookFnFileDeleteClean) {
+			tagDetails, tagErr := s.tagDetailsFor(ctx, inst, tagDetailsByInst, tagDetailsErrs)
+			var res functionResult
+			if tagErr != nil {
+				res = functionResult{
+					Function: core.WebhookFnFileDeleteClean,
+					OK:       false,
+					Summary:  "list tags",
+					Err:      tagErr,
+				}
+			} else {
+				res = s.dispatchFileDeleteCleanup(ctx, &rule, cfg, tagDetails, env, body)
+			}
+			results = append(results, res)
+		}
+		// Auto-strip-on-delete: enforces the Tag-RG invariant on file-
+		// delete events. Runs AFTER the user-function loop so any
+		// user-ticked FileDeleteClean cleanup of Audio/Video/DV tags
+		// fires first; auto-strip then handles the RG/filter-only
+		// strip in the same dispatch. Mirror to secondary is built
+		// into the dispatcher (gated on rule.HasFunction(SyncToSecondary)).
+		if firesAutoStrip {
+			tagDetails, tagErr := s.tagDetailsFor(ctx, inst, tagDetailsByInst, tagDetailsErrs)
+			var res functionResult
+			if tagErr != nil {
+				res = functionResult{
+					Function: webhookFnAutoStripTagRgOnDelete,
+					OK:       false,
+					Summary:  "list tags",
+					Err:      tagErr,
+				}
+			} else {
+				res = s.dispatchAutoStripTagRgOnDelete(ctx, &rule, cfg, tagDetails, env, body)
+			}
 			results = append(results, res)
 		}
 		if len(results) == 0 {
@@ -196,8 +257,14 @@ func (s *Server) dispatchWebhookRules(
 // fetch failed — auto-tag adapters surface this via OK=false instead
 // of attempting to operate on an empty label↔ID map.
 //
-// All 10 webhook functions are wired (see canonicalFunctionOrder
+// All canonical webhook functions are wired (see canonicalFunctionOrder
 // for execution-order; switch arms map function constant → adapter).
+// dispatchFileDeleteCleanup is reachable from the per-bucket strip-
+// on-delete after-loop block in dispatchWebhookRules (C6), not from
+// this switch — the legacy WebhookFnFileDeleteClean function is no
+// longer in canonicalFunctionOrder (C7/C8) so the switch arm was
+// removed as unreachable. The C5 migration converts any rule still
+// listing the legacy function on first Load.
 func (s *Server) dispatchWebhookFunction(
 	ctx context.Context,
 	rule *core.WebhookRule,
@@ -224,11 +291,6 @@ func (s *Server) dispatchWebhookFunction(
 			return r
 		}
 		return s.dispatchTagDvDetail(ctx, rule, cfg, tagDetails, env, body)
-	case core.WebhookFnFileDeleteClean:
-		if r, blocked := requireTagDetails(fn, tagDetailsErr); blocked {
-			return r
-		}
-		return s.dispatchFileDeleteCleanup(ctx, rule, cfg, tagDetails, env, body)
 	case core.WebhookFnTagReleaseGroups:
 		if r, blocked := requireTagDetails(fn, tagDetailsErr); blocked {
 			return r

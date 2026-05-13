@@ -465,3 +465,224 @@ func TestConfigStore_FilterOnlyPreservesUserTag(t *testing.T) {
 		t.Errorf("user FilterOnlyTag clobbered: got %q, want premium-bluray", got.Schedules[0].Options.FilterOnlyTag)
 	}
 }
+
+// TestMigrateLegacyFileDeleteClean_BasicMigration verifies a rule that
+// only carries WebhookFnFileDeleteClean gets the three buckets opted
+// into StripOnFileDelete + the legacy function dropped. The migration
+// must materialise nil snapshots from globals so the rule keeps its
+// pre-migration cleanup universe.
+func TestMigrateLegacyFileDeleteClean_BasicMigration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolvarr.json")
+	legacy := []byte(`{
+  "webhookRules": [
+    {
+      "id": "r1",
+      "name": "Clean on delete",
+      "enabled": true,
+      "instanceId": "primary",
+      "appType": "radarr",
+      "functions": ["fileDeleteClean"]
+    }
+  ]
+}`)
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewConfigStore(dir)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := s.Get()
+	if len(got.WebhookRules) != 1 {
+		t.Fatalf("WebhookRules: got %d, want 1", len(got.WebhookRules))
+	}
+	r := got.WebhookRules[0]
+	if r.HasFunction(WebhookFnFileDeleteClean) {
+		t.Errorf("legacy fileDeleteClean function still in Functions after migration: %v", r.Functions)
+	}
+	if r.AudioTags == nil || !r.AudioTags.StripOnFileDelete {
+		t.Errorf("AudioTags.StripOnFileDelete = false (snapshot=%v), want true with materialised snapshot", r.AudioTags)
+	}
+	if r.VideoTags == nil || !r.VideoTags.StripOnFileDelete {
+		t.Errorf("VideoTags.StripOnFileDelete = false (snapshot=%v), want true with materialised snapshot", r.VideoTags)
+	}
+	if r.DvDetail == nil || !r.DvDetail.StripOnFileDelete {
+		t.Errorf("DvDetail.StripOnFileDelete = false (snapshot=%v), want true with materialised snapshot", r.DvDetail)
+	}
+}
+
+// TestMigrateLegacyFileDeleteClean_PreservesExistingSnapshots verifies
+// that a rule with already-materialised snapshots keeps its custom
+// allowed-values / prefix intact — the migration must only flip the
+// new StripOnFileDelete flag, not clobber other snapshot fields.
+func TestMigrateLegacyFileDeleteClean_PreservesExistingSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolvarr.json")
+	legacy := []byte(`{
+  "webhookRules": [
+    {
+      "id": "r1",
+      "name": "Clean on delete",
+      "enabled": true,
+      "instanceId": "primary",
+      "appType": "radarr",
+      "functions": ["fileDeleteClean"],
+      "audioTags": {
+        "enabled": true,
+        "audio": {"enabled": true, "prefix": "audio-", "allowedValues": ["truehd", "atmos"]}
+      }
+    }
+  ]
+}`)
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewConfigStore(dir)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := s.Get()
+	r := got.WebhookRules[0]
+	if r.AudioTags == nil {
+		t.Fatal("AudioTags snapshot was clobbered to nil")
+	}
+	if r.AudioTags.Audio.Prefix != "audio-" {
+		t.Errorf("AudioTags.Audio.Prefix = %q, want %q (user snapshot must survive)", r.AudioTags.Audio.Prefix, "audio-")
+	}
+	if !r.AudioTags.StripOnFileDelete {
+		t.Errorf("AudioTags.StripOnFileDelete = false, want true")
+	}
+	wantAllowed := []string{"truehd", "atmos"}
+	if len(r.AudioTags.Audio.AllowedValues) != len(wantAllowed) {
+		t.Errorf("AudioTags.Audio.AllowedValues = %v, want %v", r.AudioTags.Audio.AllowedValues, wantAllowed)
+	}
+}
+
+// TestMigrateLegacyFileDeleteClean_IdempotentNoOp verifies that a rule
+// without the legacy function is left fully untouched — no snapshot
+// materialisation, no StripOnFileDelete flip. Re-running migration on
+// already-migrated configs is a no-op.
+func TestMigrateLegacyFileDeleteClean_IdempotentNoOp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolvarr.json")
+	legacy := []byte(`{
+  "webhookRules": [
+    {
+      "id": "r1",
+      "name": "Tag only",
+      "enabled": true,
+      "instanceId": "primary",
+      "appType": "radarr",
+      "functions": ["tagReleaseGroups"]
+    }
+  ]
+}`)
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewConfigStore(dir)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := s.Get()
+	r := got.WebhookRules[0]
+	if r.AudioTags != nil {
+		t.Errorf("AudioTags snapshot materialised on a rule without fileDeleteClean: %+v", r.AudioTags)
+	}
+	if r.VideoTags != nil {
+		t.Errorf("VideoTags snapshot materialised on a rule without fileDeleteClean: %+v", r.VideoTags)
+	}
+	if r.DvDetail != nil {
+		t.Errorf("DvDetail snapshot materialised on a rule without fileDeleteClean: %+v", r.DvDetail)
+	}
+	if !r.HasFunction(WebhookFnTagReleaseGroups) {
+		t.Errorf("tagReleaseGroups stripped from Functions: %v", r.Functions)
+	}
+}
+
+// TestMigrateLegacyFileDeleteClean_PreservesOtherFunctionsOrder verifies
+// that migrating a rule with multiple functions drops only the legacy
+// one and keeps the relative order of survivors.
+func TestMigrateLegacyFileDeleteClean_PreservesOtherFunctionsOrder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolvarr.json")
+	legacy := []byte(`{
+  "webhookRules": [
+    {
+      "id": "r1",
+      "name": "Mixed",
+      "enabled": true,
+      "instanceId": "primary",
+      "appType": "radarr",
+      "functions": ["tagAudio", "fileDeleteClean", "tagVideo", "recover"]
+    }
+  ]
+}`)
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewConfigStore(dir)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := s.Get()
+	r := got.WebhookRules[0]
+	want := []WebhookFunction{WebhookFnTagAudio, WebhookFnTagVideo, WebhookFnRecover}
+	if len(r.Functions) != len(want) {
+		t.Fatalf("Functions after migration: got %v, want %v", r.Functions, want)
+	}
+	for i, fn := range want {
+		if r.Functions[i] != fn {
+			t.Errorf("Functions[%d] = %q, want %q", i, r.Functions[i], fn)
+		}
+	}
+}
+
+// TestMigrateLegacyFileDeleteClean_DeepCopyFromGlobals verifies the
+// materialised snapshot does NOT share slice backing with the global
+// config — editing the global's AllowedValues after migration must
+// NOT drift the migrated rule's snapshot.
+func TestMigrateLegacyFileDeleteClean_DeepCopyFromGlobals(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resolvarr.json")
+	legacy := []byte(`{
+  "audioTags": {
+    "enabled": true,
+    "audio": {"enabled": true, "allowedValues": ["truehd"]}
+  },
+  "webhookRules": [
+    {
+      "id": "r1",
+      "name": "Clean on delete",
+      "enabled": true,
+      "instanceId": "primary",
+      "appType": "radarr",
+      "functions": ["fileDeleteClean"]
+    }
+  ]
+}`)
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewConfigStore(dir)
+	if err := s.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Mutate the global allowed-values via Update after Load. The
+	// migrated rule's snapshot must NOT reflect that change — i.e.
+	// the snapshot owns its own slice backing.
+	if err := s.Update(func(c *Config) {
+		c.AudioTags.Audio.AllowedValues = []string{"truehd", "atmos", "dts"}
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got := s.Get()
+	r := got.WebhookRules[0]
+	if r.AudioTags == nil {
+		t.Fatal("AudioTags nil — migration did not materialise snapshot")
+	}
+	if len(r.AudioTags.Audio.AllowedValues) != 1 || r.AudioTags.Audio.AllowedValues[0] != "truehd" {
+		t.Errorf("rule snapshot AllowedValues drifted with global edit: got %v, want [truehd]", r.AudioTags.Audio.AllowedValues)
+	}
+}

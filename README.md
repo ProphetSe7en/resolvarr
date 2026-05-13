@@ -8,7 +8,7 @@ Resolvarr is the next step for the [tagarr](https://github.com/prophetse7en/taga
 
 Free, open source, and self-hosted.
 
-> **Status — early access.** The image is currently published as `:dev` only while we collect feedback from a small group of testers. Active development is ongoing — expect occasional bugs, UI quirks, and breaking changes between dev builds. A first stable `:latest` lands after a soak period; Community Apps listing follows that. **Please open an [issue](https://github.com/prophetse7en/resolvarr/issues) if you hit anything** — that's the whole point of this stage.
+> ⚠️ **Status — early access (`:dev` only).** Active development is ongoing — expect occasional bugs, UI quirks, and **changes between dev builds that aren't always backwards-compatible with earlier versions**. Existing rules get auto-converted on first start so you don't lose work, but the wizard controls and the rule shape can shift between versions. A first stable `:latest` lands after a soak period; Community Apps listing follows that. **Please open an [issue](https://github.com/prophetse7en/resolvarr/issues) if you hit anything** — that's the whole point of this stage.
 
 ## Features
 

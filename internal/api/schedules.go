@@ -30,17 +30,18 @@ import (
 // to the on-Load migration which backfills from globals. New
 // clients (the rule-editor wizard) always send all snapshots.
 type scheduleRequest struct {
-	Name            string                `json:"name"`
-	Mode            core.JobMode          `json:"mode"`
-	InstanceID      string                `json:"instanceId"`
-	Cron            string                `json:"cron"`
-	Enabled         bool                  `json:"enabled"`
-	Options         core.JobOptions       `json:"options"`
-	Filters         *engine.FilterConfig  `json:"filters,omitempty"`
-	AudioTags       *core.AudioTagsConfig `json:"audioTags,omitempty"`
-	VideoTags       *core.VideoTagsConfig `json:"videoTags,omitempty"`
-	DvDetail        *core.DvDetailConfig  `json:"dvDetail,omitempty"`
-	ReleaseGroupIDs []string              `json:"releaseGroupIds,omitempty"`
+	Name            string                       `json:"name"`
+	Mode            core.JobMode                 `json:"mode"`
+	InstanceID      string                       `json:"instanceId"`
+	Cron            string                       `json:"cron"`
+	Enabled         bool                         `json:"enabled"`
+	Options         core.JobOptions              `json:"options"`
+	Filters         *engine.FilterConfig         `json:"filters,omitempty"`
+	AudioTags       *core.AudioTagsConfig        `json:"audioTags,omitempty"`
+	VideoTags       *core.VideoTagsConfig        `json:"videoTags,omitempty"`
+	DvDetail        *core.DvDetailConfig         `json:"dvDetail,omitempty"`
+	MissingEpisodes *core.MissingEpisodesConfig  `json:"missingEpisodes,omitempty"`
+	ReleaseGroupIDs []string                     `json:"releaseGroupIds,omitempty"`
 }
 
 // validate enforces the schedule contract before persistence. Returns
@@ -74,14 +75,14 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 	}
 	// CombinedModes is only meaningful when Mode == Combined.
 	if req.Mode == core.JobModeCombined && len(req.Options.CombinedModes) == 0 {
-		return newAPIError(400, "combined mode requires options.combinedModes (one or more of discover/recover/tag/audiotags/videotags/dvdetail)")
+		return newAPIError(400, "combined mode requires options.combinedModes (one or more of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes)")
 	}
 	if req.Mode != core.JobModeCombined && len(req.Options.CombinedModes) > 0 {
 		return newAPIError(400, "options.combinedModes is only meaningful when mode = combined")
 	}
 	for _, m := range req.Options.CombinedModes {
 		if !core.ValidJobMode(m) || m == core.JobModeCombined {
-			return newAPIError(400, "options.combinedModes entries must be one of discover/recover/tag/audiotags/videotags/dvdetail")
+			return newAPIError(400, "options.combinedModes entries must be one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes")
 		}
 	}
 	if req.Options.RunMode != "" && req.Options.RunMode != "preview" && req.Options.RunMode != "apply" {
@@ -104,6 +105,36 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 		}
 		if !reTagName.MatchString(req.Options.FilterOnlyTag) {
 			return newAPIError(400, "options.filterOnlyTag must be lowercase letters, digits, underscores, or dashes")
+		}
+	}
+
+	// MissingEpisodes snapshot bounds — mirrors the per-handler
+	// validation in scan_missing_episodes.go so a schedule POST/PUT
+	// can't persist garbage that would only get clamped at fire-time.
+	// Sonarr-only enforced via the instance type check above (we
+	// already resolved + validated the instance against appType).
+	if req.MissingEpisodes != nil {
+		me := req.MissingEpisodes
+		if me.ThresholdPercent < 0 || me.ThresholdPercent > 100 {
+			return newAPIError(400, "missingEpisodes.thresholdPercent must be between 0 and 100")
+		}
+		if me.BufferHours < 0 || me.BufferHours > 672 {
+			return newAPIError(400, "missingEpisodes.bufferHours must be between 0 and 672 (4 weeks)")
+		}
+		if me.TagName != "" && !reTagName.MatchString(me.TagName) {
+			return newAPIError(400, "missingEpisodes.tagName must be lowercase letters, digits, underscores, or dashes")
+		}
+		// Phase only fires on Sonarr — defend at save-time so a
+		// Radarr rule can't persist a no-op snapshot.
+		instType := ""
+		for i := range cfg.Instances {
+			if cfg.Instances[i].ID == req.InstanceID {
+				instType = cfg.Instances[i].Type
+				break
+			}
+		}
+		if instType != "" && instType != "sonarr" {
+			return newAPIError(400, "missingEpisodes is Sonarr-only — pick a Sonarr instance")
 		}
 	}
 	return nil
@@ -258,6 +289,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		AudioTags:       req.AudioTags,
 		VideoTags:       req.VideoTags,
 		DvDetail:        req.DvDetail,
+		MissingEpisodes: req.MissingEpisodes,
 		ReleaseGroupIDs: req.ReleaseGroupIDs,
 	}
 	if err := s.App.Config.Update(func(c *core.Config) {
@@ -316,6 +348,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.DvDetail != nil {
 				c.Schedules[i].DvDetail = req.DvDetail
+			}
+			if req.MissingEpisodes != nil {
+				c.Schedules[i].MissingEpisodes = req.MissingEpisodes
 			}
 			if req.ReleaseGroupIDs != nil {
 				c.Schedules[i].ReleaseGroupIDs = req.ReleaseGroupIDs

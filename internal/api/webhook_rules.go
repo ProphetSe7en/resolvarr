@@ -287,17 +287,16 @@ func (req *webhookRuleRequest) validate(cfg core.Config) *apiError {
 		return newAPIError(400, "filter-only tag mode is supported on Radarr only")
 	}
 	// Filter-only requires a tag whenever ANY consumer of FilterOnlyTag
-	// is enabled — Tag-RG (the primary tagger), Sync-to-secondary (the
-	// secondary mirror also evaluates filter-only and writes the tag),
-	// or File-Delete-Clean (strip-on-delete + the secondary mirror both
-	// pull the tag from rule.FilterOnlyTag). Without a tag the dispatcher
-	// would self-protect with a fire-time error per function — cleaner to
-	// reject at save-time so the user knows up-front the rule is
-	// half-configured.
-	requiresFilterOnlyTag := tagSource == "filter-only" && (seen[core.WebhookFnTagReleaseGroups] || seen[core.WebhookFnSyncToSecondary] || seen[core.WebhookFnFileDeleteClean])
+	// is enabled — Tag-RG (the primary tagger + auto-strip-on-delete
+	// mirror) and Sync-to-secondary (the secondary mirror also
+	// evaluates filter-only and writes the tag). Without a tag the
+	// dispatcher would self-protect with a fire-time error per
+	// function — cleaner to reject at save-time so the user knows
+	// up-front the rule is half-configured.
+	requiresFilterOnlyTag := tagSource == "filter-only" && (seen[core.WebhookFnTagReleaseGroups] || seen[core.WebhookFnSyncToSecondary])
 	if requiresFilterOnlyTag {
 		if filterOnlyTag == "" {
-			return newAPIError(400, "filterOnlyTag is required when tagSource=filter-only and any of tagReleaseGroups / syncToSecondary / fileDeleteClean is enabled")
+			return newAPIError(400, "filterOnlyTag is required when tagSource=filter-only and either tagReleaseGroups or syncToSecondary is enabled")
 		}
 		if !reTagName.MatchString(filterOnlyTag) {
 			return newAPIError(400, "filterOnlyTag must be lowercase letters, digits, underscores, or dashes")
@@ -527,7 +526,6 @@ func collectApplicableFunctions(appType string) []core.WebhookFunction {
 		core.WebhookFnTagDvDetail,
 		core.WebhookFnRecover,
 		core.WebhookFnSyncToSecondary,
-		core.WebhookFnFileDeleteClean,
 		core.WebhookFnGrabRename,
 		core.WebhookFnQbitSeTag,
 		core.WebhookFnQbitCategoryFix,

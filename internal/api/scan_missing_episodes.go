@@ -176,137 +176,11 @@ func (s *Server) handleMissingEpisodesPreview(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	client := s.arrClientFor(inst)
-	series, err := client.ListSeries(ctx)
-	if err != nil {
-		writeError(w, 502, "list series: "+err.Error())
+	resp, apiErr := s.runMissingEpisodesPreview(ctx, inst, req.Threshold, bufferHours, req.IncludeContinuing, req.IncludeEnded, req.IncludeSpecials)
+	if apiErr != nil {
+		writeError(w, apiErr.Status, apiErr.Message)
 		return
 	}
-
-	// Filter series before we fan out the per-series fetch. Saves N
-	// fetches when the user has unchecked "continuing" or "ended".
-	// Series with monitored=false are always skipped — they're the
-	// "I'm hoarding metadata but not syncing files" case, no point
-	// flagging anything.
-	type task struct {
-		series arr.ArrSeriesSummary
-	}
-	tasks := make([]task, 0, len(series))
-	for _, ser := range series {
-		if !ser.Monitored {
-			continue
-		}
-		if isContinuingStatus(ser.Status) {
-			if !req.IncludeContinuing {
-				continue
-			}
-		} else {
-			if !req.IncludeEnded {
-				continue
-			}
-		}
-		tasks = append(tasks, task{series: ser})
-	}
-
-	// Per-series episodes + per-series error captured in parallel.
-	type result struct {
-		episodes []arr.ArrEpisodeSummary
-		err      error
-	}
-	results := make([]result, len(tasks))
-	sem := make(chan struct{}, missingEpisodesWorkerCount)
-	var wg sync.WaitGroup
-	for i := range tasks {
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			results[i] = result{err: ctx.Err()}
-			continue
-		}
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			subCtx, c := context.WithTimeout(ctx, missingEpisodesPerSeriesTimeout)
-			defer c()
-			eps, err := client.ListEpisodesForSeries(subCtx, tasks[i].series.ID)
-			results[i] = result{episodes: eps, err: err}
-		}(i)
-	}
-	wg.Wait()
-
-	now := time.Now().UTC()
-	resp := missingEpisodesPreviewResponse{
-		InstanceID:   inst.ID,
-		InstanceName: inst.Name,
-		Threshold:    req.Threshold,
-		BufferHours:  bufferHours,
-	}
-
-	for i, ts := range tasks {
-		ser := ts.series
-		if results[i].err != nil {
-			resp.Errors = append(resp.Errors, missingEpisodesSeriesError{
-				SeriesID:    ser.ID,
-				SeriesTitle: ser.Title,
-				Error:       results[i].err.Error(),
-			})
-			continue
-		}
-		// Convert arr.ArrEpisodeSummary → engine.ArrEpisodeSummary at
-		// the boundary. Same-shape types but engine keeps its types
-		// independent of the arr package to preserve the no-I/O
-		// contract on engine.
-		//
-		// B2: season 0 = specials. Most libraries have ad-hoc, sparse
-		// specials that the user doesn't actively curate via Sonarr
-		// search — including them by default would pollute the result
-		// list and trigger inappropriate searches on bulk Search. Skip
-		// unless the caller opts in explicitly.
-		eps := make([]engine.ArrEpisodeSummary, 0, len(results[i].episodes))
-		for _, ep := range results[i].episodes {
-			if !req.IncludeSpecials && ep.SeasonNumber == 0 {
-				continue
-			}
-			eps = append(eps, engine.ArrEpisodeSummary{
-				ID:            ep.ID,
-				SeriesID:      ep.SeriesID,
-				SeasonNumber:  ep.SeasonNumber,
-				EpisodeNumber: ep.EpisodeNumber,
-				Title:         ep.Title,
-				AirDateUtc:    ep.AirDateUtc,
-				Monitored:     ep.Monitored,
-				HasFile:       ep.HasFile,
-			})
-		}
-		det := engine.DetectMissingEpisodes(
-			engine.ArrSeriesSummary{
-				ID:        ser.ID,
-				Title:     ser.Title,
-				Status:    ser.Status,
-				Monitored: ser.Monitored,
-			},
-			eps,
-			req.Threshold,
-			bufferHours,
-			now,
-		)
-		resp.SeriesScanned++
-		if det.SeasonsWithGaps == 0 || len(det.Seasons) == 0 {
-			continue
-		}
-		resp.SeriesWithGaps++
-		for _, season := range det.Seasons {
-			resp.TotalMissingEpisodes += len(season.MissingEpisodes)
-		}
-		resp.Series = append(resp.Series, det)
-	}
-
-	// Sort flagged series alphabetically by title — stable UI order.
-	sort.Slice(resp.Series, func(i, j int) bool {
-		return resp.Series[i].SeriesTitle < resp.Series[j].SeriesTitle
-	})
-
 	writeJSON(w, resp)
 }
 
@@ -337,12 +211,12 @@ func (s *Server) handleMissingEpisodesSearch(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	client := s.arrClientFor(inst)
-	if err := client.SearchEpisodes(ctx, req.EpisodeIDs); err != nil {
-		writeError(w, 502, "episode search: "+err.Error())
+	resp, apiErr := s.runMissingEpisodesSearch(ctx, inst, req.EpisodeIDs)
+	if apiErr != nil {
+		writeError(w, apiErr.Status, apiErr.Message)
 		return
 	}
-	writeJSON(w, missingEpisodesSearchResponse{Triggered: len(req.EpisodeIDs)})
+	writeJSON(w, resp)
 }
 
 // handleMissingEpisodesTag applies the configured tag (default
@@ -366,28 +240,205 @@ func (s *Server) handleMissingEpisodesTag(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	tagName := req.TagName
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+
+	resp, apiErr := s.runMissingEpisodesTag(ctx, inst, req.TagName, req.SeriesIDs, req.RemoveFromOthers)
+	if apiErr != nil {
+		writeError(w, apiErr.Status, apiErr.Message)
+		return
+	}
+	writeJSON(w, resp)
+}
+
+// isContinuingStatus mirrors engine.isContinuing but lives in the api
+// package so the API-side filter doesn't have to import the engine
+// helper twice (engine.isContinuing is unexported). Same logic.
+func isContinuingStatus(status string) bool {
+	switch status {
+	case "continuing", "upcoming":
+		return true
+	}
+	return false
+}
+
+// runMissingEpisodesPreview is the reusable inner logic for the
+// preview scan — used by handleMissingEpisodesPreview (HTTP) and
+// the scheduler-runner's combined missingepisodes phase. Takes the
+// validated request params + a resolved Sonarr instance and returns
+// the populated response.
+//
+// Caller is responsible for context cancellation + instance type
+// validation. Returns (response, apiError) — apiError carries the
+// HTTP status to surface on the live handler; the scheduler converts
+// it to a plain error.
+func (s *Server) runMissingEpisodesPreview(
+	ctx context.Context,
+	inst *core.Instance,
+	threshold float64,
+	bufferHours int,
+	includeContinuing bool,
+	includeEnded bool,
+	includeSpecials bool,
+) (*missingEpisodesPreviewResponse, *apiError) {
+	client := s.arrClientFor(inst)
+	series, err := client.ListSeries(ctx)
+	if err != nil {
+		return nil, newAPIError(502, "list series: "+err.Error())
+	}
+
+	type task struct {
+		series arr.ArrSeriesSummary
+	}
+	tasks := make([]task, 0, len(series))
+	for _, ser := range series {
+		if !ser.Monitored {
+			continue
+		}
+		if isContinuingStatus(ser.Status) {
+			if !includeContinuing {
+				continue
+			}
+		} else {
+			if !includeEnded {
+				continue
+			}
+		}
+		tasks = append(tasks, task{series: ser})
+	}
+
+	type result struct {
+		episodes []arr.ArrEpisodeSummary
+		err      error
+	}
+	results := make([]result, len(tasks))
+	sem := make(chan struct{}, missingEpisodesWorkerCount)
+	var wg sync.WaitGroup
+	for i := range tasks {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			results[i] = result{err: ctx.Err()}
+			continue
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			subCtx, c := context.WithTimeout(ctx, missingEpisodesPerSeriesTimeout)
+			defer c()
+			eps, err := client.ListEpisodesForSeries(subCtx, tasks[i].series.ID)
+			results[i] = result{episodes: eps, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	now := time.Now().UTC()
+	resp := &missingEpisodesPreviewResponse{
+		InstanceID:   inst.ID,
+		InstanceName: inst.Name,
+		Threshold:    threshold,
+		BufferHours:  bufferHours,
+	}
+
+	for i, ts := range tasks {
+		ser := ts.series
+		if results[i].err != nil {
+			resp.Errors = append(resp.Errors, missingEpisodesSeriesError{
+				SeriesID:    ser.ID,
+				SeriesTitle: ser.Title,
+				Error:       results[i].err.Error(),
+			})
+			continue
+		}
+		eps := make([]engine.ArrEpisodeSummary, 0, len(results[i].episodes))
+		for _, ep := range results[i].episodes {
+			if !includeSpecials && ep.SeasonNumber == 0 {
+				continue
+			}
+			eps = append(eps, engine.ArrEpisodeSummary{
+				ID:            ep.ID,
+				SeriesID:      ep.SeriesID,
+				SeasonNumber:  ep.SeasonNumber,
+				EpisodeNumber: ep.EpisodeNumber,
+				Title:         ep.Title,
+				AirDateUtc:    ep.AirDateUtc,
+				Monitored:     ep.Monitored,
+				HasFile:       ep.HasFile,
+			})
+		}
+		det := engine.DetectMissingEpisodes(
+			engine.ArrSeriesSummary{
+				ID:        ser.ID,
+				Title:     ser.Title,
+				Status:    ser.Status,
+				Monitored: ser.Monitored,
+			},
+			eps,
+			threshold,
+			bufferHours,
+			now,
+		)
+		resp.SeriesScanned++
+		if det.SeasonsWithGaps == 0 || len(det.Seasons) == 0 {
+			continue
+		}
+		resp.SeriesWithGaps++
+		for _, season := range det.Seasons {
+			resp.TotalMissingEpisodes += len(season.MissingEpisodes)
+		}
+		resp.Series = append(resp.Series, det)
+	}
+	sort.Slice(resp.Series, func(i, j int) bool {
+		return resp.Series[i].SeriesTitle < resp.Series[j].SeriesTitle
+	})
+	return resp, nil
+}
+
+// runMissingEpisodesSearch triggers Sonarr's EpisodeSearch command
+// for the given episode IDs. Shared by the HTTP handler and the
+// scheduler runner.
+func (s *Server) runMissingEpisodesSearch(
+	ctx context.Context,
+	inst *core.Instance,
+	episodeIDs []int,
+) (*missingEpisodesSearchResponse, *apiError) {
+	if len(episodeIDs) == 0 {
+		return nil, newAPIError(400, "episodeIds is required")
+	}
+	if len(episodeIDs) > 500 {
+		return nil, newAPIError(400, "episodeIds capped at 500 per request")
+	}
+	client := s.arrClientFor(inst)
+	if err := client.SearchEpisodes(ctx, episodeIDs); err != nil {
+		return nil, newAPIError(502, "episode search: "+err.Error())
+	}
+	return &missingEpisodesSearchResponse{Triggered: len(episodeIDs)}, nil
+}
+
+// runMissingEpisodesTag applies tagName to seriesIDs and, when
+// removeFromOthers is true, strips it from any other series currently
+// carrying it. Shared by the HTTP handler and the scheduler runner.
+func (s *Server) runMissingEpisodesTag(
+	ctx context.Context,
+	inst *core.Instance,
+	tagName string,
+	seriesIDs []int,
+	removeFromOthers bool,
+) (*missingEpisodesTagResponse, *apiError) {
 	if tagName == "" {
 		tagName = "missing-episodes"
 	}
 	if !reTagName.MatchString(tagName) {
-		writeError(w, 400, "tagName must be lowercase letters, digits, underscores, or dashes")
-		return
+		return nil, newAPIError(400, "tagName must be lowercase letters, digits, underscores, or dashes")
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-	defer cancel()
-
 	client := s.arrClientFor(inst)
-
-	// Resolve / create the tag.
 	tagDetails, err := client.ListTagDetails(ctx)
 	if err != nil {
-		writeError(w, 502, "list tags: "+err.Error())
-		return
+		return nil, newAPIError(502, "list tags: "+err.Error())
 	}
 	var tagID int
-	var carriers []int // series IDs that currently carry this tag
+	var carriers []int
 	for _, td := range tagDetails {
 		if td.Label == tagName {
 			tagID = td.ID
@@ -396,22 +447,11 @@ func (s *Server) handleMissingEpisodesTag(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if tagID == 0 {
-		// Tag doesn't exist yet — create it (only when there's
-		// actually something to apply; pure-cleanup with nothing to
-		// apply against a non-existent tag is a no-op).
-		if len(req.SeriesIDs) == 0 {
-			writeJSON(w, missingEpisodesTagResponse{Applied: 0, Removed: 0, TagName: tagName, TagID: 0})
-			return
+		if len(seriesIDs) == 0 {
+			return &missingEpisodesTagResponse{Applied: 0, Removed: 0, TagName: tagName, TagID: 0}, nil
 		}
 		t, err := client.CreateTag(ctx, tagName)
 		if err != nil {
-			// B3: race-aware retry. Two concurrent callers (cron + user
-			// click, two browser tabs, parallel webhook + manual run)
-			// can both see the tag missing in their respective
-			// ListTagDetails snapshots → both POST /api/v3/tag → second
-			// gets HTTP 409. Re-fetch and continue if the tag now exists.
-			// Only the second (loser) caller falls into this branch;
-			// the winner's CreateTag succeeded normally above.
 			details, rerr := client.ListTagDetails(ctx)
 			if rerr == nil {
 				for _, td := range details {
@@ -423,21 +463,16 @@ func (s *Server) handleMissingEpisodesTag(w http.ResponseWriter, r *http.Request
 				}
 			}
 			if tagID == 0 {
-				writeError(w, 502, fmt.Sprintf("create tag %q: %v", tagName, err))
-				return
+				return nil, newAPIError(502, fmt.Sprintf("create tag %q: %v", tagName, err))
 			}
 		} else {
 			tagID = t.ID
 		}
 	}
-
-	// Set semantics for the desired series.
-	desired := make(map[int]struct{}, len(req.SeriesIDs))
-	for _, id := range req.SeriesIDs {
+	desired := make(map[int]struct{}, len(seriesIDs))
+	for _, id := range seriesIDs {
 		desired[id] = struct{}{}
 	}
-	// Apply pass — add the tag to every series in desired that
-	// doesn't already carry it.
 	carrierSet := make(map[int]struct{}, len(carriers))
 	for _, id := range carriers {
 		carrierSet[id] = struct{}{}
@@ -450,14 +485,11 @@ func (s *Server) handleMissingEpisodesTag(w http.ResponseWriter, r *http.Request
 	}
 	if len(toAdd) > 0 {
 		if err := client.EditorApplyTags(ctx, "sonarr", toAdd, []int{tagID}, "add"); err != nil {
-			writeError(w, 502, "apply add: "+err.Error())
-			return
+			return nil, newAPIError(502, "apply add: "+err.Error())
 		}
 	}
-
-	// Optional cleanup pass.
 	var toRemove []int
-	if req.RemoveFromOthers {
+	if removeFromOthers {
 		for _, id := range carriers {
 			if _, want := desired[id]; want {
 				continue
@@ -466,27 +498,14 @@ func (s *Server) handleMissingEpisodesTag(w http.ResponseWriter, r *http.Request
 		}
 		if len(toRemove) > 0 {
 			if err := client.EditorApplyTags(ctx, "sonarr", toRemove, []int{tagID}, "remove"); err != nil {
-				writeError(w, 502, "apply remove: "+err.Error())
-				return
+				return nil, newAPIError(502, "apply remove: "+err.Error())
 			}
 		}
 	}
-
-	writeJSON(w, missingEpisodesTagResponse{
+	return &missingEpisodesTagResponse{
 		Applied: len(toAdd),
 		Removed: len(toRemove),
 		TagName: tagName,
 		TagID:   tagID,
-	})
-}
-
-// isContinuingStatus mirrors engine.isContinuing but lives in the api
-// package so the API-side filter doesn't have to import the engine
-// helper twice (engine.isContinuing is unexported). Same logic.
-func isContinuingStatus(status string) bool {
-	switch status {
-	case "continuing", "upcoming":
-		return true
-	}
-	return false
+	}, nil
 }
