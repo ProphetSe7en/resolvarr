@@ -103,6 +103,102 @@ func TestWebhookRule_FiresOn(t *testing.T) {
 	}
 }
 
+func TestWebhookRule_FiresAutoStripOnDelete(t *testing.T) {
+	// Radarr rule with Tag-RG fires the auto-strip on MovieFileDelete
+	// and MovieFileDeleteForUpgrade — no user toggle required beyond
+	// Tag-RG itself.
+	r := WebhookRule{
+		AppType:   "radarr",
+		Functions: []WebhookFunction{WebhookFnTagReleaseGroups},
+	}
+	for _, ev := range []WebhookConnectEvent{
+		WebhookEventMovieFileDelete,
+		WebhookEventMovieFileDeleteForUpgrade,
+	} {
+		if !r.FiresAutoStripOnDelete(ev) {
+			t.Errorf("FiresAutoStripOnDelete(%s) = false, want true", ev)
+		}
+	}
+	// Non-delete event must not trigger auto-strip.
+	if r.FiresAutoStripOnDelete(WebhookEventDownload) {
+		t.Error("FiresAutoStripOnDelete(Download) = true, want false — only delete events drive auto-strip")
+	}
+	// Sonarr rule even with Tag-RG (validator would reject the combo,
+	// but defence-in-depth) must not auto-strip.
+	sonarr := WebhookRule{
+		AppType:   "sonarr",
+		Functions: []WebhookFunction{WebhookFnTagReleaseGroups},
+	}
+	if sonarr.FiresAutoStripOnDelete(WebhookEventMovieFileDelete) {
+		t.Error("Sonarr rule must not fire auto-strip — Tag-RG is Radarr-only")
+	}
+	// Radarr rule without Tag-RG must not auto-strip.
+	noTagRg := WebhookRule{
+		AppType:   "radarr",
+		Functions: []WebhookFunction{WebhookFnTagAudio},
+	}
+	if noTagRg.FiresAutoStripOnDelete(WebhookEventMovieFileDelete) {
+		t.Error("rule without Tag-RG must not fire auto-strip")
+	}
+	// Nil-rule safe.
+	var nilRule *WebhookRule
+	if nilRule.FiresAutoStripOnDelete(WebhookEventMovieFileDelete) {
+		t.Error("nil rule must return false")
+	}
+}
+
+func TestWebhookRule_ConnectEventsNeeded_IncludesAutoStripDeleteEvents(t *testing.T) {
+	// A Radarr Tag-RG rule that doesn't tick FileDeleteClean still needs
+	// the user to enable Movie File Delete notifications in Radarr so
+	// the auto-strip flow can fire. ConnectEventsNeeded must surface
+	// those events even when no user-toggleable function dispatches on
+	// them — otherwise the wizard's "enable these triggers" summary
+	// would silently miss them.
+	r := WebhookRule{
+		AppType:   "radarr",
+		Functions: []WebhookFunction{WebhookFnTagReleaseGroups},
+	}
+	got := r.ConnectEventsNeeded()
+	want := map[WebhookConnectEvent]bool{
+		WebhookEventDownload:                  true,
+		WebhookEventMovieFileDelete:           true,
+		WebhookEventMovieFileDeleteForUpgrade: true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ConnectEventsNeeded = %v, want %d distinct events", got, len(want))
+	}
+	for _, e := range got {
+		if !want[e] {
+			t.Errorf("unexpected event %s in result", e)
+		}
+	}
+}
+
+func TestWebhookRule_ConnectEventsNeeded_NoAutoStripForSonarrOrNonTagRg(t *testing.T) {
+	// Sonarr rule with Tag-Audio — no Tag-RG, no auto-strip events.
+	sonarr := WebhookRule{
+		AppType:   "sonarr",
+		Functions: []WebhookFunction{WebhookFnTagAudio},
+	}
+	got := sonarr.ConnectEventsNeeded()
+	for _, e := range got {
+		if e == WebhookEventMovieFileDelete || e == WebhookEventMovieFileDeleteForUpgrade {
+			t.Errorf("Sonarr rule got Radarr-only auto-strip event %s", e)
+		}
+	}
+	// Radarr rule WITHOUT Tag-RG must also skip the auto-strip events.
+	radarrNoTagRg := WebhookRule{
+		AppType:   "radarr",
+		Functions: []WebhookFunction{WebhookFnTagAudio},
+	}
+	got = radarrNoTagRg.ConnectEventsNeeded()
+	for _, e := range got {
+		if e == WebhookEventMovieFileDelete || e == WebhookEventMovieFileDeleteForUpgrade {
+			t.Errorf("rule without Tag-RG got auto-strip event %s", e)
+		}
+	}
+}
+
 func TestWebhookRule_ConnectEventsNeeded_Dedup(t *testing.T) {
 	// Three functions all dispatching on Download must collapse to one
 	// Download entry — drives the wizard's "enable these triggers in
@@ -136,6 +232,162 @@ func TestWebhookRule_ConnectEventsNeeded_MixedEvents(t *testing.T) {
 	for _, e := range got {
 		if !want[e] {
 			t.Errorf("unexpected event %s in result", e)
+		}
+	}
+}
+
+func TestWebhookRule_FiresPerBucketStripOnDelete_Positive(t *testing.T) {
+	// Radarr rule with Audio snapshot opting into strip-on-delete fires
+	// for both Movie-file-delete event variants. No legacy function in
+	// Functions — gate must work purely on the bucket flag.
+	r := WebhookRule{
+		AppType:   "radarr",
+		AudioTags: &AudioTagsConfig{StripOnFileDelete: true},
+	}
+	for _, ev := range []WebhookConnectEvent{
+		WebhookEventMovieFileDelete,
+		WebhookEventMovieFileDeleteForUpgrade,
+	} {
+		if !r.FiresPerBucketStripOnDelete(ev) {
+			t.Errorf("FiresPerBucketStripOnDelete(%s) = false, want true (Audio bucket flagged)", ev)
+		}
+	}
+}
+
+func TestWebhookRule_FiresPerBucketStripOnDelete_VideoAndDvBuckets(t *testing.T) {
+	// Video snapshot alone (no Audio) is enough to fire — covers
+	// granular per-bucket opt-in.
+	video := WebhookRule{
+		AppType:   "radarr",
+		VideoTags: &VideoTagsConfig{StripOnFileDelete: true},
+	}
+	if !video.FiresPerBucketStripOnDelete(WebhookEventMovieFileDelete) {
+		t.Error("Video-only flagged → MovieFileDelete must fire")
+	}
+	// DV-detail snapshot alone — Radarr-only feature, fires on Radarr.
+	dv := WebhookRule{
+		AppType:  "radarr",
+		DvDetail: &DvDetailConfig{StripOnFileDelete: true},
+	}
+	if !dv.FiresPerBucketStripOnDelete(WebhookEventMovieFileDeleteForUpgrade) {
+		t.Error("DV-only flagged → MovieFileDeleteForUpgrade must fire")
+	}
+}
+
+func TestWebhookRule_FiresPerBucketStripOnDelete_SonarrEpisodeEvents(t *testing.T) {
+	// Sonarr rule fires on EpisodeFileDelete events, not Movie variants.
+	r := WebhookRule{
+		AppType:   "sonarr",
+		AudioTags: &AudioTagsConfig{StripOnFileDelete: true},
+	}
+	for _, ev := range []WebhookConnectEvent{
+		WebhookEventEpisodeFileDelete,
+		WebhookEventEpisodeFileDeleteForUpgrade,
+	} {
+		if !r.FiresPerBucketStripOnDelete(ev) {
+			t.Errorf("Sonarr FiresPerBucketStripOnDelete(%s) = false, want true", ev)
+		}
+	}
+	// Wrong Arr's events must not fire.
+	if r.FiresPerBucketStripOnDelete(WebhookEventMovieFileDelete) {
+		t.Error("Sonarr rule must not fire on MovieFileDelete (Radarr-only event)")
+	}
+}
+
+func TestWebhookRule_FiresPerBucketStripOnDelete_SonarrIgnoresDvBucket(t *testing.T) {
+	// Sonarr rule with DV snapshot flagged — DV-detail is Radarr-only
+	// (Sonarr mediaInfo doesn't expose DV fields). Gate must not fire
+	// on DV alone for a Sonarr rule.
+	r := WebhookRule{
+		AppType:  "sonarr",
+		DvDetail: &DvDetailConfig{StripOnFileDelete: true},
+	}
+	if r.FiresPerBucketStripOnDelete(WebhookEventEpisodeFileDelete) {
+		t.Error("Sonarr rule must not fire on DV-only flag (DV is Radarr-only)")
+	}
+}
+
+func TestWebhookRule_FiresPerBucketStripOnDelete_DefenceInDepth(t *testing.T) {
+	// Wrong event type for any rule.
+	r := WebhookRule{
+		AppType:   "radarr",
+		AudioTags: &AudioTagsConfig{StripOnFileDelete: true},
+	}
+	if r.FiresPerBucketStripOnDelete(WebhookEventDownload) {
+		t.Error("non-delete event must not fire")
+	}
+	// Snapshot nil → gate does not peek into globals.
+	noSnapshot := WebhookRule{AppType: "radarr"}
+	if noSnapshot.FiresPerBucketStripOnDelete(WebhookEventMovieFileDelete) {
+		t.Error("nil snapshots must not fire (gate is snapshot-only by design)")
+	}
+	// Snapshot present but flag false.
+	flagOff := WebhookRule{
+		AppType:   "radarr",
+		AudioTags: &AudioTagsConfig{StripOnFileDelete: false},
+	}
+	if flagOff.FiresPerBucketStripOnDelete(WebhookEventMovieFileDelete) {
+		t.Error("snapshot with StripOnFileDelete=false must not fire")
+	}
+	// Empty / unknown AppType.
+	bogus := WebhookRule{
+		AppType:   "",
+		AudioTags: &AudioTagsConfig{StripOnFileDelete: true},
+	}
+	if bogus.FiresPerBucketStripOnDelete(WebhookEventMovieFileDelete) {
+		t.Error("rule with empty AppType must not fire")
+	}
+	// Nil-rule safe.
+	var nilRule *WebhookRule
+	if nilRule.FiresPerBucketStripOnDelete(WebhookEventMovieFileDelete) {
+		t.Error("nil rule must return false")
+	}
+}
+
+func TestWebhookRule_ConnectEventsNeeded_SurfacesPerBucketStripDeleteEvents(t *testing.T) {
+	// Rule with no functions but Audio bucket flagged — wizard's
+	// "enable these triggers" summary must surface the file-delete
+	// events so the user enables them in Radarr/Sonarr. Otherwise the
+	// per-bucket strip silently never fires because Connect never
+	// delivers the event.
+	radarr := WebhookRule{
+		AppType:   "radarr",
+		AudioTags: &AudioTagsConfig{StripOnFileDelete: true},
+	}
+	got := radarr.ConnectEventsNeeded()
+	wantSet := map[WebhookConnectEvent]bool{
+		WebhookEventMovieFileDelete:           false,
+		WebhookEventMovieFileDeleteForUpgrade: false,
+	}
+	for _, e := range got {
+		if _, ok := wantSet[e]; ok {
+			wantSet[e] = true
+		}
+	}
+	for ev, found := range wantSet {
+		if !found {
+			t.Errorf("Radarr per-bucket-flagged rule: %s missing from ConnectEventsNeeded (got %v)", ev, got)
+		}
+	}
+
+	// Sonarr equivalent: Episode-side events surface.
+	sonarr := WebhookRule{
+		AppType:   "sonarr",
+		VideoTags: &VideoTagsConfig{StripOnFileDelete: true},
+	}
+	gotSon := sonarr.ConnectEventsNeeded()
+	wantSon := map[WebhookConnectEvent]bool{
+		WebhookEventEpisodeFileDelete:           false,
+		WebhookEventEpisodeFileDeleteForUpgrade: false,
+	}
+	for _, e := range gotSon {
+		if _, ok := wantSon[e]; ok {
+			wantSon[e] = true
+		}
+	}
+	for ev, found := range wantSon {
+		if !found {
+			t.Errorf("Sonarr per-bucket-flagged rule: %s missing from ConnectEventsNeeded (got %v)", ev, gotSon)
 		}
 	}
 }

@@ -87,7 +87,7 @@ function app() {
       // Wizard-step help panels — same toggle pattern as the Library
       // scan fanes. Each wizard step renders its own collapsible
       // "How it works" panel so the inline form copy can stay short.
-      ruleBasics: false, ruleRG: false, ruleFilters: false, ruleAudio: false, ruleVideo: false, ruleDvDetail: false, ruleGrabRename: false, ruleQbitSe: false, ruleQbitCategoryFix: false, ruleSchedule: false },
+      ruleBasics: false, ruleRG: false, ruleFilters: false, ruleAudio: false, ruleVideo: false, ruleDvDetail: false, ruleMissingEpisodes: false, ruleGrabRename: false, ruleQbitSe: false, ruleQbitCategoryFix: false, ruleSchedule: false },
 
     // Single source of truth for short function descriptions. Used by:
     // - Rule editor Basics step (schedule + webhook modes) to render
@@ -189,17 +189,19 @@ function app() {
         // still surfaces it via functionInfoList({ includeSeparate: true }).
         separateControl: true,
       },
-      fileDeleteClean: {
-        id: 'fileDeleteClean',
-        optionFlag: 'fnFileDeleteClean',
-        label: 'Strip managed tags on file delete',
-        summary: 'When you delete a movie file, removes the resolvarr-managed tags (release group, audio, video, DV) so your tag inventory stays honest. Without this, deleted files\' tags hang around as orphans.',
-        summarySonarr: 'When you delete an episode file, removes the resolvarr-managed tags so your tag inventory stays honest. Without this, deleted files\' tags hang around as orphans.',
-        triggers: ['On Movie File Delete'],
-        triggersSonarr: ['On Episode File Delete'],
-        appliesTo: 'both',
-        webhookOnly: true,
-      },
+      // fileDeleteClean was a single rule-level checkbox that stripped
+      // every file-property tag (audio/video/DV) plus the release-group
+      // tag on file-delete events. As of v0.6.0-dev that all-or-nothing
+      // function is gone — replaced by:
+      //   - per-bucket "Strip <bucket> tags on file delete" checkboxes
+      //     in the Audio / Video / DV detail wizard steps (granular
+      //     opt-in per bucket)
+      //   - automatic Tag-RG strip-on-delete that fires whenever a rule
+      //     has Tag-RG enabled (no separate user opt-in needed; the
+      //     primary's qualification is the single source of truth)
+      // The legacy function is auto-migrated on first Load post-update
+      // (per-bucket flags set true on all three buckets; legacy function
+      // dropped from Functions). Existing rules keep doing what they did.
       grabRename: {
         id: 'grabRename',
         optionFlag: 'fnGrabRename',
@@ -208,6 +210,7 @@ function app() {
         triggers: ['On Grab'],
         appliesTo: 'both',
         webhookOnly: true,
+        requiresQbit: true,
       },
       qbitSeTag: {
         id: 'qbitSeTag',
@@ -217,6 +220,7 @@ function app() {
         triggers: ['On Grab'],
         appliesTo: 'sonarr',
         webhookOnly: true,
+        requiresQbit: true,
       },
       qbitCategoryFix: {
         id: 'qbitCategoryFix',
@@ -227,6 +231,7 @@ function app() {
         triggers: ['On File Import', 'On File Upgrade'],
         appliesTo: 'both',
         webhookOnly: true,
+        requiresQbit: true,
       },
     },
     scanInstanceId: '',           // primary instance for a run; picked per-run, not persistent
@@ -3593,7 +3598,7 @@ function app() {
         const bufferHours = (bufferHoursRaw === undefined || bufferHoursRaw === null || bufferHoursRaw === '')
           ? 24
           : Number(bufferHoursRaw);
-        const res = await fetch('/api/scan/missing-episodes/preview', {
+        const res = await this.apiFetch('/api/scan/missing-episodes/preview', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -3664,7 +3669,7 @@ function app() {
     async _missingEpisodesSearch(episodeIDs) {
       this.missingEpisodesApplying = true;
       try {
-        const res = await fetch('/api/scan/missing-episodes/search', {
+        const res = await this.apiFetch('/api/scan/missing-episodes/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ instanceId: this.scanInstanceId, episodeIds: episodeIDs }),
@@ -3694,7 +3699,7 @@ function app() {
       if (!confirm('Tag ' + seriesIDs.length + ' series with "' + tagName + '"? Series that currently carry this tag but are no longer flagged will have it removed automatically.')) return;
       this.missingEpisodesApplying = true;
       try {
-        const res = await fetch('/api/scan/missing-episodes/tag', {
+        const res = await this.apiFetch('/api/scan/missing-episodes/tag', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -8412,18 +8417,44 @@ function app() {
     // step explicitly if they want it.
     snapshotGlobalAudioTags() {
       const snap = JSON.parse(JSON.stringify(this.audioTags));
+      // Destructive opt-ins reset per-rule — globals never carry these
+      // forward to a fresh rule snapshot. User opts in explicitly.
       snap.removeOrphanedTags = false;
+      snap.stripOnFileDelete = false;
       return snap;
     },
     snapshotGlobalVideoTags() {
       const snap = JSON.parse(JSON.stringify(this.videoTags));
       snap.removeOrphanedTags = false;
+      snap.stripOnFileDelete = false;
       return snap;
     },
     snapshotGlobalDvDetail() {
       const snap = JSON.parse(JSON.stringify(this.dvDetail));
       snap.removeOrphanedTags = false;
+      snap.stripOnFileDelete = false;
       return snap;
+    },
+    // Per-rule snapshot of the global Missing-Episodes config. Used by
+    // the QFA + Create-Rule wizards when missingepisodes is in
+    // combinedModes. The wizard's actionTag / actionSearch live on the
+    // snapshot itself so each rule (or QFA chain) picks its own
+    // application semantics independently of the standalone tab's
+    // last-used setting.
+    snapshotGlobalMissingEpisodes() {
+      const c = this.missingEpisodesConfig || {};
+      return {
+        thresholdPercent: c.thresholdPercent ?? 70,
+        bufferHours: (c.bufferHours === undefined || c.bufferHours === null || c.bufferHours === '') ? 24 : Number(c.bufferHours),
+        includeContinuing: c.includeContinuing !== false,
+        includeEnded: c.includeEnded !== false,
+        includeSpecials: !!c.includeSpecials,
+        tagName: ((c.tagName || 'missing-episodes') + '').trim() || 'missing-episodes',
+        // Default: Tag on, Search off. Tag is informative + auto-cleans;
+        // Search fires Sonarr indexer calls, more aggressive.
+        actionTag: true,
+        actionSearch: false,
+      };
     },
     // Subset of cfg.ReleaseGroups[].id matching the rule's instance type
     // AND currently Enabled. Used to seed editingRule.releaseGroupIds
@@ -8507,11 +8538,12 @@ function app() {
           tagSource: '',
           filterOnlyTag: 'lossless-web',
         },
-        filters:         this.snapshotGlobalFilters(),
-        audioTags:       this.snapshotGlobalAudioTags(),
-        videoTags:       this.snapshotGlobalVideoTags(),
-        dvDetail:        this.snapshotGlobalDvDetail(),
-        releaseGroupIds: this.snapshotGlobalRGIds(inst),
+        filters:          this.snapshotGlobalFilters(),
+        audioTags:        this.snapshotGlobalAudioTags(),
+        videoTags:        this.snapshotGlobalVideoTags(),
+        dvDetail:         this.snapshotGlobalDvDetail(),
+        missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
+        releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       this.ruleEditor = { open: true, isCreate: true, isQuickFix: false, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [], fixedAction: '' };
       this.computeRuleEditorNextFires();
@@ -8576,7 +8608,7 @@ function app() {
           cleanupUnusedTags: false,
           syncToSecondary: false,
           syncToInstanceId: '',
-          combinedModes: wizardAppType === 'sonarr' ? ['recover', 'audiotags', 'videotags'] : ['discover', 'recover', 'tag'],
+          combinedModes: wizardAppType === 'sonarr' ? ['recover', 'audiotags', 'videotags', 'missingepisodes'] : ['discover', 'recover', 'tag'],
           includeDiscovery: false,
           autoActivateDiscovered: false,
           discoverWriteBack: false,
@@ -8601,11 +8633,12 @@ function app() {
           tagSource: '',
           filterOnlyTag: 'lossless-web',
         },
-        filters:         this.snapshotGlobalFilters(),
-        audioTags:       this.snapshotGlobalAudioTags(),
-        videoTags:       this.snapshotGlobalVideoTags(),
-        dvDetail:        this.snapshotGlobalDvDetail(),
-        releaseGroupIds: this.snapshotGlobalRGIds(inst),
+        filters:          this.snapshotGlobalFilters(),
+        audioTags:        this.snapshotGlobalAudioTags(),
+        videoTags:        this.snapshotGlobalVideoTags(),
+        dvDetail:         this.snapshotGlobalDvDetail(),
+        missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
+        releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       // Merge restored state over defaults. Bucket snapshots use
       // recursive per-field merge so a localStorage payload written
@@ -8624,6 +8657,7 @@ function app() {
             audioTags: this._mergeBucketSnapshot(restored.audioTags, defaults.audioTags),
             videoTags: this._mergeBucketSnapshot(restored.videoTags, defaults.videoTags),
             dvDetail:  this._mergeBucketSnapshot(restored.dvDetail,  defaults.dvDetail),
+            missingEpisodes: this._mergeBucketSnapshot(restored.missingEpisodes, defaults.missingEpisodes),
             releaseGroupIds: Array.isArray(restored.releaseGroupIds)
               ? restored.releaseGroupIds
               : defaults.releaseGroupIds,
@@ -8805,10 +8839,11 @@ function app() {
       }
       const inst = seedInst.id;
       const titleByAction = {
-        audiotags: 'Tag Audio',
-        videotags: 'Tag Video',
-        dvdetail:  'Tag DV Details',
-        recover:   'Run Recover',
+        audiotags:       'Tag Audio',
+        videotags:       'Tag Video',
+        dvdetail:        'Tag DV Details',
+        recover:         'Run Recover',
+        missingepisodes: 'Find missing episodes',
       };
       this.editingRule = {
         id: '',
@@ -8846,11 +8881,12 @@ function app() {
           tagSource: '',
           filterOnlyTag: 'lossless-web',
         },
-        filters:         this.snapshotGlobalFilters(),
-        audioTags:       this.snapshotGlobalAudioTags(),
-        videoTags:       this.snapshotGlobalVideoTags(),
-        dvDetail:        this.snapshotGlobalDvDetail(),
-        releaseGroupIds: this.snapshotGlobalRGIds(inst),
+        filters:          this.snapshotGlobalFilters(),
+        audioTags:        this.snapshotGlobalAudioTags(),
+        videoTags:        this.snapshotGlobalVideoTags(),
+        dvDetail:         this.snapshotGlobalDvDetail(),
+        missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
+        releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       this.ruleEditor = {
         open: true, isCreate: true, isQuickFix: true,
@@ -8987,6 +9023,7 @@ function app() {
       if (!copy.audioTags)       copy.audioTags       = this.snapshotGlobalAudioTags();
       if (!copy.videoTags)       copy.videoTags       = this.snapshotGlobalVideoTags();
       if (!copy.dvDetail)        copy.dvDetail        = this.snapshotGlobalDvDetail();
+      if (!copy.missingEpisodes) copy.missingEpisodes = this.snapshotGlobalMissingEpisodes();
       if (!copy.releaseGroupIds) copy.releaseGroupIds = this.snapshotGlobalRGIds(copy.instanceId);
       copy.options = Object.assign({
         runMode: 'apply', cleanupUnusedTags: false, syncToSecondary: false, syncToInstanceId: '',
@@ -9350,6 +9387,43 @@ function app() {
           this.scanDiscoverSelected = {};
           this.scanDiscoverExpanded = {};
           break;
+        case 'missingepisodes': {
+          // Missing-episodes uses the existing standalone-tab UI for
+          // drill-down (per-series → seasons → episodes with per-row
+          // Search + bulk Tag). Hydrate that state from the chain
+          // response + the rule snapshot, then navigate the user to
+          // the Missing Episodes sub-tab so they can act on the
+          // findings. Apply re-fire happens via the QFA result panel's
+          // Apply button (flips runMode='apply'); the standalone tab
+          // is for ad-hoc selective Search / Tag after the chain run.
+          this.missingEpisodesPreview = p.response;
+          this.missingEpisodesError = '';
+          const snap = (this.quickFixResults && this.quickFixResults.ruleSnapshot) || null;
+          if (snap) {
+            this.scanInstanceId = snap.instanceId || this.scanInstanceId;
+            if (snap.missingEpisodes) {
+              this.missingEpisodesConfig = {
+                ...this.missingEpisodesConfig,
+                ...JSON.parse(JSON.stringify(snap.missingEpisodes)),
+              };
+            }
+          }
+          // Pre-select all missing episodes — same default the
+          // standalone Preview button uses, so the user lands on a
+          // result ready for Search Selected / Tag series.
+          const sel = {};
+          for (const s of (p.response.series || [])) {
+            for (const season of (s.seasons || [])) {
+              for (const ep of (season.missingEpisodes || [])) {
+                sel[ep.episodeID] = true;
+              }
+            }
+          }
+          this.missingEpisodesSelected = sel;
+          this.scanAppType = 'sonarr';
+          this.scanSection = 'missing-episodes';
+          break;
+        }
         default:
           this.showToast('Unknown phase: ' + p.phase, 'error');
       }
@@ -9802,6 +9876,24 @@ function app() {
           if (t.dvExtractFailed) parts.push(`${t.dvExtractFailed} failed`);
           return parts.join(' · ');
         }
+        case 'missingepisodes': {
+          // Response shape comes from missingEpisodesPreviewResponse:
+          // { seriesScanned, seriesWithGaps, totalMissingEpisodes }.
+          // Apply-step results (tagApplied / searchApplied) live on the
+          // phase row itself, not on p.response — render them inline so
+          // users see what the chain actually wrote.
+          const r = p.response || {};
+          const parts = [
+            `${r.seriesScanned || 0} scanned`,
+            `${r.seriesWithGaps || 0} with gaps`,
+            `${r.totalMissingEpisodes || 0} missing episodes`,
+          ];
+          if (p.tagApplied) parts.push(`tagged ${p.tagApplied.applied || 0}, untagged ${p.tagApplied.removed || 0}`);
+          if (p.searchApplied) parts.push(`search triggered for ${p.searchApplied.triggered || 0}`);
+          if (p.tagError) parts.push(`tag error: ${p.tagError}`);
+          if (p.searchError) parts.push(`search error: ${p.searchError}`);
+          return parts.join(' · ');
+        }
         default:          return '(unknown phase)';
       }
     },
@@ -9836,12 +9928,13 @@ function app() {
     // Radarr-only — extraction is per-file and series-level
     // aggregation isn't meaningful.
     ruleCombinedSubstepCatalog: [
-      { value: 'discover',  label: 'Discover new release-groups',         appliesTo: ['radarr'] },
-      { value: 'recover',   label: 'Recover missing release-groups',      appliesTo: ['radarr', 'sonarr'] },
-      { value: 'tag',       label: 'Tag quality releases',                  appliesTo: ['radarr'] },
-      { value: 'audiotags', label: 'Tag Audio',                           appliesTo: ['radarr', 'sonarr'] },
-      { value: 'videotags', label: 'Tag Video',                           appliesTo: ['radarr', 'sonarr'] },
-      { value: 'dvdetail',  label: 'Tag DV Details',                      appliesTo: ['radarr'], optIn: true },
+      { value: 'discover',        label: 'Discover new release-groups',         appliesTo: ['radarr'] },
+      { value: 'recover',         label: 'Recover missing release-groups',      appliesTo: ['radarr', 'sonarr'] },
+      { value: 'tag',             label: 'Tag quality releases',                  appliesTo: ['radarr'] },
+      { value: 'audiotags',       label: 'Tag Audio',                           appliesTo: ['radarr', 'sonarr'] },
+      { value: 'videotags',       label: 'Tag Video',                           appliesTo: ['radarr', 'sonarr'] },
+      { value: 'dvdetail',        label: 'Tag DV Details',                      appliesTo: ['radarr'], optIn: true },
+      { value: 'missingepisodes', label: 'Find missing episodes',               appliesTo: ['sonarr'] },
     ],
     ruleEditorInstanceType() {
       // Locked at open-time on ruleEditor.appType (Create/QFA seed from
@@ -9953,6 +10046,24 @@ function app() {
         r.options.fnSyncToSecondary = false;
       }
     },
+    // Functions marked requiresQbit (Grab Rename, qBit S/E tag, Category
+    // Fix) need at least one qBit instance configured under Settings →
+    // qBit before they can run. Without one, the checkbox is disabled
+    // with a tooltip so the user can't tick a function that has no chance
+    // of working. Once they add a qBit instance the checkbox unlocks
+    // automatically (qbitInstances is reactive).
+    webhookFnDisabled(fn) {
+      if (!fn) return false;
+      if (fn.requiresQbit && (this.qbitInstances || []).length === 0) return true;
+      return false;
+    },
+    webhookFnDisabledReason(fn) {
+      if (!fn) return '';
+      if (fn.requiresQbit && (this.qbitInstances || []).length === 0) {
+        return 'Add a qBittorrent instance under Settings → qBit before enabling this function.';
+      }
+      return '';
+    },
     // Soft warning — DV detail layers profile/layer/CM-version tags on
     // top of the base `dv` tag, which Tag Video → HDR emits. Ticking
     // DV detail alone leaves files with profile tags but no base dv
@@ -10046,10 +10157,6 @@ function app() {
       const o = (this.editingRule && this.editingRule.options) || {};
       return !!o.fnSyncToSecondary;
     },
-    ruleAffectsFileDeleteCleanFn() {
-      const o = (this.editingRule && this.editingRule.options) || {};
-      return !!o.fnFileDeleteClean;
-    },
     // ruleAffectsAutoTags: any of the three auto-tag sub-flows is
     // selected. Used for cross-cutting gates (e.g. the
     // AutoTagsRunOnSecondary checkbox + Review-step summary).
@@ -10082,6 +10189,18 @@ function app() {
       if (r.mode === 'dvdetail') return true;
       if (r.mode === 'combined' && (r.options.combinedModes || []).includes('dvdetail')) return true;
       return !!(r.options && r.options.fnTagDvDetail);
+    },
+    // ruleAffectsMissingEpisodes: gates the Missing Episodes wizard
+    // step + chain phase. Sonarr-only; the catalog entry's appliesTo
+    // makes the checkbox invisible on Radarr Basics, but defence-in-
+    // depth keeps the helper returning false if a stale combinedModes
+    // value lands on a Radarr rule.
+    ruleAffectsMissingEpisodes() {
+      const r = this.editingRule;
+      if (!r) return false;
+      if (r.mode === 'missingepisodes') return true;
+      if (r.mode === 'combined' && (r.options.combinedModes || []).includes('missingepisodes')) return true;
+      return false;
     },
     // Derived rule mode: when no quality / audio master is on, the
     // engine's CheckQuality + CheckAudio short-circuit to true, which
@@ -10120,6 +10239,10 @@ function app() {
       if (tabId === 'audio')    return this.ruleAffectsAudio();
       if (tabId === 'video')    return this.ruleAffectsVideo();
       if (tabId === 'dvdetail') return this.ruleAffectsDvDetail();
+      // missingepisodes intentionally NOT a wizard step — the config is
+      // inline in the Review step (threshold / buffer / actions / tag
+      // name are all editable there). Compact enough that a dedicated
+      // step felt redundant with the Review summary that followed it.
       // Webhook-only steps. Hidden for schedule rules entirely; for
       // webhook rules visible only when the corresponding function is
       // ticked. Backend's webhook rule validate-then-persist requires
@@ -10153,10 +10276,33 @@ function app() {
     // the Basics-step warning + Save-time validation.
     webhookRuleAnyFunctionTicked() {
       const o = (this.editingRule && this.editingRule.options) || {};
-      return !!(o.fnTagReleaseGroups || o.fnDiscover || o.fnTagAudio || o.fnTagVideo
-                || o.fnTagDvDetail || o.fnRecover || o.fnSyncToSecondary
-                || o.fnFileDeleteClean || o.fnGrabRename || o.fnQbitSeTag
-                || o.fnQbitCategoryFix);
+      if (o.fnTagReleaseGroups || o.fnDiscover || o.fnTagAudio || o.fnTagVideo
+          || o.fnTagDvDetail || o.fnRecover || o.fnSyncToSecondary
+          || o.fnGrabRename || o.fnQbitSeTag || o.fnQbitCategoryFix) {
+        return true;
+      }
+      // Per-bucket strip-on-delete also counts as a rule action — a
+      // rule that only strips audio tags on file delete with no other
+      // function is valid (the dispatcher's FiresPerBucketStripOnDelete
+      // gate enters the rule on delete events regardless of Functions).
+      return this.webhookRuleHasBucketStripOnDelete();
+    },
+
+    // True when any bucket snapshot on the editing rule has
+    // stripOnFileDelete=true. Used by the Basics-step gate +
+    // webhookEventsForCurrentRule's delete-event surfacing.
+    webhookRuleHasBucketStripOnDelete() {
+      const r = this.editingRule;
+      if (!r) return false;
+      if (r.audioTags && r.audioTags.stripOnFileDelete) return true;
+      if (r.videoTags && r.videoTags.stripOnFileDelete) return true;
+      // DV-detail is Radarr-only — the snapshot may exist on Sonarr
+      // rules too via the schedule editor's shared shape, but the
+      // dispatcher gates it. Treat flag-present as "wants delete
+      // trigger surfaced" for consistency; webhookEventsForFunctions
+      // applies the AppType gate below.
+      if (r.dvDetail && r.dvDetail.stripOnFileDelete) return true;
+      return false;
     },
 
     // Entry point for the Webhooks page +Add rule button. Opens the
@@ -10196,7 +10342,6 @@ function app() {
           fnTagDvDetail:      false,
           fnRecover:          false,
           fnSyncToSecondary:  false,
-          fnFileDeleteClean:  false,
           fnGrabRename:       false,
           fnQbitSeTag:        false,
           fnQbitCategoryFix:  false,
@@ -10930,6 +11075,10 @@ function app() {
       if (this.ruleEditorTabVisible('audio') && r.audioTags)    body.audioTags = JSON.parse(JSON.stringify(r.audioTags));
       if (this.ruleEditorTabVisible('video') && r.videoTags)    body.videoTags = JSON.parse(JSON.stringify(r.videoTags));
       if (this.ruleEditorTabVisible('dvdetail') && r.dvDetail)  body.dvDetail  = JSON.parse(JSON.stringify(r.dvDetail));
+      // Missing Episodes has no dedicated wizard step — config lives
+      // inline in Review. Send snapshot whenever the phase is in
+      // combinedModes so the backend persists it on the saved rule.
+      if (this.ruleAffectsMissingEpisodes() && r.missingEpisodes) body.missingEpisodes = JSON.parse(JSON.stringify(r.missingEpisodes));
       this.ruleEditor.busy = true;
       try {
         const url = r.id ? `/api/schedules/${r.id}` : '/api/schedules';
@@ -10983,7 +11132,6 @@ function app() {
       if (o.fnTagVideo)         fnList.push('tagVideo');
       if (o.fnTagDvDetail)      fnList.push('tagDvDetail');
       if (o.fnSyncToSecondary)  fnList.push('syncToSecondary');
-      if (o.fnFileDeleteClean)  fnList.push('fileDeleteClean');
       if (o.fnGrabRename)       fnList.push('grabRename');
       if (o.fnQbitSeTag)        fnList.push('qbitSeTag');
       if (o.fnQbitCategoryFix)  fnList.push('qbitCategoryFix');
@@ -11003,6 +11151,10 @@ function app() {
       if (this.ruleEditorTabVisible('audio') && r.audioTags)    body.audioTags = JSON.parse(JSON.stringify(r.audioTags));
       if (this.ruleEditorTabVisible('video') && r.videoTags)    body.videoTags = JSON.parse(JSON.stringify(r.videoTags));
       if (this.ruleEditorTabVisible('dvdetail') && r.dvDetail)  body.dvDetail  = JSON.parse(JSON.stringify(r.dvDetail));
+      // Missing Episodes has no dedicated wizard step — config lives
+      // inline in Review. Send snapshot whenever the phase is in
+      // combinedModes so the backend persists it on the saved rule.
+      if (this.ruleAffectsMissingEpisodes() && r.missingEpisodes) body.missingEpisodes = JSON.parse(JSON.stringify(r.missingEpisodes));
       // Filter-only tag-source — only sent when the rule is in
       // filter-only mode AND Tag-RG is enabled (otherwise the fields
       // are meaningless and the backend would reject filterOnlyTag
@@ -11077,24 +11229,20 @@ function app() {
     },
 
     // Compute the Connect event types this instance's webhook needs
-    // toggled on in Sonarr/Radarr. Logging-only mode → all events
-    // (logging captures everything). Otherwise derive from the
-    // enabled rules' functions:
+    // toggled on in Sonarr/Radarr. Derived from the enabled rules'
+    // functions + per-bucket strip-on-delete opt-ins:
     //   tagReleaseGroups / discover / tagAudio / tagVideo / tagDvDetail
     //     / recover / syncToSecondary  → On Import + On Upgrade
     //     (Sonarr: On Download — download/import + upgrade)
-    //   fileDeleteClean → On Movie File Delete (Radarr) /
-    //                     On Episode File Delete (Sonarr)
+    //   tagReleaseGroups (Radarr only)  → also On Movie File Delete +
+    //     OnMovieFileDeleteForUpgrade (auto-strip Tag-RG flow)
+    //   any audio/video/DV bucket with stripOnFileDelete=true → matching
+    //     On Movie/Episode File Delete events
     //   grabRename / qbitSeTag → On Grab
-    // 'On Test' is always recommended so the user can verify the
-    // setup with a Test ping from Sonarr/Radarr's Connect config.
-    // Compute the Connect events Sonarr/Radarr needs toggled on
-    // for the picked function set. Names match the actual labels
-    // in Radarr v5 / Sonarr v4 Connect → Webhook config. Note:
-    // "On Test" is NOT a togglable event — it's a button in
-    // Connect that lets you fire a test ping. Listing it here
-    // would send users hunting for a checkbox that doesn't exist.
-    webhookEventsForFunctions(fnSet, isSonarr) {
+    // "On Test" is NOT a togglable event — it's a button in Connect
+    // that lets you fire a test ping. Listing it here would send users
+    // hunting for a checkbox that doesn't exist.
+    webhookEventsForFunctions(fnSet, isSonarr, opts = {}) {
       const events = new Set();
       const importLike = ['tagReleaseGroups', 'discover', 'tagAudio', 'tagVideo',
                           'tagDvDetail', 'recover', 'syncToSecondary'];
@@ -11102,7 +11250,16 @@ function app() {
         events.add('On File Import');
         events.add('On File Upgrade');
       }
-      if (fnSet.has('fileDeleteClean')) {
+      // Tag-RG (Radarr) drives the automatic strip-on-delete invariant,
+      // so the user must enable Movie File Delete events even if no
+      // user-toggleable function dispatches on them.
+      if (!isSonarr && fnSet.has('tagReleaseGroups')) {
+        events.add('On Movie File Delete');
+      }
+      // Per-bucket strip-on-delete: any bucket flagged → matching
+      // file-delete events. Mirror of the server's
+      // FiresPerBucketStripOnDelete + ConnectEventsNeeded extension.
+      if (opts.bucketStripOnDelete) {
         events.add(isSonarr ? 'On Episode File Delete' : 'On Movie File Delete');
       }
       if (fnSet.has('grabRename') || fnSet.has('qbitSeTag')) {
@@ -11123,16 +11280,23 @@ function app() {
       if (!inst) return [];
       const rules = this.webhookRulesForInstance(instanceId).filter(r => r.enabled);
       const fnSet = new Set();
+      let bucketStripOnDelete = false;
       for (const rule of rules) {
         for (const fn of (rule.functions || [])) fnSet.add(fn);
+        if ((rule.audioTags && rule.audioTags.stripOnFileDelete)
+            || (rule.videoTags && rule.videoTags.stripOnFileDelete)
+            || (rule.dvDetail && rule.dvDetail.stripOnFileDelete)) {
+          bucketStripOnDelete = true;
+        }
       }
-      return this.webhookEventsForFunctions(fnSet, inst.type === 'sonarr');
+      return this.webhookEventsForFunctions(fnSet, inst.type === 'sonarr', { bucketStripOnDelete });
     },
 
     // Events for a single rule — used in the rule editor's Review
-    // step. Reads off editingRule.options.fn* directly so the
-    // events list updates live as the user toggles function
-    // checkboxes on the Basics step, before the rule is saved.
+    // step. Reads off editingRule.options.fn* + bucket snapshots
+    // directly so the events list updates live as the user toggles
+    // function checkboxes + bucket strip flags on the Basics + bucket
+    // steps, before the rule is saved.
     webhookEventsForCurrentRule() {
       const r = this.editingRule;
       if (!r || !r.options) return [];
@@ -11145,12 +11309,13 @@ function app() {
       if (o.fnTagDvDetail)      fnSet.add('tagDvDetail');
       if (o.fnRecover)          fnSet.add('recover');
       if (o.fnSyncToSecondary)  fnSet.add('syncToSecondary');
-      if (o.fnFileDeleteClean)  fnSet.add('fileDeleteClean');
       if (o.fnGrabRename)       fnSet.add('grabRename');
       if (o.fnQbitSeTag)        fnSet.add('qbitSeTag');
       const inst = (this.instances || []).find(i => i.id === r.instanceId);
       const isSonarr = inst ? inst.type === 'sonarr' : false;
-      return this.webhookEventsForFunctions(fnSet, isSonarr);
+      return this.webhookEventsForFunctions(fnSet, isSonarr, {
+        bucketStripOnDelete: this.webhookRuleHasBucketStripOnDelete(),
+      });
     },
 
     // App-type setter — persists to localStorage + mirrors the
@@ -11578,7 +11743,13 @@ function app() {
       if (has('audiotags')) autoPhases.push({ phase: 'audiotags', target: r.options.audioTagsTarget || 'primary' });
       if (has('videotags')) autoPhases.push({ phase: 'videotags', target: r.options.videoTagsTarget || 'primary' });
       if (has('dvdetail'))  autoPhases.push({ phase: 'dvdetail',  target: r.options.dvDetailTarget  || 'primary' });
-      if (headPhases.length === 0 && autoPhases.length === 0) {
+      // Missing-episodes is a Sonarr-only phase that uses dedicated
+      // endpoints (/api/scan/missing-episodes/{preview,tag,search})
+      // instead of the generic /api/scan/run path. Treated as its own
+      // bucket so the headPhase / autoPhase loops don't need to
+      // special-case it.
+      const runMissingEpisodes = has('missingepisodes');
+      if (headPhases.length === 0 && autoPhases.length === 0 && !runMissingEpisodes) {
         this.ruleEditor.error = 'No phases to run';
         this.ruleEditor.busy = false;
         return;
@@ -11830,11 +12001,103 @@ function app() {
         if (secondaryTarget) {
           await runOnInstance(secondaryTarget, 'secondary', t => t === 'secondary' || t === 'both');
         }
+
+        // Phase 3 — missing-episodes (Sonarr only). Uses dedicated
+        // endpoints rather than the generic /api/scan/run path.
+        // Sequence:
+        //   1. /preview always — surfaces the gaps + series list.
+        //   2. Apply mode: invoke /tag (when actionTag) and/or /search
+        //      (when actionSearch). Preview mode: skip the writes.
+        // Result row carries the merged response so the result panel
+        // can render the standard missing-episodes drill-in alongside
+        // the rest of the chain phases.
+        if (runMissingEpisodes && !isCancelled()) {
+          const me = r.missingEpisodes || {};
+          const phaseRow = { phase: 'missingepisodes', ok: true, instanceId: r.instanceId };
+          try {
+            const previewBody = {
+              instanceId: r.instanceId,
+              threshold: (me.thresholdPercent || 70) / 100,
+              bufferHours: (me.bufferHours === undefined || me.bufferHours === null || me.bufferHours === '') ? 24 : Number(me.bufferHours),
+              includeContinuing: !!me.includeContinuing,
+              includeEnded: !!me.includeEnded,
+              includeSpecials: !!me.includeSpecials,
+            };
+            const previewRes = await this.apiFetch('/api/scan/missing-episodes/preview', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(previewBody),
+            });
+            if (!previewRes.ok) {
+              const d = await previewRes.json().catch(() => ({}));
+              throw new Error(`missingepisodes: ${d.error || 'HTTP ' + previewRes.status}`);
+            }
+            const previewData = await previewRes.json();
+            phaseRow.response = previewData;
+            phaseRow.actionTag = !!me.actionTag;
+            phaseRow.actionSearch = !!me.actionSearch;
+            phaseRow.tagName = (me.tagName || 'missing-episodes');
+
+            if (runMode === 'apply' && (me.actionTag || me.actionSearch)) {
+              const seriesIDs = ((previewData && previewData.series) || []).map(s => s.seriesID);
+              const episodeIDs = [];
+              for (const s of ((previewData && previewData.series) || [])) {
+                for (const season of (s.seasons || [])) {
+                  for (const ep of (season.missingEpisodes || [])) {
+                    if (ep && ep.episodeID) episodeIDs.push(ep.episodeID);
+                  }
+                }
+              }
+              if (me.actionTag && seriesIDs.length > 0) {
+                const tagRes = await this.apiFetch('/api/scan/missing-episodes/tag', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    instanceId: r.instanceId,
+                    tagName: ((me.tagName || 'missing-episodes') + '').trim() || 'missing-episodes',
+                    seriesIds: seriesIDs,
+                    removeFromOthers: true,
+                  }),
+                });
+                if (tagRes.ok) {
+                  phaseRow.tagApplied = await tagRes.json();
+                } else {
+                  const d = await tagRes.json().catch(() => ({}));
+                  phaseRow.tagError = d.error || 'HTTP ' + tagRes.status;
+                  phaseRow.ok = false;
+                }
+              }
+              if (me.actionSearch && episodeIDs.length > 0) {
+                const searchRes = await this.apiFetch('/api/scan/missing-episodes/search', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    instanceId: r.instanceId,
+                    episodeIds: episodeIDs,
+                  }),
+                });
+                if (searchRes.ok) {
+                  phaseRow.searchApplied = await searchRes.json();
+                } else {
+                  const d = await searchRes.json().catch(() => ({}));
+                  phaseRow.searchError = d.error || 'HTTP ' + searchRes.status;
+                  phaseRow.ok = false;
+                }
+              }
+            }
+          } catch (e) {
+            phaseRow.ok = false;
+            phaseRow.error = String((e && e.message) || e);
+          }
+          results.phases.push(phaseRow);
+        }
+
         results.finishedAt = new Date().toISOString();
         results.ok = true;
         this.quickFixResults = results;
         const verb = runMode === 'apply' ? 'applied' : 'previewed';
         const ranList = [...headPhases, ...autoPhases.map(a => a.phase)];
+        if (runMissingEpisodes) ranList.push('missingepisodes');
         // Toast wording: per-action wizards (fixedAction) use the
         // action's display name so the toast matches what the user
         // clicked. QFA proper keeps the chain wording. Apply-after-
@@ -11842,10 +12105,11 @@ function app() {
         // doesn't set fixedAction.
         const fixedAction = (this.ruleEditor && this.ruleEditor.fixedAction) || '';
         const actionLabels = {
-          audiotags: 'Tag Audio',
-          videotags: 'Tag Video',
-          dvdetail:  'Tag DV Details',
-          recover:   'Recover',
+          audiotags:       'Tag Audio',
+          videotags:       'Tag Video',
+          dvdetail:        'Tag DV Details',
+          recover:         'Recover',
+          missingepisodes: 'Missing episodes',
         };
         if (!overrideRule && fixedAction && actionLabels[fixedAction]) {
           this.showToast(actionLabels[fixedAction] + ' ' + verb, 'success');

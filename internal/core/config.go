@@ -202,9 +202,20 @@ type TagBucket struct {
 // RemoveOrphanedTags scopes to audio labels only — toggling has no
 // effect on Video tags or DV detail cleanup. Off by default
 // (destructive cleanup is opt-in).
+//
+// StripOnFileDelete: when true, the webhook handler strips this
+// bucket's managed audio tags from the affected item on
+// MovieFileDelete / EpisodeFileDelete / *ForUpgrade events. Off by
+// default — opt-in per bucket so users can choose granularly which
+// file-property tag families should auto-clean. Scope is the SINGLE
+// instance that received the delete event; never mirrored cross-
+// instance because audio mediaInfo is per-file. Tag-RG / filter-only
+// tag strip on delete is a separate, automatic flow (driven by
+// fnTagReleaseGroups on the rule) — see WebhookRule docs.
 type AudioTagsConfig struct {
 	Audio              TagBucket `json:"audio"`
 	RemoveOrphanedTags bool      `json:"removeOrphanedTags,omitempty"`
+	StripOnFileDelete  bool      `json:"stripOnFileDelete,omitempty"`
 }
 
 // VideoTagsConfig governs informative auto-tagging from the video
@@ -217,11 +228,18 @@ type AudioTagsConfig struct {
 // requires opt-in tools install — see DvDetailConfig.
 //
 // RemoveOrphanedTags scopes to video labels only.
+//
+// StripOnFileDelete: when true, the webhook handler strips this
+// bucket's managed video tags (resolution + codec + HDR) from the
+// affected item on file-delete events. Same scope rules as
+// AudioTagsConfig.StripOnFileDelete — see that doc-comment for the
+// full invariant.
 type VideoTagsConfig struct {
 	Resolution         TagBucket `json:"resolution"`
 	Codec              TagBucket `json:"codec"`
 	HDR                TagBucket `json:"hdr"`
 	RemoveOrphanedTags bool      `json:"removeOrphanedTags,omitempty"`
+	StripOnFileDelete  bool      `json:"stripOnFileDelete,omitempty"`
 }
 
 // DvDetailConfig governs M4b Dolby Vision detail tagging. Distinct
@@ -260,6 +278,7 @@ type DvDetailConfig struct {
 	AllowedValues      []string `json:"allowedValues,omitempty"`      // nil/empty = all 5 values allowed (when SelectMode != "select")
 	SelectMode         string   `json:"selectMode,omitempty"`         // "" or "all" (default) | "select" (exact list)
 	RemoveOrphanedTags bool     `json:"removeOrphanedTags,omitempty"` // off by default — opt-in destructive cleanup
+	StripOnFileDelete  bool     `json:"stripOnFileDelete,omitempty"`  // strip DV-detail tags from the item on file-delete events; same scope rules as AudioTagsConfig.StripOnFileDelete
 }
 
 // Config is the top-level persisted config.
@@ -766,11 +785,16 @@ func (s *ConfigStore) Load() error {
 	// — schedules with non-nil fields are left alone.
 	schedulesMigrated := s.migrateSchedulesToRules()
 
+	// Legacy WebhookFnFileDeleteClean → per-bucket StripOnFileDelete
+	// opt-in (C5 of the M-webhook delete-semantics refactor).
+	// Idempotent — rules already on the new shape are skipped.
+	fileDeleteCleanMigrated := s.migrateLegacyFileDeleteClean()
+
 	// Persist if any migration touched anything. Best-effort — if
 	// the write fails, the migration runs again next start (all are
 	// idempotent). Surface the write failure in logs so a read-only
 	// mount or full disk doesn't go silently unobserved.
-	if discordMigrated || audioTagsMigrated || videoTagsMigrated || dvDetailMigrated || schedulesMigrated {
+	if discordMigrated || audioTagsMigrated || videoTagsMigrated || dvDetailMigrated || schedulesMigrated || fileDeleteCleanMigrated {
 		if err := s.saveLocked(); err != nil {
 			fmt.Fprintf(os.Stderr, "tagarr: config migration save failed (will retry on next Load): %v\n", err)
 		}
@@ -994,6 +1018,73 @@ func (s *ConfigStore) migrateSchedulesToRules() bool {
 			sched.Options.FilterOnlyTag = "lossless-web"
 			migrated = true
 		}
+	}
+	return migrated
+}
+
+// migrateLegacyFileDeleteClean converts webhook rules that still carry
+// the legacy WebhookFnFileDeleteClean function into the per-bucket
+// StripOnFileDelete opt-in model (C5 of the M-webhook delete-semantics
+// refactor). For each rule with the legacy function in Functions:
+//
+//  1. Materialise nil snapshots (AudioTags / VideoTags / DvDetail) from
+//     the current globals — same deep-copy pattern as
+//     migrateSchedulesToRules so future global edits don't drift the
+//     rule's behaviour.
+//  2. Set StripOnFileDelete=true on each of the three bucket snapshots.
+//     Sonarr rules get the flag on DvDetail too — the file-delete
+//     dispatcher gates on AppType=="radarr", so a Sonarr snapshot with
+//     the flag set stays inert.
+//  3. Drop WebhookFnFileDeleteClean from r.Functions, preserving
+//     relative order of surviving functions.
+//
+// Returns true when any rule was migrated (caller persists).
+// Idempotent — rules without the legacy function are skipped, so
+// re-running is a no-op once a deployment has caught up. Caller must
+// hold s.mu.
+func (s *ConfigStore) migrateLegacyFileDeleteClean() bool {
+	migrated := false
+	for i := range s.cfg.WebhookRules {
+		r := &s.cfg.WebhookRules[i]
+		if !r.HasFunction(WebhookFnFileDeleteClean) {
+			continue
+		}
+
+		// Materialise snapshots if missing — mirrors
+		// migrateSchedulesToRules deep-copy semantics so subsequent
+		// edits to globals don't drift the migrated rule.
+		if r.AudioTags == nil {
+			at := s.cfg.AudioTags
+			at.Audio.AllowedValues = append([]string(nil), s.cfg.AudioTags.Audio.AllowedValues...)
+			r.AudioTags = &at
+		}
+		r.AudioTags.StripOnFileDelete = true
+
+		if r.VideoTags == nil {
+			vt := s.cfg.VideoTags
+			vt.Resolution.AllowedValues = append([]string(nil), s.cfg.VideoTags.Resolution.AllowedValues...)
+			vt.Codec.AllowedValues = append([]string(nil), s.cfg.VideoTags.Codec.AllowedValues...)
+			vt.HDR.AllowedValues = append([]string(nil), s.cfg.VideoTags.HDR.AllowedValues...)
+			r.VideoTags = &vt
+		}
+		r.VideoTags.StripOnFileDelete = true
+
+		if r.DvDetail == nil {
+			dd := s.cfg.DvDetail
+			dd.AllowedValues = append([]string(nil), s.cfg.DvDetail.AllowedValues...)
+			r.DvDetail = &dd
+		}
+		r.DvDetail.StripOnFileDelete = true
+
+		newFns := make([]WebhookFunction, 0, len(r.Functions))
+		for _, fn := range r.Functions {
+			if fn != WebhookFnFileDeleteClean {
+				newFns = append(newFns, fn)
+			}
+		}
+		r.Functions = newFns
+
+		migrated = true
 	}
 	return migrated
 }

@@ -50,6 +50,16 @@ const (
 // allWebhookFunctions enumerates every defined function. Used by the
 // validator (must be one of …) and by the wizard backend that surfaces
 // the per-Arr-type checklist.
+//
+// WebhookFnFileDeleteClean is intentionally NOT in this list — the
+// legacy all-or-nothing strip-on-delete function was retired in C7/C8
+// of the M-webhook delete-semantics refactor. Per-bucket
+// StripOnFileDelete flags on AudioTagsConfig / VideoTagsConfig /
+// DvDetailConfig replace it. The constant itself stays defined +
+// switched-on in WebhookFunctionAppliesTo / EventsForFunction so the
+// C5 migration helper can still detect legacy-shape rules on first
+// Load and convert them; new rules with the function in Functions
+// fail validation here.
 var allWebhookFunctions = []WebhookFunction{
 	WebhookFnTagReleaseGroups,
 	WebhookFnDiscover,
@@ -58,7 +68,6 @@ var allWebhookFunctions = []WebhookFunction{
 	WebhookFnTagDvDetail,
 	WebhookFnRecover,
 	WebhookFnSyncToSecondary,
-	WebhookFnFileDeleteClean,
 	WebhookFnGrabRename,
 	WebhookFnQbitSeTag,
 	WebhookFnQbitCategoryFix,
@@ -659,6 +668,11 @@ func (r *WebhookRule) HasFunction(fn WebhookFunction) bool {
 // that dispatches on the given Connect event. Used by the dispatcher
 // to filter rules per incoming event before walking their function
 // list.
+//
+// Does NOT include the automatic Tag-RG strip-on-delete flow — that
+// has its own gate (FiresAutoStripOnDelete) since it isn't driven by
+// the user's Functions list. The dispatcher OR-combines both before
+// deciding to enter the per-rule block.
 func (r *WebhookRule) FiresOn(event WebhookConnectEvent) bool {
 	for _, fn := range r.Functions {
 		for _, e := range EventsForFunction(fn, r.AppType) {
@@ -670,9 +684,88 @@ func (r *WebhookRule) FiresOn(event WebhookConnectEvent) bool {
 	return false
 }
 
+// FiresAutoStripOnDelete returns true when the rule must run the
+// automatic Tag-RG strip-on-delete flow for the given event. Gated on:
+//   - AppType == "radarr" (Tag-RG is Radarr-only)
+//   - rule has WebhookFnTagReleaseGroups in Functions
+//   - event is MovieFileDelete or MovieFileDeleteForUpgrade
+//
+// Auto-strip enforces the Tag-RG invariant: primary's qualification
+// is the single source of truth for release-group / filter-only tags.
+// When the file disappears, primary no longer qualifies → tag must
+// fall off both primary and (when Sync-to-Secondary is on) secondary
+// — same flow as bash tagarr_import.sh:574+ with ENABLE_SYNC_TO_
+// SECONDARY=true. NOT a user-toggleable function; intrinsic to having
+// Tag-RG on the rule at all.
+func (r *WebhookRule) FiresAutoStripOnDelete(event WebhookConnectEvent) bool {
+	if r == nil || r.AppType != "radarr" {
+		return false
+	}
+	if !r.HasFunction(WebhookFnTagReleaseGroups) {
+		return false
+	}
+	return event == WebhookEventMovieFileDelete ||
+		event == WebhookEventMovieFileDeleteForUpgrade
+}
+
+// FiresPerBucketStripOnDelete returns true when the rule should run
+// the file-delete cleanup on the given event by virtue of per-bucket
+// StripOnFileDelete opt-in (C6 of the M-webhook delete-semantics
+// refactor). Independent of the legacy WebhookFnFileDeleteClean gate:
+// covers post-C5 rules where the user opted in via Audio / Video /
+// DV bucket snapshots instead of the all-or-nothing legacy function.
+//
+// Returns true when:
+//   - event is the file-delete pair matching the rule's AppType
+//     (MovieFileDelete{,ForUpgrade} for radarr; EpisodeFileDelete
+//     {,ForUpgrade} for sonarr), AND
+//   - at least one of the rule's bucket snapshots has
+//     StripOnFileDelete=true (DV-detail counted Radarr-only — the
+//     dispatcher's buildFileDeleteManagedSet already gates DV by
+//     AppType).
+//
+// Snapshot nil → bucket falls back to globals at fire-time; the gate
+// is intentionally snapshot-only so a global flip (no UI today) does
+// not silently fan out strip-on-delete to every rule. C5 migration
+// materialises snapshots for legacy-fn rules so they pass this gate
+// post-migration without any UI change.
+func (r *WebhookRule) FiresPerBucketStripOnDelete(event WebhookConnectEvent) bool {
+	if r == nil {
+		return false
+	}
+	switch r.AppType {
+	case "radarr":
+		if event != WebhookEventMovieFileDelete && event != WebhookEventMovieFileDeleteForUpgrade {
+			return false
+		}
+	case "sonarr":
+		if event != WebhookEventEpisodeFileDelete && event != WebhookEventEpisodeFileDeleteForUpgrade {
+			return false
+		}
+	default:
+		return false
+	}
+	if r.AudioTags != nil && r.AudioTags.StripOnFileDelete {
+		return true
+	}
+	if r.VideoTags != nil && r.VideoTags.StripOnFileDelete {
+		return true
+	}
+	if r.AppType == "radarr" && r.DvDetail != nil && r.DvDetail.StripOnFileDelete {
+		return true
+	}
+	return false
+}
+
 // ConnectEventsNeeded returns the union of Connect events the rule's
 // enabled functions dispatch on. Drives the wizard's Step 4 summary
 // "Toggle on these notification triggers in Sonarr/Radarr" list.
+//
+// Includes the auto-strip-on-delete events when applicable so the
+// wizard tells Tag-RG users to enable Movie File Delete notifications
+// even when they haven't picked a function that nominally dispatches
+// on that event (the auto-strip would otherwise silently never fire
+// because the Connect side never sends the event).
 func (r *WebhookRule) ConnectEventsNeeded() []WebhookConnectEvent {
 	seen := map[WebhookConnectEvent]bool{}
 	out := []WebhookConnectEvent{}
@@ -683,6 +776,52 @@ func (r *WebhookRule) ConnectEventsNeeded() []WebhookConnectEvent {
 			}
 			seen[e] = true
 			out = append(out, e)
+		}
+	}
+	// Auto-strip-on-delete adds MovieFileDelete + ForUpgrade for any
+	// Radarr Tag-RG rule, regardless of whether the user also ticked
+	// FileDeleteClean / Recover / etc. Without surfacing these the
+	// wizard would tell the user "no Connect events needed" while the
+	// invariant silently depends on the Connect-side firing them.
+	if r != nil && r.AppType == "radarr" && r.HasFunction(WebhookFnTagReleaseGroups) {
+		for _, e := range []WebhookConnectEvent{WebhookEventMovieFileDelete, WebhookEventMovieFileDeleteForUpgrade} {
+			if seen[e] {
+				continue
+			}
+			seen[e] = true
+			out = append(out, e)
+		}
+	}
+	// Per-bucket strip-on-delete surfaces the matching file-delete
+	// events whenever any Audio / Video / DV-detail snapshot opts in,
+	// so the wizard tells the user to enable the right Connect-side
+	// notifications. Mirrors the auto-strip surfacing above — without
+	// it, a user who ticks StripOnFileDelete but no other delete-
+	// firing function would see "no triggers needed" while the strip
+	// silently depends on the Connect-side delivering the event.
+	if r != nil {
+		var deleteEvents []WebhookConnectEvent
+		switch r.AppType {
+		case "radarr":
+			deleteEvents = []WebhookConnectEvent{WebhookEventMovieFileDelete, WebhookEventMovieFileDeleteForUpgrade}
+		case "sonarr":
+			deleteEvents = []WebhookConnectEvent{WebhookEventEpisodeFileDelete, WebhookEventEpisodeFileDeleteForUpgrade}
+		}
+		surfaceDeletes := false
+		for _, e := range deleteEvents {
+			if r.FiresPerBucketStripOnDelete(e) {
+				surfaceDeletes = true
+				break
+			}
+		}
+		if surfaceDeletes {
+			for _, e := range deleteEvents {
+				if seen[e] {
+					continue
+				}
+				seen[e] = true
+				out = append(out, e)
+			}
 		}
 	}
 	return out

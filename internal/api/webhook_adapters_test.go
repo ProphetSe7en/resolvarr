@@ -867,37 +867,46 @@ func TestBuildFileDeleteManagedSet_IgnoresRemoveOrphanedTags(t *testing.T) {
 		AudioTags: core.AudioTagsConfig{
 			Audio:              core.TagBucket{Enabled: true, Prefix: "audio-"},
 			RemoveOrphanedTags: false, // user opted out of orphan removal in Library scan
+			StripOnFileDelete:  true,  // opt-in for file-delete strip
 		},
 	}
 	rule := &core.WebhookRule{AppType: "radarr"}
 	managed := buildFileDeleteManagedSet(rule, cfg)
 	if _, ok := managed["audio-truehd"]; !ok {
-		t.Error("RemoveOrphanedTags=false on the user's config must NOT shrink File Delete's managed set — the file is gone, all derived tags follow")
+		t.Error("RemoveOrphanedTags=false on the user's config must NOT shrink File Delete's managed set when StripOnFileDelete=true — the file is gone, all derived tags follow")
 	}
 }
 
 func TestBuildFileDeleteManagedSet_UnionAcrossBuckets(t *testing.T) {
-	// Rule with snapshots covering Audio + Video + DV — File Delete
-	// must strip tags from ALL three buckets even when the rule only
-	// has FileDeleteCleanup function enabled.
+	// Rule with snapshots covering Audio + Video + DV, each with
+	// StripOnFileDelete=true — File Delete must strip tags from ALL
+	// three buckets in one pass.
 	cfg := core.Config{
-		AudioTags: core.AudioTagsConfig{Audio: core.TagBucket{Enabled: true, Prefix: "audio-"}},
-		VideoTags: core.VideoTagsConfig{
-			Resolution: core.TagBucket{Enabled: true, Prefix: "res-"},
-			Codec:      core.TagBucket{Enabled: true, Prefix: "codec-"},
-			HDR:        core.TagBucket{Enabled: true, Prefix: "hdr-"},
+		AudioTags: core.AudioTagsConfig{
+			Audio:             core.TagBucket{Enabled: true, Prefix: "audio-"},
+			StripOnFileDelete: true,
 		},
-		DvDetail: core.DvDetailConfig{Enabled: true, Prefix: "dv-"},
+		VideoTags: core.VideoTagsConfig{
+			Resolution:        core.TagBucket{Enabled: true, Prefix: "res-"},
+			Codec:             core.TagBucket{Enabled: true, Prefix: "codec-"},
+			HDR:               core.TagBucket{Enabled: true, Prefix: "hdr-"},
+			StripOnFileDelete: true,
+		},
+		DvDetail: core.DvDetailConfig{
+			Enabled:           true,
+			Prefix:            "dv-",
+			StripOnFileDelete: true,
+		},
 	}
 	rule := &core.WebhookRule{AppType: "radarr"}
 	managed := buildFileDeleteManagedSet(rule, cfg)
 	// Spot-check that representative tags from each bucket are present.
 	checks := map[string]string{
-		"audio-truehd":   "audio bucket",
-		"res-2160p":      "video resolution bucket",
-		"codec-h265":     "video codec bucket",
-		"hdr-hdr10":      "video HDR bucket",
-		"dv-dvprofile8":  "DV bucket",
+		"audio-truehd":  "audio bucket",
+		"res-2160p":     "video resolution bucket",
+		"codec-h265":    "video codec bucket",
+		"hdr-hdr10":     "video HDR bucket",
+		"dv-dvprofile8": "DV bucket",
 	}
 	for tag, label := range checks {
 		if _, ok := managed[tag]; !ok {
@@ -910,65 +919,78 @@ func TestBuildFileDeleteManagedSet_SonarrSkipsDv(t *testing.T) {
 	// Sonarr rule must NOT include DV tags (mediaInfo lacks DV fields,
 	// validator already gates this — defence in depth in the cleanup set).
 	cfg := core.Config{
-		AudioTags: core.AudioTagsConfig{Audio: core.TagBucket{Enabled: true, Prefix: "audio-"}},
-		DvDetail:  core.DvDetailConfig{Enabled: true, Prefix: "dv-"},
+		AudioTags: core.AudioTagsConfig{
+			Audio:             core.TagBucket{Enabled: true, Prefix: "audio-"},
+			StripOnFileDelete: true,
+		},
+		DvDetail: core.DvDetailConfig{
+			Enabled:           true,
+			Prefix:            "dv-",
+			StripOnFileDelete: true, // opted in but Sonarr rule must still skip
+		},
 	}
 	rule := &core.WebhookRule{AppType: "sonarr"}
 	managed := buildFileDeleteManagedSet(rule, cfg)
 	if _, ok := managed["dv-dvprofile8"]; ok {
-		t.Error("Sonarr rule must not include DV-detail tags in managed set")
+		t.Error("Sonarr rule must not include DV-detail tags in managed set even with StripOnFileDelete=true — mediaInfo doesn't expose DV fields")
 	}
 	if _, ok := managed["audio-truehd"]; !ok {
-		t.Error("Sonarr rule should still include Audio bucket")
+		t.Error("Sonarr rule should still include Audio bucket when opted in")
 	}
 }
 
-func TestBuildFileDeleteManagedSet_ReleaseGroupSubset(t *testing.T) {
+func TestBuildFileDeleteManagedSet_PerBucketOptInRequired(t *testing.T) {
+	// StripOnFileDelete defaults to false. A bucket with the flag
+	// unset MUST NOT be in the managed set even when enabled +
+	// populated — opt-in semantics.
 	cfg := core.Config{
-		ReleaseGroups: []core.ReleaseGroup{
-			{ID: "g1", Tag: "rg-flux", Type: "radarr", Enabled: true},
-			{ID: "g2", Tag: "rg-ntb", Type: "radarr", Enabled: true},
-			{ID: "g3", Tag: "rg-xebec", Type: "radarr", Enabled: true},
-			{ID: "g4", Tag: "rg-nordic", Type: "sonarr", Enabled: true}, // wrong type — must skip
+		AudioTags: core.AudioTagsConfig{
+			Audio: core.TagBucket{Enabled: true, Prefix: "audio-"},
+			// StripOnFileDelete not set — defaults false
+		},
+		VideoTags: core.VideoTagsConfig{
+			Resolution:        core.TagBucket{Enabled: true, Prefix: "res-"},
+			StripOnFileDelete: true, // only video opted in
+		},
+		DvDetail: core.DvDetailConfig{
+			Enabled: true,
+			Prefix:  "dv-",
+			// StripOnFileDelete not set — defaults false
 		},
 	}
-	t.Run("nil ReleaseGroupIDs uses ALL of matching type", func(t *testing.T) {
-		rule := &core.WebhookRule{AppType: "radarr", ReleaseGroupIDs: nil}
-		managed := buildFileDeleteManagedSet(rule, cfg)
-		want := []string{"rg-flux", "rg-ntb", "rg-xebec"}
-		for _, tag := range want {
-			if _, ok := managed[tag]; !ok {
-				t.Errorf("managed missing %q", tag)
-			}
-		}
-		if _, ok := managed["rg-nordic"]; ok {
-			t.Error("Sonarr-typed RG must not appear in radarr rule's managed set")
-		}
-	})
-	t.Run("populated subset narrows to listed IDs", func(t *testing.T) {
-		rule := &core.WebhookRule{AppType: "radarr", ReleaseGroupIDs: []string{"g1"}}
-		managed := buildFileDeleteManagedSet(rule, cfg)
-		if _, ok := managed["rg-flux"]; !ok {
-			t.Error("g1 (rg-flux) should be in subset")
-		}
-		if _, ok := managed["rg-ntb"]; ok {
-			t.Error("g2 (rg-ntb) NOT in subset — must be excluded")
-		}
-		if _, ok := managed["rg-xebec"]; ok {
-			t.Error("g3 (rg-xebec) NOT in subset — must be excluded")
-		}
-	})
-	t.Run("empty subset (explicitly no groups) excludes all RGs", func(t *testing.T) {
-		// nil vs empty distinction: empty []string means "user explicitly
-		// chose zero RGs"; nil means "use globals". Locks the contract.
-		rule := &core.WebhookRule{AppType: "radarr", ReleaseGroupIDs: []string{}}
-		managed := buildFileDeleteManagedSet(rule, cfg)
-		for _, tag := range []string{"rg-flux", "rg-ntb", "rg-xebec"} {
-			if _, ok := managed[tag]; ok {
-				t.Errorf("empty subset must exclude all RGs but %q present", tag)
-			}
-		}
-	})
+	rule := &core.WebhookRule{AppType: "radarr"}
+	managed := buildFileDeleteManagedSet(rule, cfg)
+	if _, ok := managed["audio-truehd"]; ok {
+		t.Error("audio bucket missing StripOnFileDelete=true — must not appear in managed set")
+	}
+	if _, ok := managed["res-2160p"]; !ok {
+		t.Error("video bucket has StripOnFileDelete=true — must appear in managed set")
+	}
+	if _, ok := managed["dv-dvprofile8"]; ok {
+		t.Error("DV bucket missing StripOnFileDelete=true — must not appear in managed set")
+	}
+}
+
+// The C2 legacy bridge (rule with WebhookFnFileDeleteClean → all three
+// buckets stripped regardless of per-bucket flags) was retired in C8
+// of the M-webhook delete-semantics refactor. The C5 migration
+// converts every pre-existing rule on first Load, so no rule reaches
+// this dispatcher with the legacy function in Functions[]. The bridge
+// test that lived here was removed alongside the bridge itself.
+
+func TestBuildFileDeleteManagedSet_NoOptIn(t *testing.T) {
+	// Without per-bucket opt-in, the managed set is empty — no surprise
+	// stripping. Replaces the old "NoLegacyBridgeWithoutFunction" test.
+	cfg := core.Config{
+		AudioTags: core.AudioTagsConfig{Audio: core.TagBucket{Enabled: true, Prefix: "audio-"}},
+		VideoTags: core.VideoTagsConfig{Resolution: core.TagBucket{Enabled: true, Prefix: "res-"}},
+		DvDetail:  core.DvDetailConfig{Enabled: true, Prefix: "dv-"},
+	}
+	rule := &core.WebhookRule{AppType: "radarr"} // no functions, no opt-in
+	managed := buildFileDeleteManagedSet(rule, cfg)
+	if len(managed) != 0 {
+		t.Errorf("expected empty managed set, got %d entries: %v", len(managed), managed)
+	}
 }
 
 func TestExtractDownload_HasMediaInfoFlag(t *testing.T) {
@@ -1476,21 +1498,12 @@ func TestWebhookRuleRequest_ValidateFilterOnly(t *testing.T) {
 		}
 	})
 
-	t.Run("filter-only with FileDeleteClean (no Tag-RG) requires tag", func(t *testing.T) {
-		// File-Delete-Clean's secondary mirror reads FilterOnlyTag too;
-		// same tag-required gate.
-		req := base
-		req.Functions = []core.WebhookFunction{core.WebhookFnFileDeleteClean}
-		req.TagSource = "filter-only"
-		req.FilterOnlyTag = ""
-		apiErr := req.validate(cfg)
-		if apiErr == nil {
-			t.Fatal("expected validation error, got nil")
-		}
-		if !strings.Contains(apiErr.Message, "filterOnlyTag is required") {
-			t.Errorf("message = %q, want 'filterOnlyTag is required'", apiErr.Message)
-		}
-	})
+	// "filter-only with FileDeleteClean (no Tag-RG) requires tag" subtest
+	// retired in C8 — WebhookFnFileDeleteClean is no longer in
+	// allWebhookFunctions, so a rule listing it now fails the
+	// "unknown function" validation before reaching the filter-only-tag
+	// gate. The Tag-RG and Sync-to-secondary tag-required subtests
+	// above still cover the surviving consumers of FilterOnlyTag.
 
 	t.Run("Sonarr appType + filter-only rejected", func(t *testing.T) {
 		// Filter-only is a Radarr-only feature today (Library scan
@@ -1520,168 +1533,17 @@ func TestWebhookRuleRequest_ValidateFilterOnly(t *testing.T) {
 	})
 }
 
-func TestBuildFileDeleteManagedSet_IncludesFilterOnlyTag(t *testing.T) {
-	// Filter-only rule's tag MUST be in the File-Delete managed set so
-	// it gets stripped along with audio/video/DV/RG tags. Without this
-	// branch the filter-only tag survives the file delete (the tag is
-	// not in any vocabulary, so AllPossible* doesn't cover it).
-	cfg := core.Config{
-		AudioTags: core.AudioTagsConfig{Audio: core.TagBucket{Enabled: true, Prefix: "audio-"}},
-	}
-	rule := &core.WebhookRule{
-		AppType:       "radarr",
-		TagSource:     "filter-only",
-		FilterOnlyTag: "lossless-web",
-	}
-	managed := buildFileDeleteManagedSet(rule, cfg)
-	if _, ok := managed["lossless-web"]; !ok {
-		t.Error("filter-only tag missing from File-Delete managed set — file-delete events would not strip it")
-	}
-	if v := managed["lossless-web"]; v != "filterOnly" {
-		t.Errorf("managed bucket = %q, want 'filterOnly'", v)
-	}
-}
+// Filter-only / RG tag inclusion in buildFileDeleteManagedSet was
+// dropped in the M-webhook delete-semantics refactor (C2). Those tags
+// now flow through the auto-strip-on-delete dispatcher (C3) instead.
+// Three test helpers covering the old branches were removed; the
+// replacement test surface for the new auto-strip path lives alongside
+// that dispatcher's tests.
 
-func TestBuildFileDeleteManagedSet_NoFilterOnlyWhenActiveMode(t *testing.T) {
-	// Active-mode rule (legacy default): no filter-only tag in managed
-	// set, even if FilterOnlyTag happens to be populated (stale data
-	// from a user toggling between modes). Branch keys on TagSource ==
-	// "filter-only" — anything else is a no-op.
-	rule := &core.WebhookRule{
-		AppType:       "radarr",
-		TagSource:     "", // active mode
-		FilterOnlyTag: "stale-tag",
-	}
-	managed := buildFileDeleteManagedSet(rule, core.Config{})
-	if _, ok := managed["stale-tag"]; ok {
-		t.Error("active-mode rule must not include FilterOnlyTag in managed set — only filter-only mode does")
-	}
-}
-
-func TestBuildFileDeleteManagedSet_FilterOnlyEmptyTagSkipped(t *testing.T) {
-	// Defence: filter-only mode with empty FilterOnlyTag (validator
-	// caught at save, but hand-edited config might survive Load) must
-	// not insert an empty-string key into the managed set — that would
-	// mask every empty-label tag in the diff against current.
-	rule := &core.WebhookRule{
-		AppType:       "radarr",
-		TagSource:     "filter-only",
-		FilterOnlyTag: "",
-	}
-	managed := buildFileDeleteManagedSet(rule, core.Config{})
-	if _, ok := managed[""]; ok {
-		t.Error("empty FilterOnlyTag must not insert an empty-key entry — would mask every unlabeled tag in diff")
-	}
-}
-
-// shouldMirrorFilterOnlyOnDelete pure-helper coverage. Locks the
-// gating logic for the file-delete + Sync-to-secondary + filter-only
-// combo: only that exact triple should fan out the filter-only tag
-// strip to the secondary instance.
-
-func TestShouldMirrorFilterOnlyOnDelete_PositiveCase(t *testing.T) {
-	rule := &core.WebhookRule{
-		AppType:       "radarr",
-		TagSource:     "filter-only",
-		FilterOnlyTag: "lossless-web",
-		Functions: []core.WebhookFunction{
-			core.WebhookFnFileDeleteClean,
-			core.WebhookFnSyncToSecondary,
-		},
-	}
-	if !shouldMirrorFilterOnlyOnDelete(rule) {
-		t.Errorf("filter-only + Sync + radarr + non-empty tag → expected mirror, got false")
-	}
-}
-
-func TestShouldMirrorFilterOnlyOnDelete_NoSyncFunction(t *testing.T) {
-	// Rule with FileDeleteClean alone (no Sync) must NOT trigger the
-	// secondary mirror — file delete stays primary-only when the user
-	// hasn't opted into the mirror function.
-	rule := &core.WebhookRule{
-		AppType:       "radarr",
-		TagSource:     "filter-only",
-		FilterOnlyTag: "lossless-web",
-		Functions:     []core.WebhookFunction{core.WebhookFnFileDeleteClean},
-	}
-	if shouldMirrorFilterOnlyOnDelete(rule) {
-		t.Errorf("Sync function not enabled → mirror must stay off")
-	}
-}
-
-func TestShouldMirrorFilterOnlyOnDelete_ActiveTagSourceSkipped(t *testing.T) {
-	// Active-mode rule (per-group RG decisions) must not mirror — only
-	// the explicit filter-only mode has the symmetric-removal expectation.
-	// Per-group RG cleanup on pure delete stays primary-only because
-	// secondary holds an independent file with its own RG record.
-	rule := &core.WebhookRule{
-		AppType:       "radarr",
-		TagSource:     "active",
-		FilterOnlyTag: "lossless-web", // present but irrelevant in active mode
-		Functions: []core.WebhookFunction{
-			core.WebhookFnFileDeleteClean,
-			core.WebhookFnSyncToSecondary,
-		},
-	}
-	if shouldMirrorFilterOnlyOnDelete(rule) {
-		t.Errorf("active mode → mirror must stay off")
-	}
-}
-
-func TestShouldMirrorFilterOnlyOnDelete_EmptyTagSkipped(t *testing.T) {
-	// Defensive: filter-only mode with empty FilterOnlyTag (validator
-	// rejects this at save, but a hand-edited config could survive
-	// Load). Mirror must skip rather than emit a managed map keyed on
-	// empty string, which would mask every unlabeled tag in the diff.
-	rule := &core.WebhookRule{
-		AppType:       "radarr",
-		TagSource:     "filter-only",
-		FilterOnlyTag: "   ", // whitespace-only — TrimSpace defence
-		Functions: []core.WebhookFunction{
-			core.WebhookFnFileDeleteClean,
-			core.WebhookFnSyncToSecondary,
-		},
-	}
-	if shouldMirrorFilterOnlyOnDelete(rule) {
-		t.Errorf("empty FilterOnlyTag → mirror must stay off")
-	}
-}
-
-func TestShouldMirrorFilterOnlyOnDelete_SonarrSkipped(t *testing.T) {
-	// Sonarr filter-only doesn't exist today (Radarr-only feature).
-	// Even if a hand-built config has the right shape, the mirror
-	// branch must no-op so the Sonarr code path stays untouched.
-	rule := &core.WebhookRule{
-		AppType:       "sonarr",
-		TagSource:     "filter-only",
-		FilterOnlyTag: "lossless-web",
-		Functions: []core.WebhookFunction{
-			core.WebhookFnFileDeleteClean,
-			core.WebhookFnSyncToSecondary,
-		},
-	}
-	if shouldMirrorFilterOnlyOnDelete(rule) {
-		t.Errorf("sonarr appType → mirror must stay off (filter-only is Radarr-only)")
-	}
-}
-
-func TestShouldMirrorFilterOnlyOnDelete_NilRuleSafe(t *testing.T) {
-	// Defensive — if the caller ever passes nil, helper returns false
-	// rather than panicking. shouldMirrorFilterOnlyOnDelete is invoked
-	// from inside dispatchFileDeleteCleanup which already short-circuits
-	// on nil rules elsewhere, but a small guard here keeps the helper
-	// safe to reuse in future call sites.
-	if shouldMirrorFilterOnlyOnDelete(nil) {
-		t.Errorf("nil rule → expected false")
-	}
-}
-
-// End-to-end mirror-flow coverage. Both Arr instances are httptest
-// fakes; the test asserts that:
-//   - primary cleanup hits primary's editor with remove
-//   - secondary lookup happens via tmdbId
-//   - secondary's editor receives a remove for ONLY the filter-only tag
-//     (not audio/video/DV — those stay primary-only)
+// Shared httptest infrastructure for the file-delete + auto-strip
+// dispatcher integration tests below. Both fakeArr instances stand in
+// for primary + secondary Radarr/Sonarr; tests record editor PUT calls
+// and assert which sides got hit.
 
 type fakeArr struct {
 	server   *httptest.Server
@@ -1785,94 +1647,23 @@ func (f *fakeArr) handleEditor(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func TestDispatchFileDeleteCleanup_MirrorsFilterOnlyTagToSecondary(t *testing.T) {
-	// End-to-end: primary file-delete fires; primary editor strips
-	// every managed tag from primary's movie; secondary editor receives
-	// a separate remove call carrying ONLY the filter-only tag id.
-	primary := newFakeArr(t, 100, 42, []int{1, 9}, []arr.TagDetail{
-		{ID: 1, Label: "lossless-web"},
-		{ID: 9, Label: "atmos"}, // stale audio tag — primary cleanup removes it too
-	})
-	secondary := newFakeArr(t, 100, 4242, []int{1, 9}, []arr.TagDetail{
-		{ID: 1, Label: "lossless-web"},
-		{ID: 9, Label: "atmos"}, // also present on secondary, but mirror MUST NOT touch it
-	})
-
-	cfg := core.Config{
-		Instances: []core.Instance{
-			{ID: "primary", Type: "radarr", Name: "Primary", URL: primary.server.URL, APIKey: "test-key"},
-			{ID: "secondary", Type: "radarr", Name: "Secondary 4K", URL: secondary.server.URL, APIKey: "test-key"},
-		},
-		AudioTags: core.AudioTagsConfig{Audio: core.TagBucket{Enabled: true}},
-	}
-	rule := &core.WebhookRule{
-		ID:               "r1",
-		InstanceID:       "primary",
-		AppType:          "radarr",
-		TagSource:        "filter-only",
-		FilterOnlyTag:    "lossless-web",
-		SyncToInstanceID: "secondary",
-		Functions: []core.WebhookFunction{
-			core.WebhookFnFileDeleteClean,
-			core.WebhookFnSyncToSecondary,
-		},
-	}
-	app := &core.App{HTTPClient: &http.Client{Timeout: 5 * time.Second}}
-	s := &Server{App: app}
-	env := &connectEventEnvelope{EventType: string(core.WebhookEventMovieFileDelete)}
-	body := []byte(`{"movie": {"id": 42, "tmdbId": 100}, "movieFile": {"id": 100}}`)
-
-	// Pass primary's tag-details directly so dispatchFileDeleteCleanup
-	// doesn't have to re-list them for the primary apply (matches
-	// dispatcher's caller pattern).
-	res := s.dispatchFileDeleteCleanup(context.Background(), rule, cfg, primary.tags, env, body)
-	if !res.OK {
-		t.Fatalf("expected OK=true, got %+v", res)
-	}
-
-	// Primary editor must have been hit with a remove that includes the
-	// filter-only tag (id=1).
-	if len(primary.editorCalls) == 0 {
-		t.Fatalf("primary editor was never called — primary cleanup did not fire")
-	}
-	primaryCall := primary.editorCalls[len(primary.editorCalls)-1]
-	if primaryCall.ApplyTags != "remove" {
-		t.Errorf("primary editor applyTags = %q, want remove", primaryCall.ApplyTags)
-	}
-	if !containsInt(primaryCall.Tags, 1) {
-		t.Errorf("primary editor tag-ids = %v, want it to include id 1 (lossless-web)", primaryCall.Tags)
-	}
-
-	// Secondary editor MUST have been hit, AND only with the filter-only
-	// tag-id (1) — never with id 9 (atmos), which is primary-only domain.
-	if len(secondary.editorCalls) == 0 {
-		t.Fatalf("secondary editor was never called — mirror branch did not fire")
-	}
-	secCall := secondary.editorCalls[len(secondary.editorCalls)-1]
-	if secCall.ApplyTags != "remove" {
-		t.Errorf("secondary editor applyTags = %q, want remove", secCall.ApplyTags)
-	}
-	if !reflect.DeepEqual(secCall.Tags, []int{1}) {
-		t.Errorf("secondary editor tag-ids = %v, want [1] (filter-only tag ONLY — audio/video/DV must stay primary-only)", secCall.Tags)
-	}
-	if !reflect.DeepEqual(secCall.MovieIDs, []int{4242}) {
-		t.Errorf("secondary editor movieIds = %v, want [4242] (the secondary's matching movie id, NOT primary's 42)", secCall.MovieIDs)
-	}
-
-	// Summary should mention the secondary instance so the History row
-	// makes the fan-out visible.
-	if !strings.Contains(res.Summary, "Secondary 4K") {
-		t.Errorf("res.Summary = %q, want mention of secondary instance name", res.Summary)
-	}
-}
+// TestDispatchFileDeleteCleanup_MirrorsFilterOnlyTagToSecondary +
+// TestDispatchFileDeleteCleanup_FilterOnlyMirrorTolerantOfSecondaryGone
+// were removed in the C2 commit of the M-webhook delete-semantics
+// refactor. The filter-only mirror call was lifted out of this
+// dispatcher: filter-only secondary strip now lives in the auto-strip-
+// on-delete dispatcher (C3) alongside per-group RG strip, which gives
+// both modes uniform mirror behavior. The new dispatcher's tests cover
+// that behavior in a single place.
 
 func TestDispatchFileDeleteCleanup_NoSecondaryMirrorWithoutSyncFn(t *testing.T) {
-	// FileDeleteClean alone (no Sync function) → secondary editor must
-	// NOT be called. Locks the gate so adding FileDeleteClean to a rule
-	// can never silently fan out to a secondary the user hasn't opted
-	// into.
-	primary := newFakeArr(t, 100, 42, []int{1}, []arr.TagDetail{{ID: 1, Label: "lossless-web"}})
-	secondary := newFakeArr(t, 100, 4242, []int{1}, []arr.TagDetail{{ID: 1, Label: "lossless-web"}})
+	// Per-bucket Audio strip-on-delete alone (no Sync function) →
+	// secondary editor must NOT be called. dispatchFileDeleteCleanup is
+	// always primary-only by design — secondary holds its own file with
+	// its own mediaInfo and its own derived tags. Locks the property so
+	// no future refactor silently fans out file-property cleanup.
+	primary := newFakeArr(t, 100, 42, []int{1}, []arr.TagDetail{{ID: 1, Label: "audio-truehd"}})
+	secondary := newFakeArr(t, 100, 4242, []int{1}, []arr.TagDetail{{ID: 1, Label: "audio-truehd"}})
 
 	cfg := core.Config{
 		Instances: []core.Instance{
@@ -1881,12 +1672,13 @@ func TestDispatchFileDeleteCleanup_NoSecondaryMirrorWithoutSyncFn(t *testing.T) 
 		},
 	}
 	rule := &core.WebhookRule{
-		ID:            "r1",
-		InstanceID:    "primary",
-		AppType:       "radarr",
-		TagSource:     "filter-only",
-		FilterOnlyTag: "lossless-web",
-		Functions:     []core.WebhookFunction{core.WebhookFnFileDeleteClean}, // no Sync
+		ID:         "r1",
+		InstanceID: "primary",
+		AppType:    "radarr",
+		AudioTags: &core.AudioTagsConfig{
+			Audio:             core.TagBucket{Enabled: true, Prefix: "audio-"},
+			StripOnFileDelete: true,
+		},
 	}
 	app := &core.App{HTTPClient: &http.Client{Timeout: 5 * time.Second}}
 	s := &Server{App: app}
@@ -1903,33 +1695,31 @@ func TestDispatchFileDeleteCleanup_NoSecondaryMirrorWithoutSyncFn(t *testing.T) 
 	}
 }
 
-func TestDispatchFileDeleteCleanup_NoSecondaryMirrorInActiveTagSource(t *testing.T) {
-	// Active-mode rule with Sync + FileDeleteClean → secondary editor
-	// must NOT be called by the file-delete adapter. Per-group RG
-	// cleanup on pure delete stays primary-only — Library scan's
-	// orphan pass handles secondary RG reconciliation.
-	primary := newFakeArr(t, 100, 42, []int{1}, []arr.TagDetail{{ID: 1, Label: "rg-flux"}})
-	secondary := newFakeArr(t, 100, 4242, []int{1}, []arr.TagDetail{{ID: 1, Label: "rg-flux"}})
+func TestDispatchFileDeleteCleanup_PrimaryOnlyEvenWithSyncFunction(t *testing.T) {
+	// Rule with Sync function on AND per-bucket Audio strip → secondary
+	// editor must still NOT be called by dispatchFileDeleteCleanup.
+	// File-property tags are per-instance file-derived — the secondary
+	// holds its own file and derives its own tags. Sync function
+	// applies to Tag-RG / filter-only via the auto-strip dispatcher
+	// (C3), not to file-property cleanup.
+	primary := newFakeArr(t, 100, 42, []int{1}, []arr.TagDetail{{ID: 1, Label: "audio-truehd"}})
+	secondary := newFakeArr(t, 100, 4242, []int{1}, []arr.TagDetail{{ID: 1, Label: "audio-truehd"}})
 
 	cfg := core.Config{
 		Instances: []core.Instance{
 			{ID: "primary", Type: "radarr", Name: "Primary", URL: primary.server.URL, APIKey: "test-key"},
 			{ID: "secondary", Type: "radarr", Name: "Secondary 4K", URL: secondary.server.URL, APIKey: "test-key"},
 		},
-		ReleaseGroups: []core.ReleaseGroup{
-			{ID: "rg-flux", Type: "radarr", Tag: "rg-flux", Enabled: true, Search: "FLUX"},
-		},
 	}
 	rule := &core.WebhookRule{
 		ID:               "r1",
 		InstanceID:       "primary",
 		AppType:          "radarr",
-		TagSource:        "active",
-		FilterOnlyTag:    "lossless-web", // stale, must not be looked at in active mode
 		SyncToInstanceID: "secondary",
-		Functions: []core.WebhookFunction{
-			core.WebhookFnFileDeleteClean,
-			core.WebhookFnSyncToSecondary,
+		Functions:        []core.WebhookFunction{core.WebhookFnSyncToSecondary},
+		AudioTags: &core.AudioTagsConfig{
+			Audio:             core.TagBucket{Enabled: true, Prefix: "audio-"},
+			StripOnFileDelete: true,
 		},
 	}
 	app := &core.App{HTTPClient: &http.Client{Timeout: 5 * time.Second}}
@@ -1942,33 +1732,45 @@ func TestDispatchFileDeleteCleanup_NoSecondaryMirrorInActiveTagSource(t *testing
 		t.Fatalf("expected OK=true, got %+v", res)
 	}
 	if len(secondary.editorCalls) != 0 {
-		t.Errorf("active-mode rule must not mirror file-delete to secondary; got %d call(s): %+v",
+		t.Errorf("file-property cleanup must not mirror to secondary even with Sync function on; got %d call(s): %+v",
 			len(secondary.editorCalls), secondary.editorCalls)
 	}
 }
 
-func TestDispatchFileDeleteCleanup_FilterOnlyMirrorTolerantOfSecondaryGone(t *testing.T) {
-	// Secondary instance not in cfg → primary cleanup still succeeds
-	// (OK=true) and summary mentions the mirror-skip reason. Library
-	// scan's orphan pass reconciles drift on the next run.
-	primary := newFakeArr(t, 100, 42, []int{1}, []arr.TagDetail{{ID: 1, Label: "lossless-web"}})
+// containsInt was a helper for the removed filter-only-mirror test —
+// the auto-strip-on-delete dispatcher (C3) will reintroduce a similar
+// helper if/when needed for the new mirror tests.
+
+// =====  Auto-strip Tag-RG on file-delete (C3) =====
+//
+// Tests for the dispatcher that enforces the Tag-RG invariant on file-
+// delete events. Symmetric for per-group and filter-only modes; mirrors
+// to secondary when fnSyncToSecondary is on the rule. Bash-parity with
+// tagarr_import.sh:574+ (auto-strip RG tags + ENABLE_SYNC_TO_SECONDARY
+// mirror).
+
+func TestDispatchAutoStripTagRgOnDelete_PerGroup_StripsPrimaryAndSecondary(t *testing.T) {
+	// Bash-parity: primary file delete → RG tag falls off primary AND
+	// secondary in one fire. Tests the per-group branch end-to-end.
+	primary := newFakeArr(t, 100, 42, []int{1}, []arr.TagDetail{{ID: 1, Label: "rg-flux"}})
+	secondary := newFakeArr(t, 100, 4242, []int{1}, []arr.TagDetail{{ID: 1, Label: "rg-flux"}})
 
 	cfg := core.Config{
 		Instances: []core.Instance{
-			// Only primary — explicit SyncToInstanceID below points at
-			// an ID that no longer exists.
 			{ID: "primary", Type: "radarr", Name: "Primary", URL: primary.server.URL, APIKey: "test-key"},
+			{ID: "secondary", Type: "radarr", Name: "Secondary 4K", URL: secondary.server.URL, APIKey: "test-key"},
+		},
+		ReleaseGroups: []core.ReleaseGroup{
+			{ID: "g1", Type: "radarr", Search: "FLUX", Tag: "rg-flux", Display: "FLUX", Enabled: true},
 		},
 	}
 	rule := &core.WebhookRule{
 		ID:               "r1",
 		InstanceID:       "primary",
 		AppType:          "radarr",
-		TagSource:        "filter-only",
-		FilterOnlyTag:    "lossless-web",
-		SyncToInstanceID: "vanished-instance",
+		SyncToInstanceID: "secondary",
 		Functions: []core.WebhookFunction{
-			core.WebhookFnFileDeleteClean,
+			core.WebhookFnTagReleaseGroups,
 			core.WebhookFnSyncToSecondary,
 		},
 	}
@@ -1977,12 +1779,198 @@ func TestDispatchFileDeleteCleanup_FilterOnlyMirrorTolerantOfSecondaryGone(t *te
 	env := &connectEventEnvelope{EventType: string(core.WebhookEventMovieFileDelete)}
 	body := []byte(`{"movie": {"id": 42, "tmdbId": 100}, "movieFile": {"id": 100}}`)
 
-	res := s.dispatchFileDeleteCleanup(context.Background(), rule, cfg, primary.tags, env, body)
+	res := s.dispatchAutoStripTagRgOnDelete(context.Background(), rule, cfg, primary.tags, env, body)
 	if !res.OK {
-		t.Fatalf("primary cleanup must still succeed when secondary is gone, got %+v", res)
+		t.Fatalf("expected OK=true, got %+v", res)
 	}
-	if !strings.Contains(strings.ToLower(res.Summary), "secondary mirror skipped") {
-		t.Errorf("res.Summary = %q, want a 'secondary mirror skipped' note explaining the mirror could not run", res.Summary)
+	if len(primary.editorCalls) == 0 {
+		t.Fatal("primary editor was never called — RG strip did not fire on primary")
+	}
+	if !containsInt(primary.editorCalls[len(primary.editorCalls)-1].Tags, 1) {
+		t.Errorf("primary editor tags = %v, want include id 1 (rg-flux)", primary.editorCalls[len(primary.editorCalls)-1].Tags)
+	}
+	if len(secondary.editorCalls) == 0 {
+		t.Fatal("secondary editor was never called — RG strip did not mirror to secondary")
+	}
+	if !containsInt(secondary.editorCalls[len(secondary.editorCalls)-1].Tags, 1) {
+		t.Errorf("secondary editor tags = %v, want include id 1 (rg-flux mirrored)", secondary.editorCalls[len(secondary.editorCalls)-1].Tags)
+	}
+	if !strings.Contains(res.Summary, "Secondary 4K") {
+		t.Errorf("res.Summary = %q, want mention of secondary instance", res.Summary)
+	}
+}
+
+func TestDispatchAutoStripTagRgOnDelete_FilterOnly_StripsPrimaryAndSecondary(t *testing.T) {
+	// Filter-only branch: single FilterOnlyTag stripped from both.
+	primary := newFakeArr(t, 100, 42, []int{1}, []arr.TagDetail{{ID: 1, Label: "lossless-web"}})
+	secondary := newFakeArr(t, 100, 4242, []int{1}, []arr.TagDetail{{ID: 1, Label: "lossless-web"}})
+
+	cfg := core.Config{
+		Instances: []core.Instance{
+			{ID: "primary", Type: "radarr", Name: "Primary", URL: primary.server.URL, APIKey: "test-key"},
+			{ID: "secondary", Type: "radarr", Name: "Secondary 4K", URL: secondary.server.URL, APIKey: "test-key"},
+		},
+	}
+	rule := &core.WebhookRule{
+		ID:               "r1",
+		InstanceID:       "primary",
+		AppType:          "radarr",
+		TagSource:        "filter-only",
+		FilterOnlyTag:    "lossless-web",
+		SyncToInstanceID: "secondary",
+		Functions: []core.WebhookFunction{
+			core.WebhookFnTagReleaseGroups,
+			core.WebhookFnSyncToSecondary,
+		},
+	}
+	app := &core.App{HTTPClient: &http.Client{Timeout: 5 * time.Second}}
+	s := &Server{App: app}
+	env := &connectEventEnvelope{EventType: string(core.WebhookEventMovieFileDelete)}
+	body := []byte(`{"movie": {"id": 42, "tmdbId": 100}, "movieFile": {"id": 100}}`)
+
+	res := s.dispatchAutoStripTagRgOnDelete(context.Background(), rule, cfg, primary.tags, env, body)
+	if !res.OK {
+		t.Fatalf("expected OK=true, got %+v", res)
+	}
+	if len(primary.editorCalls) == 0 {
+		t.Fatal("primary editor was never called")
+	}
+	if len(secondary.editorCalls) == 0 {
+		t.Fatal("secondary editor was never called — filter-only mirror did not fire")
+	}
+	// Secondary call must include exactly the filter-only tag id.
+	if !reflect.DeepEqual(secondary.editorCalls[len(secondary.editorCalls)-1].Tags, []int{1}) {
+		t.Errorf("secondary editor tags = %v, want [1] (filter-only tag id)", secondary.editorCalls[len(secondary.editorCalls)-1].Tags)
+	}
+}
+
+func TestDispatchAutoStripTagRgOnDelete_NoSync_PrimaryOnly(t *testing.T) {
+	// Without fnSyncToSecondary on the rule, secondary editor must
+	// not be called. User can reconcile secondary via Library scan
+	// M3e Sync.
+	primary := newFakeArr(t, 100, 42, []int{1}, []arr.TagDetail{{ID: 1, Label: "rg-flux"}})
+	secondary := newFakeArr(t, 100, 4242, []int{1}, []arr.TagDetail{{ID: 1, Label: "rg-flux"}})
+
+	cfg := core.Config{
+		Instances: []core.Instance{
+			{ID: "primary", Type: "radarr", Name: "Primary", URL: primary.server.URL, APIKey: "test-key"},
+			{ID: "secondary", Type: "radarr", Name: "Secondary 4K", URL: secondary.server.URL, APIKey: "test-key"},
+		},
+		ReleaseGroups: []core.ReleaseGroup{
+			{ID: "g1", Type: "radarr", Search: "FLUX", Tag: "rg-flux", Enabled: true},
+		},
+	}
+	rule := &core.WebhookRule{
+		ID:         "r1",
+		InstanceID: "primary",
+		AppType:    "radarr",
+		Functions:  []core.WebhookFunction{core.WebhookFnTagReleaseGroups},
+		// no fnSyncToSecondary
+	}
+	app := &core.App{HTTPClient: &http.Client{Timeout: 5 * time.Second}}
+	s := &Server{App: app}
+	env := &connectEventEnvelope{EventType: string(core.WebhookEventMovieFileDelete)}
+	body := []byte(`{"movie": {"id": 42, "tmdbId": 100}, "movieFile": {"id": 100}}`)
+
+	res := s.dispatchAutoStripTagRgOnDelete(context.Background(), rule, cfg, primary.tags, env, body)
+	if !res.OK {
+		t.Fatalf("expected OK=true, got %+v", res)
+	}
+	if len(primary.editorCalls) == 0 {
+		t.Error("primary editor must still be called — primary strip is always on for the dispatcher")
+	}
+	if len(secondary.editorCalls) != 0 {
+		t.Errorf("secondary editor must not be called without fnSyncToSecondary; got %d call(s)", len(secondary.editorCalls))
+	}
+}
+
+func TestDispatchAutoStripTagRgOnDelete_DefenceInDepth(t *testing.T) {
+	app := &core.App{HTTPClient: &http.Client{Timeout: 5 * time.Second}}
+	s := &Server{App: app}
+	env := &connectEventEnvelope{EventType: string(core.WebhookEventMovieFileDelete)}
+	bodyMoviePresent := []byte(`{"movie": {"id": 42, "tmdbId": 100}}`)
+
+	t.Run("Sonarr rule skipped", func(t *testing.T) {
+		rule := &core.WebhookRule{AppType: "sonarr", Functions: []core.WebhookFunction{core.WebhookFnTagReleaseGroups}}
+		res := s.dispatchAutoStripTagRgOnDelete(context.Background(), rule, core.Config{}, nil, env, bodyMoviePresent)
+		if !res.OK || !strings.Contains(res.Summary, "Radarr-only") {
+			t.Errorf("Sonarr rule expected to skip with Radarr-only note, got %+v", res)
+		}
+	})
+
+	t.Run("no Tag-RG on rule skipped", func(t *testing.T) {
+		rule := &core.WebhookRule{AppType: "radarr", Functions: []core.WebhookFunction{core.WebhookFnTagAudio}}
+		res := s.dispatchAutoStripTagRgOnDelete(context.Background(), rule, core.Config{}, nil, env, bodyMoviePresent)
+		if !res.OK || !strings.Contains(res.Summary, "no Tag-RG") {
+			t.Errorf("no-Tag-RG rule expected to skip with note, got %+v", res)
+		}
+	})
+
+	t.Run("no movie id on payload skipped", func(t *testing.T) {
+		rule := &core.WebhookRule{AppType: "radarr", Functions: []core.WebhookFunction{core.WebhookFnTagReleaseGroups}}
+		res := s.dispatchAutoStripTagRgOnDelete(context.Background(), rule, core.Config{}, nil, env, []byte(`{}`))
+		if !res.OK || !strings.Contains(res.Summary, "no movie id") {
+			t.Errorf("empty-payload rule expected to skip with note, got %+v", res)
+		}
+	})
+
+	t.Run("filter-only with empty tag skipped", func(t *testing.T) {
+		rule := &core.WebhookRule{
+			AppType:       "radarr",
+			TagSource:     "filter-only",
+			FilterOnlyTag: "",
+			Functions:     []core.WebhookFunction{core.WebhookFnTagReleaseGroups},
+		}
+		res := s.dispatchAutoStripTagRgOnDelete(context.Background(), rule, core.Config{}, nil, env, bodyMoviePresent)
+		if !res.OK || !strings.Contains(res.Summary, "filter-only mode with no FilterOnlyTag") {
+			t.Errorf("empty-FilterOnlyTag rule expected to skip with note, got %+v", res)
+		}
+	})
+
+	t.Run("per-group mode with no managed RGs skipped", func(t *testing.T) {
+		rule := &core.WebhookRule{
+			AppType:    "radarr",
+			Functions:  []core.WebhookFunction{core.WebhookFnTagReleaseGroups},
+		}
+		res := s.dispatchAutoStripTagRgOnDelete(context.Background(), rule, core.Config{}, nil, env, bodyMoviePresent)
+		if !res.OK || !strings.Contains(res.Summary, "no managed release groups") {
+			t.Errorf("no-RG rule expected to skip with note, got %+v", res)
+		}
+	})
+}
+
+func TestDispatchAutoStripTagRgOnDelete_SyncWithoutTmdbID(t *testing.T) {
+	// Payload without tmdbId → primary strip succeeds, mirror skip
+	// noted in summary. Library-scan M3e Sync reconciles later.
+	primary := newFakeArr(t, 100, 42, []int{1}, []arr.TagDetail{{ID: 1, Label: "lossless-web"}})
+
+	cfg := core.Config{
+		Instances: []core.Instance{
+			{ID: "primary", Type: "radarr", Name: "Primary", URL: primary.server.URL, APIKey: "test-key"},
+		},
+	}
+	rule := &core.WebhookRule{
+		ID:            "r1",
+		InstanceID:    "primary",
+		AppType:       "radarr",
+		TagSource:     "filter-only",
+		FilterOnlyTag: "lossless-web",
+		Functions: []core.WebhookFunction{
+			core.WebhookFnTagReleaseGroups,
+			core.WebhookFnSyncToSecondary,
+		},
+	}
+	app := &core.App{HTTPClient: &http.Client{Timeout: 5 * time.Second}}
+	s := &Server{App: app}
+	env := &connectEventEnvelope{EventType: string(core.WebhookEventMovieFileDelete)}
+	body := []byte(`{"movie": {"id": 42}}`) // no tmdbId
+
+	res := s.dispatchAutoStripTagRgOnDelete(context.Background(), rule, cfg, primary.tags, env, body)
+	if !res.OK {
+		t.Fatalf("primary strip should still succeed, got %+v", res)
+	}
+	if !strings.Contains(res.Summary, "secondary mirror skipped (no tmdbId on event)") {
+		t.Errorf("summary missing tmdbId skip note: %q", res.Summary)
 	}
 }
 

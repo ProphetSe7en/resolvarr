@@ -58,10 +58,10 @@ func (r *schedulerRunner) RunSchedule(ctx context.Context, job core.ScheduledJob
 	// hand-edited resolvarr.json sneaks one through.
 	if appType == "sonarr" {
 		switch job.Mode {
-		case core.JobModeRecover, core.JobModeAudioTags, core.JobModeVideoTags, core.JobModeCombined:
+		case core.JobModeRecover, core.JobModeAudioTags, core.JobModeVideoTags, core.JobModeMissingEpisodes, core.JobModeCombined:
 			// supported
 		default:
-			return core.RunSummary{}, fmt.Errorf("Sonarr schedules support recover / audiotags / videotags / combined only — got %q", job.Mode)
+			return core.RunSummary{}, fmt.Errorf("Sonarr schedules support recover / audiotags / videotags / missingepisodes / combined only — got %q", job.Mode)
 		}
 	} else if appType != "radarr" {
 		return core.RunSummary{}, fmt.Errorf("schedule against unknown instance type %q", appType)
@@ -105,6 +105,8 @@ func (r *schedulerRunner) RunSchedule(ctx context.Context, job core.ScheduledJob
 		summary, runErr = r.runVideoTagsSchedule(ctx, cfg, inst, appType, job)
 	case core.JobModeDvDetail:
 		summary, runErr = r.runDvDetailSchedule(ctx, cfg, inst, appType, job)
+	case core.JobModeMissingEpisodes:
+		summary, runErr = r.runMissingEpisodesSchedule(ctx, inst, appType, job)
 	case core.JobModeCombined:
 		summary, runErr = r.runCombinedSchedule(ctx, cfg, inst, appType, filterCfg, job)
 	default:
@@ -541,6 +543,95 @@ func (r *schedulerRunner) runDvDetailSchedule(ctx context.Context, cfg core.Conf
 	return out, nil
 }
 
+// runMissingEpisodesSchedule runs the standalone missing-episodes phase
+// (Sonarr only). Same logic as the missingepisodes branch in
+// runCombinedSchedule but as its own JobMode for users who want only
+// this one phase scheduled. Reads snapshot off job.MissingEpisodes;
+// falls back to sensible defaults when nil (legacy schedule with the
+// mode set via API but no per-rule snapshot persisted).
+func (r *schedulerRunner) runMissingEpisodesSchedule(ctx context.Context, inst *core.Instance, appType string, job core.ScheduledJob) (core.RunSummary, error) {
+	if appType != "sonarr" {
+		return core.RunSummary{}, fmt.Errorf("missingepisodes schedule requires Sonarr instance, got %s", appType)
+	}
+	meCfg := job.MissingEpisodes
+	if meCfg == nil {
+		meCfg = &core.MissingEpisodesConfig{
+			ThresholdPercent:  70,
+			BufferHours:       24,
+			IncludeContinuing: true,
+			IncludeEnded:      true,
+		}
+	}
+	threshold := float64(meCfg.ThresholdPercent) / 100.0
+	if threshold == 0 {
+		threshold = 0.7
+	}
+	previewResp, apiErr := r.server.runMissingEpisodesPreview(
+		ctx, inst,
+		threshold, meCfg.BufferHours,
+		meCfg.IncludeContinuing, meCfg.IncludeEnded, meCfg.IncludeSpecials,
+	)
+	r.server.auditScan("schedule:"+job.ID, "missingepisodes", inst, scanRunRequest{InstanceID: job.InstanceID, Action: "missingepisodes"}, nil, errMsgOf(apiErr))
+	if apiErr != nil {
+		return core.RunSummary{Status: "error"}, apiErr
+	}
+	parts := []string{
+		fmt.Sprintf("scanned %d", previewResp.SeriesScanned),
+		fmt.Sprintf("%d with gaps", previewResp.SeriesWithGaps),
+		fmt.Sprintf("%d missing episodes", previewResp.TotalMissingEpisodes),
+	}
+	chainMode := defaultMode(job.Options.RunMode, "apply")
+	if chainMode == "apply" && previewResp.SeriesWithGaps > 0 {
+		if meCfg.ActionTag {
+			seriesIDs := make([]int, 0, len(previewResp.Series))
+			for _, s := range previewResp.Series {
+				seriesIDs = append(seriesIDs, s.SeriesID)
+			}
+			tagResp, tagErr := r.server.runMissingEpisodesTag(ctx, inst, meCfg.TagName, seriesIDs, true)
+			if tagErr != nil {
+				parts = append(parts, "tag failed: "+tagErr.Message)
+			} else {
+				parts = append(parts, fmt.Sprintf("tagged %d / removed %d", tagResp.Applied, tagResp.Removed))
+			}
+		}
+		if meCfg.ActionSearch {
+			episodeIDs := make([]int, 0)
+			for _, s := range previewResp.Series {
+				for _, season := range s.Seasons {
+					for _, ep := range season.MissingEpisodes {
+						episodeIDs = append(episodeIDs, ep.EpisodeID)
+					}
+				}
+			}
+			const searchChunkSize = 500
+			triggered := 0
+			var searchErrors int
+			for i := 0; i < len(episodeIDs); i += searchChunkSize {
+				end := i + searchChunkSize
+				if end > len(episodeIDs) {
+					end = len(episodeIDs)
+				}
+				_, searchErr := r.server.runMissingEpisodesSearch(ctx, inst, episodeIDs[i:end])
+				if searchErr != nil {
+					searchErrors++
+				} else {
+					triggered += end - i
+				}
+			}
+			if searchErrors > 0 {
+				parts = append(parts, fmt.Sprintf("searched %d (%d chunk errors)", triggered, searchErrors))
+			} else if triggered > 0 {
+				parts = append(parts, fmt.Sprintf("searched %d", triggered))
+			}
+		}
+	}
+	return core.RunSummary{
+		Status:  "ok",
+		Summary: strings.Join(parts, ", "),
+		Result:  previewResp,
+	}, nil
+}
+
 // runCombinedSchedule chains discover → recover → tag → cleanup →
 // audiotags → videotags → dvdetail per JobOptions.CombinedModes.
 // Phase order mirrors the live-UI Quick fix-all flow:
@@ -563,6 +654,7 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 	includeAudioTags := false
 	includeVideoTags := false
 	includeDvDetail := false
+	includeMissingEpisodes := false
 	for _, m := range job.Options.CombinedModes {
 		switch m {
 		case core.JobModeDiscover:
@@ -577,11 +669,17 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 			includeVideoTags = true
 		case core.JobModeDvDetail:
 			includeDvDetail = true
+		case core.JobModeMissingEpisodes:
+			// Sonarr-only — gated below by appType check. Snapshot
+			// config lives on job.MissingEpisodes.
+			if appType == "sonarr" {
+				includeMissingEpisodes = true
+			}
 		}
 	}
 	if !includeDiscover && !includeRecover && !includeTag &&
-		!includeAudioTags && !includeVideoTags && !includeDvDetail {
-		return core.RunSummary{}, fmt.Errorf("combined schedule must include at least one of discover/recover/tag/audiotags/videotags/dvdetail")
+		!includeAudioTags && !includeVideoTags && !includeDvDetail && !includeMissingEpisodes {
+		return core.RunSummary{}, fmt.Errorf("combined schedule must include at least one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes")
 	}
 
 	var combined []string
@@ -810,6 +908,90 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 		}
 	}
 
+	// Missing Episodes phase — Sonarr only. Snapshot config is read off
+	// job.MissingEpisodes (per-rule snapshot, validated on save). Mirrors
+	// the QFA chain-runner logic: always preview, then conditionally tag
+	// + search based on the snapshot's ActionTag / ActionSearch flags.
+	// Preview mode short-circuits both writes — runMode='preview' keeps
+	// the whole chain read-only.
+	if includeMissingEpisodes && phaseErr == nil {
+		meCfg := job.MissingEpisodes
+		if meCfg == nil {
+			// Defensive: phase enabled but no snapshot. Treat as preview-
+			// only with sensible defaults.
+			meCfg = &core.MissingEpisodesConfig{
+				ThresholdPercent:  70,
+				BufferHours:       24,
+				IncludeContinuing: true,
+				IncludeEnded:      true,
+			}
+		}
+		threshold := float64(meCfg.ThresholdPercent) / 100.0
+		if threshold == 0 {
+			threshold = 0.7
+		}
+		previewResp, apiErr := r.server.runMissingEpisodesPreview(
+			ctx, inst,
+			threshold, meCfg.BufferHours,
+			meCfg.IncludeContinuing, meCfg.IncludeEnded, meCfg.IncludeSpecials,
+		)
+		r.server.auditScan("schedule:"+job.ID, "missingepisodes", inst, scanRunRequest{InstanceID: job.InstanceID, Action: "missingepisodes"}, nil, errMsgOf(apiErr))
+		if apiErr != nil {
+			phaseErr = apiErr
+		} else {
+			combined = append(combined, fmt.Sprintf("missingepisodes: scanned %d / %d with gaps / %d episodes",
+				previewResp.SeriesScanned, previewResp.SeriesWithGaps, previewResp.TotalMissingEpisodes))
+			combinedResult.MissingEpisodes = previewResp
+			chainMode := defaultMode(job.Options.RunMode, "apply")
+			if chainMode == "apply" && previewResp.SeriesWithGaps > 0 {
+				if meCfg.ActionTag {
+					seriesIDs := make([]int, 0, len(previewResp.Series))
+					for _, s := range previewResp.Series {
+						seriesIDs = append(seriesIDs, s.SeriesID)
+					}
+					tagResp, tagErr := r.server.runMissingEpisodesTag(ctx, inst, meCfg.TagName, seriesIDs, true)
+					if tagErr != nil {
+						combined = append(combined, "missingepisodes tag failed: "+tagErr.Message)
+					} else {
+						combined = append(combined, fmt.Sprintf("missingepisodes tag: applied %d / removed %d", tagResp.Applied, tagResp.Removed))
+					}
+				}
+				if meCfg.ActionSearch {
+					episodeIDs := make([]int, 0)
+					for _, s := range previewResp.Series {
+						for _, season := range s.Seasons {
+							for _, ep := range season.MissingEpisodes {
+								episodeIDs = append(episodeIDs, ep.EpisodeID)
+							}
+						}
+					}
+					// Sonarr SearchEpisodes is capped at 500 IDs per call.
+					// Chunk so a big backlog scan doesn't error out.
+					const searchChunkSize = 500
+					triggered := 0
+					var searchErrors int
+					for i := 0; i < len(episodeIDs); i += searchChunkSize {
+						end := i + searchChunkSize
+						if end > len(episodeIDs) {
+							end = len(episodeIDs)
+						}
+						_, searchErr := r.server.runMissingEpisodesSearch(ctx, inst, episodeIDs[i:end])
+						if searchErr != nil {
+							searchErrors++
+						} else {
+							triggered += end - i
+						}
+					}
+					if searchErrors > 0 {
+						combined = append(combined, fmt.Sprintf("missingepisodes search: triggered %d (errors on %d chunks)", triggered, searchErrors))
+					} else if triggered > 0 {
+						combined = append(combined, fmt.Sprintf("missingepisodes search: triggered %d", triggered))
+					}
+				}
+			}
+		}
+	}
+
 	if phaseErr != nil {
 		// Partial-result error path — return the error AND any phase
 		// that did succeed so the notification embed shows both the
@@ -849,15 +1031,16 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 // (Options.AutoTagsRunOnSecondary). Each is its own scan against
 // the secondary's mediaInfo; not a TmdbID-mirror.
 type combinedScheduleResult struct {
-	Tag                *scanResponse `json:"tag,omitempty"`
-	Discover           *scanResponse `json:"discover,omitempty"`
-	Recover            *scanResponse `json:"recover,omitempty"`
-	AudioTags          *scanResponse `json:"audioTags,omitempty"`
-	AudioTagsSecondary *scanResponse `json:"audioTagsSecondary,omitempty"`
-	VideoTags          *scanResponse `json:"videoTags,omitempty"`
-	VideoTagsSecondary *scanResponse `json:"videoTagsSecondary,omitempty"`
-	DvDetail           *scanResponse `json:"dvDetail,omitempty"`
-	DvDetailSecondary  *scanResponse `json:"dvDetailSecondary,omitempty"`
+	Tag                *scanResponse                  `json:"tag,omitempty"`
+	Discover           *scanResponse                  `json:"discover,omitempty"`
+	Recover            *scanResponse                  `json:"recover,omitempty"`
+	AudioTags          *scanResponse                  `json:"audioTags,omitempty"`
+	AudioTagsSecondary *scanResponse                  `json:"audioTagsSecondary,omitempty"`
+	VideoTags          *scanResponse                  `json:"videoTags,omitempty"`
+	VideoTagsSecondary *scanResponse                  `json:"videoTagsSecondary,omitempty"`
+	DvDetail           *scanResponse                  `json:"dvDetail,omitempty"`
+	DvDetailSecondary  *scanResponse                  `json:"dvDetailSecondary,omitempty"`
+	MissingEpisodes    *missingEpisodesPreviewResponse `json:"missingEpisodes,omitempty"`
 }
 
 // combinedScheduleHasAnyResult returns true when at least one phase
@@ -867,7 +1050,8 @@ func combinedScheduleHasAnyResult(r combinedScheduleResult) bool {
 	return r.Tag != nil || r.Discover != nil || r.Recover != nil ||
 		r.AudioTags != nil || r.AudioTagsSecondary != nil ||
 		r.VideoTags != nil || r.VideoTagsSecondary != nil ||
-		r.DvDetail != nil || r.DvDetailSecondary != nil
+		r.DvDetail != nil || r.DvDetailSecondary != nil ||
+		r.MissingEpisodes != nil
 }
 
 // runAutoTagOnSecondary fires runAudioTags / runVideoTags / runDvDetail

@@ -3047,8 +3047,8 @@
               <button class="btn btn-primary"
                       @click="runMissingEpisodesScan()"
                       :disabled="missingEpisodesLoading || !scanInstanceId || (!missingEpisodesConfig.includeContinuing && !missingEpisodesConfig.includeEnded)"
-                      :title="(!missingEpisodesConfig.includeContinuing && !missingEpisodesConfig.includeEnded) ? 'Enable Continuing or Ended series filter first' : ''">
-                <span x-show="!missingEpisodesLoading">Run scan</span>
+                      :title="(!missingEpisodesConfig.includeContinuing && !missingEpisodesConfig.includeEnded) ? 'Enable Continuing or Ended series filter first' : 'Preview only — no changes are made to Sonarr until you click Search or Tag in the result panel'">
+                <span x-show="!missingEpisodesLoading">Preview missing episodes</span>
                 <span x-show="missingEpisodesLoading">Scanning…</span>
               </button>
             </div>
@@ -3078,6 +3078,7 @@
                 <div style="font-size:11px;color:var(--text-secondary);margin-left:64px">Lowercase letters, digits, hyphens, underscores. Spaces auto-converted to hyphens. Start with a letter or digit.</div>
               </div>
             </div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:8px">Preview only — no changes are made to Sonarr until you click <strong>Search selected</strong> or <strong>Tag series</strong> in the result panel below.</div>
           </div>
 
           <!-- Results -->
@@ -3324,7 +3325,7 @@
        Backend: hands off to runLibraryScan once choices land in
        the standard scanModes / scanMode / scanSyncToSecondary /
        scanCleanupUnusedTags state. No new endpoint. -->
-  <div class="modal-overlay" x-show="tagRgWizard.open" x-cloak @click.self="closeTagRgWizard()" @keydown.escape.window="if (tagRgWizard.open) closeTagRgWizard()">
+  <div class="modal-overlay" x-show="tagRgWizard.open" x-cloak @keydown.escape.window="if (tagRgWizard.open) closeTagRgWizard()">
     <div class="modal" style="width:680px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0">
       <!-- Header — pinned. -->
       <div style="flex:0 0 auto;padding:18px 22px 0">
@@ -3671,7 +3672,7 @@
        seeds scanIncludeKnown + _tagRgDiscoverEnableOnAdd, then
        calls runDiscover(). Result modal pops automatically when
        scanResults.discover lands. -->
-  <div class="modal-overlay" x-show="discoverWizard.open" x-cloak @click.self="closeDiscoverWizard()" @keydown.escape.window="if (discoverWizard.open) closeDiscoverWizard()">
+  <div class="modal-overlay" x-show="discoverWizard.open" x-cloak @keydown.escape.window="if (discoverWizard.open) closeDiscoverWizard()">
     <div class="modal" style="width:680px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0">
       <div style="flex:0 0 auto;padding:18px 22px 0">
         <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px">
@@ -3867,7 +3868,7 @@
        Single-step pick-instance-and-run modal. Cleanup runs in
        preview style (lists tags with 0 usage); the result modal
        handles the per-tag delete / Delete-all step. -->
-  <div class="modal-overlay" x-show="cleanupWizardState.open" x-cloak @click.self="closeCleanupWizard()" @keydown.escape.window="if (cleanupWizardState.open) closeCleanupWizard()">
+  <div class="modal-overlay" x-show="cleanupWizardState.open" x-cloak @keydown.escape.window="if (cleanupWizardState.open) closeCleanupWizard()">
     <div class="modal" style="width:480px">
       <div class="modal-title">Find unused tags</div>
       <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px">
@@ -4025,7 +4026,7 @@
   </div>
 
   <!-- ============ GROUP ADD / EDIT MODAL ============ -->
-  <div class="modal-overlay" x-show="showGroupModal" x-cloak @click.self="closeGroupModal()">
+  <div class="modal-overlay" x-show="showGroupModal" x-cloak @keydown.escape.window="if (showGroupModal) closeGroupModal()">
     <div class="modal" style="width:520px">
       <div class="modal-title" x-text="groupForm.id ? 'Edit release group' : 'Add release group'"></div>
 
@@ -4930,6 +4931,16 @@
               <h4>What about Recent activity?</h4>
               <p>Switch to the <strong>Recent activity</strong> sub-tab on the left to see the last 100 events received per instance. Useful for verifying your Sonarr/Radarr setup is working — click <strong>Test</strong> in Connect there, then check Recent activity here for the event arriving within ~1 second. Each instance has its own logging toggle on the card; turn it off if you don't want the noise once everything's working.</p>
             </div>
+            <div class="help-section">
+              <h4>Secret + Require signature — what's the difference?</h4>
+              <p>Each webhook configuration gives you <strong>two</strong> pieces of information:</p>
+              <ul>
+                <li><strong>URL</strong> — where Sonarr/Radarr sends events. Goes in the Connect → Webhook URL field.</li>
+                <li><strong>Secret</strong> — a password that proves the event is from your Sonarr/Radarr (not a third party who somehow got hold of the URL). Goes in the Connect → Webhook <strong>Password</strong> field. Username can be anything non-empty.</li>
+              </ul>
+              <p><strong>Require signature</strong> is the switch that turns the Secret check on. With it off, resolvarr accepts any event that lands on the URL (logging unsigned events as a warning). With it on, events without the matching Secret are rejected — so even if your URL leaks (in a screenshot, a log, an old chat), an attacker can't fake events without also knowing the Secret.</p>
+              <p>Recommended setup: paste both URL and Secret into Sonarr/Radarr → click Test → verify it arrives → come back here and flip Require signature on.</p>
+            </div>
           </div>
 
           <!-- + Configure webhook lives below the help-toggle so the
@@ -5001,7 +5012,7 @@
                     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px;margin-bottom:14px">
                       <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-body)">
                         <input type="checkbox" :checked="webhookConfigs[inst.id].requireSignature" @change="toggleWebhookRequireSignature(inst.id, $event.target.checked)" style="accent-color:var(--accent-blue)">
-                        <span>Require signature <span style="color:var(--text-secondary)">— reject events without the matching Secret in Authorization: Basic header</span></span>
+                        <span>Require signature <span style="color:var(--text-secondary)">— only accept events that include the Secret. Without this, anyone who knows the webhook URL could send fake events.</span></span>
                       </label>
                     </div>
 
@@ -5219,7 +5230,7 @@
        on edit keeps the stored value, real value replaces it. Test
        Connection runs the inline-creds probe before save so the user
        can verify creds without committing to disk. -->
-  <div class="modal-overlay" x-show="qbitInstanceModal.open" x-cloak @click.self="closeQbitInstanceModal()" @keydown.escape.window="if (qbitInstanceModal.open) closeQbitInstanceModal()">
+  <div class="modal-overlay" x-show="qbitInstanceModal.open" x-cloak @keydown.escape.window="if (qbitInstanceModal.open) closeQbitInstanceModal()">
     <div class="modal" style="width:540px;max-width:95vw">
       <div class="modal-title" x-text="qbitInstanceModal.id ? 'Edit qBittorrent instance' : 'Add qBittorrent instance'"></div>
       <div class="form-group">
@@ -5318,7 +5329,7 @@
        (URL + Connect events to enable in Sonarr/Radarr). Today only
        'Enable logging' is wired; per-function checkboxes are
        placeholders for subsequent sessions. -->
-  <div class="modal-overlay" x-show="webhookWizard.open" x-cloak @click.self="closeWebhookWizard()" @keydown.escape.window="if (webhookWizard.open) closeWebhookWizard()">
+  <div class="modal-overlay" x-show="webhookWizard.open" x-cloak @keydown.escape.window="if (webhookWizard.open) closeWebhookWizard()">
     <div class="modal" style="width:680px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0">
       <div style="flex:0 0 auto;padding:18px 22px 0">
         <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px">
@@ -5427,7 +5438,8 @@
                 <span style="flex:1">
                   <span style="font-weight:500;color:var(--text-body)">Require signature</span>
                   <span style="display:block;font-size:11px;color:var(--text-secondary);margin-top:2px;line-height:1.5">
-                    Reject events without the matching Secret in the <code style="background:var(--bg-muted);padding:1px 4px;border-radius:3px">Authorization: Basic</code> header.
+                    Only accept events that include the Secret you set above. <span x-text="webhookWizard.appType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> sends it on every event as the Webhook password — if it's missing or wrong, resolvarr rejects the event. Without this on, anyone who knows your webhook URL could send fake events that look real.
+                    <br><br>
                     Turn this on <strong>after</strong> you've pasted the Secret into <span x-text="webhookWizard.appType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> → Connect and confirmed a Test event arrived.
                   </span>
                 </span>
@@ -5902,7 +5914,7 @@
             ruleEditor.fixedAction === 'videotags' ? 'Tag Video' :
             ruleEditor.fixedAction === 'dvdetail'  ? 'Tag DV Details' :
             ruleEditor.fixedAction === 'recover'   ? 'Run Recover' :
-            (ruleEditor.isQuickFix ? 'Quick fix-all' : (ruleEditor.isCreate ? 'New schedule rule' : 'Edit schedule rule'))
+            (ruleEditor.isQuickFix ? 'Quick fix-all' : (ruleEditor.isCreate ? ('New ' + (ruleEditorIsWebhook() ? 'webhook' : 'schedule') + ' rule') : ('Edit ' + (ruleEditorIsWebhook() ? 'webhook' : 'schedule') + ' rule')))
           "></div>
           <div style="font-size:12px;color:var(--text-secondary)" x-show="ruleEditor.isCreate">
             Step <span x-text="ruleEditor.step + 1"></span> of <span x-text="ruleEditorVisibleSteps().length"></span>
@@ -6021,11 +6033,19 @@
                  cleanup) follows the same rules QFA enforces. -->
             <div style="display:flex;flex-direction:column;gap:6px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
               <template x-for="fn in functionInfoList({ webhook: true })" :key="fn.id">
-                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-primary)">
+                <label
+                  :style="webhookFnDisabled(fn)
+                    ? 'display:flex;align-items:center;gap:8px;cursor:not-allowed;font-size:13px;color:var(--text-secondary);opacity:0.55'
+                    : 'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-primary)'"
+                  :title="webhookFnDisabledReason(fn)">
                   <input type="checkbox" :checked="!!editingRule.options[fn.optionFlag]"
+                         :disabled="webhookFnDisabled(fn) && !editingRule.options[fn.optionFlag]"
                          @change="webhookFnToggle(fn, $event.target.checked)"
                          style="accent-color:var(--accent-blue)">
                   <span x-text="fn.label"></span>
+                  <template x-if="webhookFnDisabled(fn)">
+                    <span style="font-size:11px;color:var(--accent-orange);margin-left:auto" x-text="'⚠ ' + webhookFnDisabledReason(fn)"></span>
+                  </template>
                 </label>
               </template>
             </div>
@@ -6829,6 +6849,12 @@
               <input type="checkbox" x-model="editingRule.audioTags.removeOrphanedTags" style="accent-color:var(--accent-blue)">
               <span>Remove orphaned audio tags on Apply <span style="color:var(--text-muted-secondary)">— </span><span style="color:var(--accent-red);font-weight:600">destructive</span><template x-if="ruleEditorIsWebhook()"><span style="color:var(--text-muted-secondary)"> · per imported file only</span></template><template x-if="!ruleEditorIsWebhook() && ruleHasSecondary() && (editingRule.options.audioTagsTarget || 'primary') === 'both'"><span style="color:var(--text-muted-secondary)"> · runs against both instances</span></template></span>
             </label>
+            <template x-if="ruleEditorIsWebhook()">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin-top:6px">
+                <input type="checkbox" x-model="editingRule.audioTags.stripOnFileDelete" style="accent-color:var(--accent-blue)">
+                <span>Strip audio tags on file delete <span style="color:var(--text-muted-secondary)">— when Radarr/Sonarr deletes the file, the matching audio tags are removed from the item. Requires On <span x-text="ruleEditor.appType === 'sonarr' ? 'Episode' : 'Movie'"></span> File Delete enabled in Connect.</span></span>
+              </label>
+            </template>
           </div>
 
           <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Per-rule allow-list — empty = "use all values"; explicit list = "only these".</div>
@@ -6947,10 +6973,17 @@
             </div>
           </template>
 
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin:6px 0 14px 0">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin:6px 0 6px 0">
             <input type="checkbox" x-model="editingRule.videoTags.removeOrphanedTags" style="accent-color:var(--accent-blue)">
             <span>Remove orphaned video tags on Apply <span style="color:var(--text-muted-secondary)">— </span><span style="color:var(--accent-red);font-weight:600">destructive</span><template x-if="ruleHasSecondary() && (editingRule.options.videoTagsTarget || 'primary') === 'both'"><span style="color:var(--text-muted-secondary)"> · runs against both instances</span></template></span>
           </label>
+
+          <template x-if="ruleEditorIsWebhook()">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin:0 0 14px 0">
+              <input type="checkbox" x-model="editingRule.videoTags.stripOnFileDelete" style="accent-color:var(--accent-blue)">
+              <span>Strip video tags on file delete <span style="color:var(--text-muted-secondary)">— when Radarr/Sonarr deletes the file, the matching video tags (resolution / codec / HDR) are removed from the item. Requires On <span x-text="ruleEditor.appType === 'sonarr' ? 'Episode' : 'Movie'"></span> File Delete enabled in Connect.</span></span>
+            </label>
+          </template>
 
           <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Per-rule allow-lists — empty bucket = "use all values"; explicit list = "only these".</div>
         </div>
@@ -7048,10 +7081,17 @@
             </div>
           </div>
 
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin:6px 0 8px 0">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin:6px 0 6px 0">
             <input type="checkbox" x-model="editingRule.dvDetail.removeOrphanedTags" style="accent-color:var(--accent-blue)">
             <span>Remove orphaned DV-detail tags on Apply <span style="color:var(--text-muted-secondary)">— </span><span style="color:var(--accent-red);font-weight:600">destructive</span><template x-if="ruleHasSecondary() && (editingRule.options.dvDetailTarget || 'primary') === 'both'"><span style="color:var(--text-muted-secondary)"> · runs against both instances</span></template></span>
           </label>
+
+          <template x-if="ruleEditorIsWebhook()">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin:0 0 8px 0">
+              <input type="checkbox" x-model="editingRule.dvDetail.stripOnFileDelete" style="accent-color:var(--accent-blue)">
+              <span>Strip DV-detail tags on file delete <span style="color:var(--text-muted-secondary)">— when Radarr deletes the movie file, the DV-detail tags (profile / layer / CM version) are removed from the movie. Requires On Movie File Delete enabled in Connect.</span></span>
+            </label>
+          </template>
 
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin:0 0 14px 0">
             <input type="checkbox" x-model="editingRule.options.bypassDvCache" style="accent-color:var(--accent-orange)">
@@ -7061,6 +7101,14 @@
           <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Requires <code>ffmpeg</code> + <code>dovi_tool</code> installed on Library scan → DV detail. Per-rule allow-lists — empty = "use all values"; explicit list = "only these". Skip cache forces re-extraction every fire; useful for occasional refresh after a <code>dovi_tool</code> upgrade, less so as a daily-cron default.</div>
         </div>
       </template>
+
+      <!-- Missing Episodes config lives inline in the Review step
+           (below) — the surface is compact enough (threshold + buffer
+           + 3 include filters + 2 action toggles + tag name) that a
+           dedicated wizard step felt redundant with the Review
+           summary card that followed it. Editing happens in Review;
+           the chain runner reads editingRule.missingEpisodes the
+           same way it reads audioTags / videoTags / dvDetail. -->
 
       <!-- ===== Step 3b — qBit Grab Rename criteria =====
            Webhook-only step. Visibility gated by ruleEditorTabVisible
@@ -7915,6 +7963,74 @@
             </div>
           </template>
 
+          <!-- ===== Missing Episodes section =====
+               Editable card — no dedicated wizard step for this phase.
+               Compact config (threshold + buffer + 3 includes + 2
+               action toggles + tag name) lives inline here so QFA + Create
+               Rule don't need a whole extra page. Bound to
+               editingRule.missingEpisodes; the chain runner + scheduler
+               runner read off the same snapshot. -->
+          <template x-if="ruleAffectsMissingEpisodes() && editingRule.missingEpisodes">
+            <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600">Missing episodes <span style="color:var(--accent-sky);font-weight:500;text-transform:none;letter-spacing:0">· Sonarr only</span></div>
+              </div>
+
+              <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px">
+                <div style="display:flex;align-items:center;gap:6px">
+                  <label style="color:var(--text-secondary)">Coverage threshold:</label>
+                  <input type="number" min="0" max="100" step="5" x-model.number="editingRule.missingEpisodes.thresholdPercent" style="width:64px;font-size:13px;padding:4px 8px">
+                  <span style="color:var(--text-secondary)">% on disk</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px">
+                  <label style="color:var(--text-secondary)" title="0 = any aired episode, 24 = standard buffer (Sonarr's own default), up to 672 = 28 days">Buffer:</label>
+                  <input type="number" min="0" max="672" x-model.number="editingRule.missingEpisodes.bufferHours" style="width:64px;font-size:13px;padding:4px 8px">
+                  <span style="color:var(--text-secondary)">hours after airing</span>
+                </div>
+              </div>
+
+              <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px;margin-top:10px">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="checkbox" x-model="editingRule.missingEpisodes.includeContinuing">
+                  <span>Include continuing</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="checkbox" x-model="editingRule.missingEpisodes.includeEnded">
+                  <span>Include ended</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Season 0 = ad-hoc specials. Skipped by default since they're rarely curated via Sonarr search.">
+                  <input type="checkbox" x-model="editingRule.missingEpisodes.includeSpecials">
+                  <span>Include specials</span>
+                </label>
+              </div>
+
+              <div style="margin-top:12px">
+                <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:6px">Action on Apply</div>
+                <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px">
+                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                    <input type="checkbox" x-model="editingRule.missingEpisodes.actionTag">
+                    <span><strong>Tag</strong> affected series</span>
+                  </label>
+                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                    <input type="checkbox" x-model="editingRule.missingEpisodes.actionSearch">
+                    <span><strong>Search</strong> for missing episodes</span>
+                  </label>
+                  <div x-show="editingRule.missingEpisodes.actionTag" style="display:flex;align-items:center;gap:6px">
+                    <label style="color:var(--text-secondary)">Tag name:</label>
+                    <input type="text"
+                           :value="editingRule.missingEpisodes.tagName"
+                           @input="editingRule.missingEpisodes.tagName = $event.target.value.toLowerCase().replace(/\s+/g, '-')"
+                           placeholder="missing-episodes"
+                           style="width:200px;font-size:13px;padding:4px 8px;font-family:ui-monospace,monospace">
+                  </div>
+                </div>
+                <div x-show="!editingRule.missingEpisodes.actionTag && !editingRule.missingEpisodes.actionSearch" style="font-size:11px;color:var(--accent-orange);margin-top:6px">
+                  ⚠ Neither Tag nor Search ticked — Apply will preview only, no writes to Sonarr.
+                </div>
+              </div>
+            </div>
+          </template>
+
         </div>
       </template>
 
@@ -8361,7 +8477,7 @@
        except when editing without touching credentials. Each credential
        input clears testPassed via @input so changing a webhook URL or
        token re-arms the requirement. -->
-  <div class="modal-overlay" x-show="showAgentModal" x-cloak @click.self="closeAgentModal()" @keydown.escape.window="closeAgentModal()">
+  <div class="modal-overlay" x-show="showAgentModal" x-cloak @keydown.escape.window="if (showAgentModal) closeAgentModal()">
     <div class="modal" style="width:560px;max-height:90vh;overflow-y:auto" x-cloak>
       <div class="modal-title" x-text="agentModal.id ? 'Edit notification agent' : 'Add notification agent'"></div>
 
