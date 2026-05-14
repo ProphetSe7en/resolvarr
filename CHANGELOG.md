@@ -2,6 +2,24 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.1-dev — Webhook history modal redesign + UX polish (2026-05-14)
+
+### What you get
+
+- **Webhook rule History is much easier to read.** Each fire is now a collapsible card showing event, item title, and a quick "X changes" / "1 error" / "no changes" badge in the header. Click anywhere on the header to expand and see what each function did, with a green ▲ for changes, gray ✓ for no-change, orange ⚠ for skipped, and red ✕ for errors.
+
+- **Grab Rename gets a from→to diff.** When a rename fires, the History row shows the old name and new name as side-by-side word lists — removed words are red and struck through, added words are green and bold. You can see at a glance exactly what the rename changed.
+
+- **Trigger reasons are in plain English.** "missing-release-group (parser rejected: multi-token)" used to be the language. Now it says "Release group missing — filename does not end with a single release-group tag like -TOLS (text after the last hyphen had spaces or dots, so it looked like part of the title — not a group)". Same translation across all six parser-reject reasons (no-hyphen, empty, multi-token, codec, split-fragment, resolution).
+
+- **Errors render in red, not green.** Adapter-emitted error strings ("instance vanished", "qBit unreachable", "DV tools not configured", and 22 more) used to render as a green ▲ "change" in the History modal. Now they show as red ✕ error rows. Single fix in the dispatcher, applies everywhere.
+
+- **Webhook rule editing.** You can now edit existing webhook rules — same full Add-rule wizard, pre-filled with current values. Previously rules could only be created and deleted.
+
+- **Webhook rule cards visually match Saved Rules cards.** Same color-coded edge bar, same chip layout, same action button row. One mental model across both pages.
+
+- **qBit Category Fix is no longer alarming when Arr did its job.** When the category swap was already done by Sonarr/Radarr by the time we checked, the message now says "skipped (category already 'tv-sonarr' — Arr completed the swap)" instead of the old "import may have failed" wording. Layer 2 is also more forgiving on minor Arr-history lag — wording explains exactly what happened.
+
 ## v0.6.0-dev — Per-bucket strip-on-delete + Missing Episodes + Webhook end-to-end (2026-05-13)
 
 ### What you get

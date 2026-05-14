@@ -741,6 +741,11 @@ function app() {
     webhookRuleHistoryOpen: false,
     webhookRuleHistoryRule: null,
     webhookRuleHistoryRefreshing: false,
+    // Expanded state for the collapsible per-run cards in the rule
+    // history modal. Keyed by `run.startedAt + ':' + idx` (same shape
+    // as the x-for :key). Reset on modal close so re-opens default to
+    // all-collapsed.
+    webhookRuleHistoryExpanded: {},
     // qBit S/E backlog scan modal — opened from the per-rule "Backlog
     // scan" button on rules carrying the qbitSeTag function. The modal
     // walks three phases: initial (Run preview) → preview loaded
@@ -10449,17 +10454,133 @@ function app() {
         cronError: '',
         nextFires: [],
       };
-      // TODO: openEditWebhookRuleModal — when an Edit button lands on
-      // the webhook rules list (currently only Pause/Resume + Delete),
-      // populate editingRule.grabRename + editingRule.qbitSe +
-      // editingRule.qbitCategoryFix from the server response so the
-      // wizard re-opens with persisted criteria. Until then existing
-      // rules can only be deleted + recreated. IMPORTANT: pass the
-      // server rule through normalizeWebhookRuleClientShape() before
-      // assigning to editingRule — legacy rules saved before the qBit
-      // Category Fix / future struct-shaped fields landed don't have
-      // those keys, and the template's :value/x-model bindings on
-      // qbitCategoryFix.qbitInstanceId would throw on undefined.
+    },
+
+    // openEditWebhookRuleModal opens the rule editor in edit-mode for
+    // an existing webhook rule. Mirror of openEditRuleModal (schedule
+    // rules) but with webhook-shape hydration:
+    //
+    //   - Server rule's `functions[]` array is unpacked into the
+    //     wizard's `options.fn*` flags (the wizard binds checkboxes
+    //     to fnTagAudio / fnTagVideo / etc., not directly to the
+    //     functions array)
+    //   - Top-level rule fields (tagSource, filterOnlyTag,
+    //     syncToInstanceId, discoverAutoEnable) are hoisted into
+    //     `options.*` so the wizard's per-step bindings see them
+    //     under the same keys as create-flow
+    //   - Snapshots (filters / audioTags / videoTags / dvDetail /
+    //     missingEpisodes / releaseGroupIds) are backfilled from
+    //     globals when nil — defence against legacy rules saved
+    //     before per-rule snapshots landed
+    //   - Struct-typed fields (grabRename / qbitSe / qbitCategoryFix)
+    //     get default-shape backfill via normalizeWebhookRuleClientShape
+    //     so x-model bindings don't throw on undefined
+    //
+    // Locks appType to the existing rule's instance type — editing a
+    // Radarr rule never exposes Sonarr instances in the dropdown
+    // (cross-type "edit" is effectively a different rule; user must
+    // delete + recreate). Same constraint openEditRuleModal applies.
+    openEditWebhookRuleModal(rule) {
+      if (!rule || !rule.id) {
+        this.showToast('Cannot edit: rule has no id', 'error');
+        return;
+      }
+      const inst = (this.instances || []).find(i => i.id === rule.instanceId);
+      if (!inst) {
+        this.showToast('Rule references a missing instance — refresh the page or fix the instance under Settings', 'error');
+        return;
+      }
+      // Deep-copy so wizard edits don't mutate the cached
+      // webhookRules entry until Save commits.
+      let copy = JSON.parse(JSON.stringify(rule));
+      // Backfill struct-typed fields (grabRename / qbitSe /
+      // qbitCategoryFix) for legacy rules that pre-date them.
+      copy = this.normalizeWebhookRuleClientShape(copy);
+      // Webhook editor uses mode='webhook' as a sentinel — the
+      // backend doesn't read it (function dispatch is via
+      // Functions[]) but the wizard's manualOnly + isWebhook gates
+      // depend on the shape.
+      copy.mode = 'webhook';
+      copy.manualOnly = true;
+      // Backfill snapshots from globals so per-step UIs always have
+      // a non-nil object to bind to. Legacy rules saved before
+      // per-rule snapshots may have nil here.
+      if (!copy.filters)         copy.filters         = this.snapshotGlobalFilters();
+      if (!copy.audioTags)       copy.audioTags       = this.snapshotGlobalAudioTags();
+      if (!copy.videoTags)       copy.videoTags       = this.snapshotGlobalVideoTags();
+      if (!copy.dvDetail)        copy.dvDetail        = this.snapshotGlobalDvDetail();
+      if (!copy.missingEpisodes) copy.missingEpisodes = this.snapshotGlobalMissingEpisodes();
+      if (!Array.isArray(copy.releaseGroupIds)) copy.releaseGroupIds = this.snapshotGlobalRGIds(copy.instanceId);
+
+      // Hoist server-shape rule fields into options.* so the
+      // wizard's per-step bindings find them under the same keys
+      // create-flow uses. Save flow at saveWebhookRuleEditor reads
+      // back from options.* and emits to the right top-level keys.
+      const fnSet = new Set((copy.functions || []).map(s => String(s)));
+      copy.options = Object.assign({
+        // Function flags — defaults match openWebhookRuleEditor.
+        fnTagReleaseGroups: false,
+        fnDiscover:         false,
+        fnTagAudio:         false,
+        fnTagVideo:         false,
+        fnTagDvDetail:      false,
+        fnRecover:          false,
+        fnSyncToSecondary:  false,
+        fnGrabRename:       false,
+        fnQbitSeTag:        false,
+        fnQbitCategoryFix:  false,
+        // Per-action shared options.
+        tagSource: '',
+        filterOnlyTag: 'lossless-web',
+        cleanupUnusedTags: false,
+        syncToSecondary: false,
+        syncToInstanceId: '',
+        discoverWriteBack: false,
+        discoverScanSecondary: false,
+        autoActivateDiscovered: false,
+        audioTagsTarget: 'primary',
+        videoTagsTarget: 'primary',
+        dvDetailTarget:  'primary',
+        recoverTarget:   'primary',
+      }, copy.options || {});
+      // Unpack functions[] → fn* flags. Server-side stores the
+      // canonical function-name strings; wizard binds checkboxes to
+      // fn* booleans. Mapping mirrors saveWebhookRuleEditor's
+      // inverse fnList.push branch.
+      copy.options.fnTagReleaseGroups = fnSet.has('tagReleaseGroups');
+      copy.options.fnDiscover         = fnSet.has('discover');
+      copy.options.fnTagAudio         = fnSet.has('tagAudio');
+      copy.options.fnTagVideo         = fnSet.has('tagVideo');
+      copy.options.fnTagDvDetail      = fnSet.has('tagDvDetail');
+      copy.options.fnRecover          = fnSet.has('recover');
+      copy.options.fnSyncToSecondary  = fnSet.has('syncToSecondary');
+      copy.options.fnGrabRename       = fnSet.has('grabRename');
+      copy.options.fnQbitSeTag        = fnSet.has('qbitSeTag');
+      copy.options.fnQbitCategoryFix  = fnSet.has('qbitCategoryFix');
+      // Hoist top-level rule fields that the wizard binds via
+      // options.*. The save flow re-emits these as top-level keys
+      // on PUT (saveWebhookRuleEditor handles the inverse mapping
+      // for tagSource / filterOnlyTag / syncToInstanceId).
+      if (typeof copy.tagSource === 'string') copy.options.tagSource = copy.tagSource;
+      if (typeof copy.filterOnlyTag === 'string') copy.options.filterOnlyTag = copy.filterOnlyTag || copy.options.filterOnlyTag;
+      if (typeof copy.syncToInstanceId === 'string') copy.options.syncToInstanceId = copy.syncToInstanceId;
+      if (typeof copy.discoverAutoEnable === 'boolean') copy.options.autoActivateDiscovered = copy.discoverAutoEnable;
+      if (typeof copy.syncSkipOrphanCleanup === 'boolean') copy.options.syncSkipOrphanCleanup = copy.syncSkipOrphanCleanup;
+
+      this.editingRule = copy;
+      this.ruleEditor = {
+        open: true,
+        isCreate: false,
+        isQuickFix: false,
+        step: 0,
+        activeTab: 'basics',
+        appType: inst.type,
+        kind: 'webhook',
+        busy: false,
+        error: '',
+        cronError: '',
+        nextFires: [],
+      };
     },
 
     // defaultWebhookRuleStructs is the single source of truth for the
@@ -11467,17 +11588,351 @@ function app() {
       return h.length > 0 ? h[h.length - 1] : null;
     },
 
+    // Returns the .card-edge variant class for a webhook rule's
+    // left-edge status strip. Mirror of scheduleEdgeClass — same
+    // colour semantics (green=ok, amber=partial, red=error,
+    // gray=never-fired) so users moving between schedule cards
+    // (Tag Library) and webhook cards (Webhooks page) get the same
+    // visual cue.
+    webhookEdgeClass(rule) {
+      const last = this.lastWebhookRun(rule);
+      if (!last) return 'gray';
+      switch (last.status) {
+        case 'ok':      return 'green';
+        case 'partial': return 'amber';
+        case 'error':   return 'red';
+        default:        return 'gray';
+      }
+    },
+
+    // Connect events a SAVED webhook rule listens on. Mirrors
+    // webhookEventsForCurrentRule but reads from a saved rule's
+    // functions[] (server-shape) instead of the editor's options.fn*
+    // (wizard-shape). Used by the rule card's "Triggers" body row
+    // for parity with schedule cards' "Next" timestamp.
+    webhookEventsForRule(rule) {
+      if (!rule) return [];
+      const fnSet = new Set((rule.functions || []).map(s => String(s)));
+      const inst = (this.instances || []).find(i => i.id === rule.instanceId);
+      const isSonarr = inst ? inst.type === 'sonarr' : false;
+      const bucketStripOnDelete =
+        (rule.audioTags && rule.audioTags.stripOnFileDelete) ||
+        (rule.videoTags && rule.videoTags.stripOnFileDelete) ||
+        (rule.dvDetail && rule.dvDetail.stripOnFileDelete);
+      return this.webhookEventsForFunctions(fnSet, isSonarr, { bucketStripOnDelete });
+    },
+
+    // Parse a webhook rule-run summary string into structured per-
+    // function rows for the history modal. Summary format from
+    // buildWebhookRuleRun is "fn1: result1; fn2: result2; ..." where
+    // each result MAY have a trailing ` (detail text)` block. We
+    // split on '; ' for the outer separator and on the FIRST ' (' for
+    // result-vs-detail — paren-balanced enough for every shape the
+    // dispatcher emits today (nested parens like "movie tmdbId=X not
+    // in Radarr (Remux) library" survive intact because we keep
+    // everything after the first ' (' minus a trailing ')').
+    parseRuleRunSummary(summary) {
+      if (!summary || typeof summary !== 'string') return [];
+      const out = [];
+      const pieces = summary.split('; ');
+      for (const piece of pieces) {
+        const trimmed = piece.trim();
+        if (!trimmed) continue;
+        const colonIdx = trimmed.indexOf(': ');
+        if (colonIdx === -1) {
+          out.push({ fn: '', result: trimmed, detail: '', status: 'unknown' });
+          continue;
+        }
+        const fn = trimmed.slice(0, colonIdx);
+        const after = trimmed.slice(colonIdx + 2);
+        const parenIdx = after.indexOf(' (');
+        let result, detail;
+        if (parenIdx === -1) {
+          result = after;
+          detail = '';
+        } else {
+          result = after.slice(0, parenIdx);
+          detail = after.slice(parenIdx + 2);
+          if (detail.endsWith(')')) detail = detail.slice(0, -1);
+        }
+        // Status is derived from the raw result string (still carries
+        // the "error: " marker if the dispatcher prefixed one). Then
+        // strip that marker from the display version — the red ✕ icon
+        // + red chip background convey "error" without the user
+        // needing to read the word twice.
+        const status = this.webhookFnResultStatus(result);
+        let displayResult = result;
+        if (status === 'error' && /^error:\s*/i.test(displayResult)) {
+          displayResult = displayResult.replace(/^error:\s*/i, '');
+        }
+        // Grab Rename gets a special structured render in the history
+        // modal — the raw "renamed \"from\" → \"to\" (triggers: ...)"
+        // is too long for a single chip and the trigger labels are
+        // jargon. Precompute parsed names + diff tokens + humanized
+        // triggers so the template can render them as a compact diff
+        // without doing regex work on every Alpine reactivity tick.
+        let grabRename = null;
+        if (fn === 'grabRename' && status === 'change') {
+          const names = this.parseGrabRenameNames(result);
+          if (names) {
+            grabRename = {
+              from: names.from,
+              to: names.to,
+              triggers: this.parseGrabRenameTriggers(detail).map(t => this.humanizeGrabRenameTrigger(t)),
+              diff: this.grabRenameDiffTokens(names.from, names.to),
+            };
+          }
+        }
+        out.push({
+          fn,
+          result: displayResult,
+          detail,
+          status,
+          grabRename,
+        });
+      }
+      return out;
+    },
+
+    // Classify a result-prefix into a status bucket so the modal can
+    // pick the right icon + color. Kept in sync with the prefixes the
+    // dispatcher actually emits (recover.go / discover.go / tag_*.go /
+    // sync.go / file_delete.go / grab_rename.go / qbit_*.go).
+    webhookFnResultStatus(result) {
+      const r = (result || '').toLowerCase().trim();
+      if (!r) return 'unknown';
+      if (r.startsWith('skipped')) return 'skipped';
+      if (r.startsWith('failed') || r.startsWith('error') || r.includes('err:')) return 'error';
+      if (r.startsWith('no change') || r.startsWith('no diff') || r === 'noop') return 'noop';
+      if (r.startsWith('+')) return 'change-add';
+      if (r.startsWith('-')) return 'change-remove';
+      if (r.startsWith('renamed') || r.startsWith('changed') || r.startsWith('applied') ||
+          r.startsWith('mirrored') || r.startsWith('tagged') || r.startsWith('cleaned') ||
+          r.startsWith('stripped') || r.startsWith('recovered') || r.startsWith('queued') ||
+          r.startsWith('discovered')) return 'change';
+      return 'change';
+    },
+
+    // Pretty-print a function id for the history modal. Falls back to
+    // the raw id if we hit something un-mapped (defensive — a new
+    // function added on the backend will still render, just without
+    // a friendly label).
+    webhookFnDisplayName(fn) {
+      const map = {
+        recover: 'Recover',
+        discover: 'Discover',
+        tagReleaseGroups: 'Tag quality releases',
+        tagAudio: 'Tag Audio',
+        tagVideo: 'Tag Video',
+        tagDvDetail: 'Tag DV Detail',
+        syncToSecondary: 'Sync to secondary',
+        grabRename: 'Grab Rename',
+        qbitSeTag: 'qBit S/E tag',
+        qbitCategoryFix: 'qBit Category Fix',
+        fileDeleteClean: 'File-delete strip',
+        autoStripTagRgOnDelete: 'Auto-strip on delete',
+      };
+      return map[fn] || fn || '(unknown)';
+    },
+
+    // Icon character per status bucket. Plain unicode so we don't add
+    // an icon-font dependency. ▲ = something changed, ✓ = checked and
+    // OK / no diff, ⚠ = skipped with a reason, ✕ = error.
+    webhookFnResultIcon(status) {
+      switch (status) {
+        case 'change': return '▲';      // ▲
+        case 'change-add': return '▲';  // ▲
+        case 'change-remove': return '▼'; // ▼
+        case 'noop': return '✓';        // ✓
+        case 'skipped': return '⚠';     // ⚠
+        case 'error': return '✕';       // ✕
+        default: return '·';            // ·
+      }
+    },
+
+    // Background + text color tokens for each status. Returns an
+    // object that Alpine binds via :style — values come from the
+    // existing tokens.css palette so dark/light themes stay aligned.
+    // Mirror .pill.* mappings in components.css: green/red use alpha-,
+    // gray uses bg-muted (no alpha-gray exists), amber maps to orange.
+    webhookFnResultColors(status) {
+      switch (status) {
+        case 'change':
+        case 'change-add':
+          return { bg: 'var(--alpha-green)', fg: 'var(--accent-green)' };
+        case 'change-remove':
+          return { bg: 'var(--alpha-orange)', fg: 'var(--accent-orange)' };
+        case 'noop':
+          return { bg: 'var(--bg-muted)', fg: 'var(--text-secondary)' };
+        case 'skipped':
+          return { bg: 'var(--alpha-orange)', fg: 'var(--accent-orange)' };
+        case 'error':
+          return { bg: 'var(--alpha-red)', fg: 'var(--accent-red)' };
+        default:
+          return { bg: 'var(--bg-muted)', fg: 'var(--text-muted-secondary)' };
+      }
+    },
+
+    // ---- Grab Rename — special history-row helpers ---------------
+    //
+    // Grab Rename's Summary shape from webhook_grab_rename.go is:
+    //   renamed "<from>" → "<to>" (triggers: <reason1>, <reason2>, ...)
+    // The generic chip renderer would put the whole thing in a 200+
+    // char green pill — too loud, hard to scan. These helpers tear
+    // it apart so the modal can render a compact `renamed` chip + a
+    // plain-language trigger list + a token-level from→to diff.
+
+    // Pulls "from" + "to" out of "renamed \"<from>\" → \"<to>\"".
+    // Returns null on shape mismatch (legacy / unexpected) so the
+    // template falls back to the generic chip layout.
+    parseGrabRenameNames(result) {
+      if (!result || typeof result !== 'string') return null;
+      const m = result.match(/^renamed\s+"([^"]*)"\s+→\s+"([^"]*)"\s*$/);
+      if (!m) return null;
+      return { from: m[1], to: m[2] };
+    },
+
+    // Pulls the trigger reason list out of detail "triggers: a, b, c".
+    // Reasons can themselves contain ", " inside parens (e.g.
+    // "missing-release-group (parser rejected: multi-token)") so we
+    // split on top-level commas only — tiny depth-counter walk.
+    parseGrabRenameTriggers(detail) {
+      if (!detail || typeof detail !== 'string') return [];
+      const m = detail.match(/^triggers:\s*(.+)$/);
+      if (!m) return [];
+      const out = [];
+      let depth = 0, cur = '';
+      for (const ch of m[1]) {
+        if (ch === '(') depth++;
+        else if (ch === ')') depth = Math.max(0, depth - 1);
+        if (ch === ',' && depth === 0) {
+          if (cur.trim()) out.push(cur.trim());
+          cur = '';
+        } else {
+          cur += ch;
+        }
+      }
+      if (cur.trim()) out.push(cur.trim());
+      return out;
+    },
+
+    // Translate one raw trigger label into plain language. The label
+    // vocabulary lives in evaluateGrabRenameTriggers
+    // (webhook_grab_rename.go) — keep this map in sync when new
+    // triggers are added. Unknown labels render verbatim so we never
+    // hide a reason from the user.
+    humanizeGrabRenameTrigger(t) {
+      if (!t) return '';
+      if (t === 'always-rename') return 'Always-rename setting is on';
+      let m = t.match(/^missing-release-group \(parser rejected: (.+)\)$/);
+      if (m) {
+        // The user-facing phrasing here matters — "multi-token" /
+        // "split-fragment" are parser-internal vocab. What the user
+        // wants to know: "is my filename actually missing a -RG
+        // suffix?" — so every reason explains the WHY in terms of
+        // what the parser saw + what shape a valid RG would take.
+        const reasonMap = {
+          'no-hyphen': 'filename has no hyphen at all, so there is no "-RG" suffix to read',
+          'empty': 'filename ends with a hyphen and nothing after it',
+          'multi-token': 'filename does not end with a single release-group tag like "-TOLS" (text after the last hyphen had spaces or dots, so it looked like part of the title — not a group)',
+          'codec': 'text after the last hyphen looked like a codec (h264 / h265), not a release-group',
+          'split-fragment': 'text after the last hyphen looked like part of a hyphenated token (DL from WEB-DL, HD from DTS-HD) — not a real release-group',
+          'resolution': 'text after the last hyphen looked like a resolution (1080p / 2160p), not a release-group',
+        };
+        return 'Release group missing — ' + (reasonMap[m[1]] || m[1]);
+      }
+      m = t.match(/^missing-release-group \(parsed="(.*)" expected="(.*)"\)$/);
+      if (m) return 'Release group mismatch — filename has "' + m[1] + '", grab said "' + m[2] + '"';
+      m = t.match(/^movie-version: (.+)$/);
+      if (m) return 'Edition / version tokens missing: ' + m[1].split('/').join(', ');
+      m = t.match(/^source: (.+)$/);
+      if (m) return 'Source tokens missing: ' + m[1].split('/').join(', ');
+      m = t.match(/^audio: (.+)$/);
+      if (m) return 'Audio tokens missing: ' + m[1].split('/').join(', ');
+      if (t === 'scene-stripped (rg not a known scene group)') {
+        return 'Looks scene-stripped (release group is not a known scene group)';
+      }
+      m = t.match(/^custom: (.+)$/);
+      if (m) return 'Custom tokens missing: ' + m[1].split('/').join(', ');
+      return t;
+    },
+
+    // Token-level set diff between two names. Tokens unique to `from`
+    // are flagged removed (rendered red + strike-through), tokens
+    // unique to `to` are flagged added (rendered green + bold). Common
+    // tokens stay neutral. Case-insensitive comparison so "DV" vs "dv"
+    // reads as same. Order is preserved so the line still reads as
+    // the original name.
+    grabRenameDiffTokens(from, to) {
+      const fromTokens = (from || '').split(/\s+/).filter(Boolean);
+      const toTokens = (to || '').split(/\s+/).filter(Boolean);
+      const fromSet = new Set(fromTokens.map(t => t.toLowerCase()));
+      const toSet = new Set(toTokens.map(t => t.toLowerCase()));
+      return {
+        from: fromTokens.map(t => ({ text: t, removed: !toSet.has(t.toLowerCase()) })),
+        to: toTokens.map(t => ({ text: t, added: !fromSet.has(t.toLowerCase()) })),
+      };
+    },
+
     // Open the rule-fire history modal for this rule. Binds to the
     // already-loaded rule object so re-entry of the modal post-fire
     // (after Refresh) shows fresh entries. closeWebhookRuleHistory
     // is the inverse.
     openWebhookRuleHistory(rule) {
       this.webhookRuleHistoryRule = rule;
+      this.webhookRuleHistoryExpanded = {};
       this.webhookRuleHistoryOpen = true;
     },
     closeWebhookRuleHistory() {
       this.webhookRuleHistoryOpen = false;
       this.webhookRuleHistoryRule = null;
+      this.webhookRuleHistoryExpanded = {};
+    },
+
+    // Toggle expand/collapse for one run card. Reassigns the object
+    // so Alpine's reactivity picks up the change reliably (deleting a
+    // prop in-place is tracked by the Proxy but reassigning is the
+    // belt-and-braces version).
+    toggleWebhookRuleRun(key) {
+      const next = { ...this.webhookRuleHistoryExpanded };
+      if (next[key]) delete next[key]; else next[key] = true;
+      this.webhookRuleHistoryExpanded = next;
+    },
+
+    // Tally per-status counts from the parsed summary so the
+    // collapsed card header can show "3 changes" / "1 error" / "no
+    // changes" at a glance. Errors are tracked separately so they
+    // can shout louder than mere changes.
+    webhookRuleRunCounts(run) {
+      const rows = this.parseRuleRunSummary(run && run.summary);
+      let changes = 0, errors = 0, skipped = 0, noop = 0;
+      for (const r of rows) {
+        if (r.status === 'error') errors++;
+        else if (r.status === 'change' || r.status === 'change-add' || r.status === 'change-remove') changes++;
+        else if (r.status === 'skipped') skipped++;
+        else if (r.status === 'noop') noop++;
+      }
+      return { changes, errors, skipped, noop, total: rows.length };
+    },
+
+    // Single chip text for the collapsed header. Errors-first so the
+    // user notices them before the change count. "no changes" is the
+    // catch-all for runs where every function was skipped or noop.
+    webhookRuleRunHeadlineLabel(run) {
+      const c = this.webhookRuleRunCounts(run);
+      if (c.errors > 0) return c.errors === 1 ? '1 error' : c.errors + ' errors';
+      if (c.changes > 0) return c.changes === 1 ? '1 change' : c.changes + ' changes';
+      return 'no changes';
+    },
+
+    // Color bucket for the headline chip — mirrors webhookFnResult
+    // Colors so the same green/red/gray vocabulary applies at the
+    // card level.
+    webhookRuleRunHeadlineColors(run) {
+      const c = this.webhookRuleRunCounts(run);
+      if (c.errors > 0) return { bg: 'var(--alpha-red)', fg: 'var(--accent-red)' };
+      if (c.changes > 0) return { bg: 'var(--alpha-green)', fg: 'var(--accent-green)' };
+      return { bg: 'var(--bg-muted)', fg: 'var(--text-secondary)' };
     },
 
     // Re-fetch /api/webhook-rules so a freshly-fired run shows up

@@ -149,16 +149,12 @@ func (s *Server) dispatchQbitCategoryFix(
 			break
 		}
 	}
-	if importedEvent == nil {
-		// Exhausted the retry budget. Either the import really failed
-		// (rejected, blocked) or Arr is severely lagged. Either way,
-		// safe behaviour is to leave qBit alone — the file isn't in
-		// the library, the pre-import category is correct.
-		return functionResult{
-			Function: core.WebhookFnQbitCategoryFix, OK: true,
-			Summary: "skipped (no import-confirmation event in Arr history after retry budget — import may have failed or Arr is heavily lagged)",
-		}
-	}
+	// historyConfirmed = "Arr's history showed downloadFolderImported /
+	// episodeFileImported within the retry budget". Even when this is
+	// false we proceed to Layer 3 — qBit's own state is the real
+	// answer to "did the import happen and was the category swapped?"
+	// The history walk is supplementary, not gating.
+	historyConfirmed := importedEvent != nil
 
 	// Resolve pre/post categories — live fetch (cached 5min) with
 	// snapshot fallback. Empty / equal values short-circuit before
@@ -213,21 +209,39 @@ func (s *Server) dispatchQbitCategoryFix(
 			Summary: fmt.Sprintf("skipped (torrent hash %s removed from qBit before fix)", ed.DownloadID),
 		}
 	}
-	// Layer 3b — category already correct? Two subcases:
+	// Layer 3b — category already correct? Three subcases (state-based,
+	// independent of whether history-walk confirmed import — qBit's
+	// current state is the most reliable signal of what actually
+	// happened):
 	//   - matches post-import: Arr did its job, no-op.
 	//   - matches neither pre- nor post-import: user customised the
 	//     category manually; don't override.
+	//   - still on pre-import: candidate for swap, but only if history
+	//     confirmed the import (defensive — without confirmation we
+	//     can't know whether to swap or wait).
 	currentCat := torrent.Category
 	if strings.EqualFold(currentCat, postCat) {
 		return functionResult{
 			Function: core.WebhookFnQbitCategoryFix, OK: true,
-			Summary: fmt.Sprintf("skipped (category already %q — Arr did its job)", currentCat),
+			Summary: fmt.Sprintf("skipped (category already %q — Arr completed the swap)", currentCat),
 		}
 	}
 	if !strings.EqualFold(currentCat, preCat) {
 		return functionResult{
 			Function: core.WebhookFnQbitCategoryFix, OK: true,
 			Summary: fmt.Sprintf("skipped (category %q matches neither pre %q nor post %q — leaving user-set value alone)", currentCat, preCat, postCat),
+		}
+	}
+	// Pre-import category but no history confirmation. Skip with a
+	// state-aware message instead of the old alarming "import may have
+	// failed" text — the Connect Download event itself is import-
+	// confirmation, so "import failed" was misleading. Most common
+	// reasons: Arr's history INSERT lagged past our 10s budget, OR
+	// Arr's history endpoint is slow / lagged on this instance.
+	if !historyConfirmed {
+		return functionResult{
+			Function: core.WebhookFnQbitCategoryFix, OK: true,
+			Summary: fmt.Sprintf("skipped (qBit still on pre-import category %q but Arr history-walk didn't confirm the downloadFolderImported event within 10s — likely Arr-history-lag, re-check qBit manually if this persists)", currentCat),
 		}
 	}
 
