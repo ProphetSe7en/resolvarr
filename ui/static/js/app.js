@@ -1006,6 +1006,24 @@ function app() {
     // toast
     toasts: [], _toastSeq: 0,
 
+    // ---- Custom confirm dialog (replaces browser window.confirm) ----
+    //
+    // The browser-native confirm() is jarring against the styled UI
+    // and blocks the event loop. Single shared modal driven by this
+    // state — call this.confirmDialog({...}) from anywhere; it
+    // returns a Promise<boolean> that resolves true on Confirm,
+    // false on Cancel / Escape / backdrop-click on a non-destructive
+    // dialog.
+    confirmModal: {
+      open: false,
+      title: '',
+      message: '',
+      confirmText: 'Confirm',
+      cancelText: 'Cancel',
+      kind: 'default',     // 'default' | 'danger' | 'warning'
+      _resolve: null,
+    },
+
     // apiFetch wraps window.fetch to handle two cross-cutting concerns:
     //
     // (1) CSRF — attach X-CSRF-Token header to every same-origin API call.
@@ -1704,7 +1722,12 @@ function app() {
 
     async doRotateQbitWebhookSecret() {
       if (!this.qbitWebhookInstance) return;
-      if (!confirm('Rotate the webhook secret?\n\nThe old secret stops working immediately. If qBit was auto-configured, the new secret is pushed there too — but if that push fails (qui block / network), you will need to manually update qBit\'s autorun field with the new curl.')) return;
+      if (!await this.confirmDialog({
+        title:       'Rotate the webhook secret?',
+        message:     'The old secret stops working immediately. If qBit was auto-configured, the new secret is pushed there too — but if that push fails (qui block / network), you will need to manually update qBit\'s autorun field with the new curl.',
+        confirmText: 'Rotate',
+        kind:        'warning',
+      })) return;
       this.qbitWebhookActionInFlight = true;
       try {
         const r = await this.apiFetch('/api/qbit-instances/' + this.qbitWebhookInstance.id + '/webhook/rotate-secret', { method: 'POST' });
@@ -1743,9 +1766,14 @@ function app() {
       if (!this.qbitWebhookInstance) return;
       const hadBackup = !!((this.qbitWebhookData || {}).qbitState && this.qbitWebhookInstance.previousAutorunBackup);
       const msg = hadBackup
-        ? 'Reset qBit autorun?\n\nResolvarr will restore the value qBit had before you clicked Configure, then forget the backup. The hook stops firing.'
-        : 'Reset qBit autorun?\n\nResolvarr will clear qBit\'s autorun field and disable it (no previous value to restore). The hook stops firing.';
-      if (!confirm(msg)) return;
+        ? 'Resolvarr will restore the value qBit had before you clicked Configure, then forget the backup. The hook stops firing.'
+        : 'Resolvarr will clear qBit\'s autorun field and disable it (no previous value to restore). The hook stops firing.';
+      if (!await this.confirmDialog({
+        title:       'Reset qBit autorun?',
+        message:     msg,
+        confirmText: 'Reset',
+        kind:        'warning',
+      })) return;
       this.qbitWebhookActionInFlight = true;
       try {
         const r = await this.apiFetch('/api/qbit-instances/' + this.qbitWebhookInstance.id + '/webhook/reset', { method: 'POST' });
@@ -3082,8 +3110,9 @@ function app() {
       const instType = this.scanResults.discover.instance.type;
       this.scanDiscoverAdding = true;
       let added = 0;
-      let failed = '';
-      const succeeded = [];
+      let skipped = 0;       // already-existing groups — non-fatal
+      let failed = '';       // first non-skip failure stops the loop
+      const succeeded = [];  // includes skipped — both prune from visible list
       try {
         const bySearch = {};
         for (const d of this.scanResults.discover.discovered) bySearch[d.search] = d;
@@ -3121,6 +3150,23 @@ function app() {
             const body = await resp.text();
             let msg = body;
             try { msg = JSON.parse(body).error || body; } catch {}
+            // 409 with "tag name already exists" is the "already in
+            // your Active list" case — non-fatal. Skip + continue
+            // so a bulk Add-all doesn't abort just because one of
+            // the discovered groups overlaps with what you already
+            // have. Other 409 reasons (filter-only schedule
+            // collision) and any non-409 stay fatal.
+            const isAlreadyExists = resp.status === 409 && /already exists|already used/i.test(msg || '');
+            if (isAlreadyExists) {
+              skipped++;
+              succeeded.push(search); // prune from visible list — it IS in Active now
+              if (this.scanDiscoverSelected[search]) {
+                const sel = { ...this.scanDiscoverSelected };
+                delete sel[search];
+                this.scanDiscoverSelected = sel;
+              }
+              continue;
+            }
             failed = `${search}: ${msg || ('HTTP ' + resp.status)}`;
             break;
           }
@@ -3134,10 +3180,10 @@ function app() {
           succeeded.push(search);
           added++;
         }
-        if (added > 0) {
-          // Prune the just-added entries from the visible discover list so
-          // the user doesn't see a "+ Add" button next to a group already
-          // in Active (which would 409 on a second click). Match by search
+        if (succeeded.length > 0) {
+          // Prune the just-added (and just-skipped) entries from the
+          // visible discover list so the user doesn't see a "+ Add"
+          // button next to a group already in Active. Match by search
           // string — discover keys discovered groups by raw RG (case
           // preserved from the first sample).
           if (this.scanResults.discover && Array.isArray(this.scanResults.discover.discovered)) {
@@ -3148,8 +3194,16 @@ function app() {
               this.scanResults.discover.totals.discovered = this.scanResults.discover.discovered.length;
             }
           }
+          if (added > 0) await this.loadGroups();
+        }
+        // Toast — combines added + skipped counts so the user sees
+        // the full picture in one message.
+        if (added > 0 && skipped > 0) {
+          this.showToast(`Added ${added} group${added === 1 ? '' : 's'} (${skipped} already in Active list — skipped)`, 'success');
+        } else if (added > 0) {
           this.showToast(`Added ${added} group${added === 1 ? '' : 's'}`, 'success');
-          await this.loadGroups();
+        } else if (skipped > 0 && !failed) {
+          this.showToast(`All ${skipped} group${skipped === 1 ? ' was' : 's were'} already in Active list — nothing to add`, '');
         }
         if (failed) {
           this.scanError = `Add failed: ${failed}`;
@@ -3879,7 +3933,11 @@ function app() {
       const sel = this.missingEpisodesSelected || {};
       const ids = Object.keys(sel).filter(k => sel[k]).map(k => Number(k));
       if (ids.length === 0) return;
-      if (!confirm('Trigger Sonarr search for ' + ids.length + ' episodes? Sonarr will queue + throttle the search calls itself.')) return;
+      if (!await this.confirmDialog({
+        title:       'Trigger Sonarr search?',
+        message:     'Trigger Sonarr search for ' + ids.length + ' episodes? Sonarr will queue + throttle the search calls itself.',
+        confirmText: 'Trigger search',
+      })) return;
       await this._missingEpisodesSearch(ids);
     },
     async missingEpisodesSearchOne(episodeID) {
@@ -3915,7 +3973,11 @@ function app() {
         this.showToast('Tag name cannot be empty', 'error');
         return;
       }
-      if (!confirm('Tag ' + seriesIDs.length + ' series with "' + tagName + '"? Series that currently carry this tag but are no longer flagged will have it removed automatically.')) return;
+      if (!await this.confirmDialog({
+        title:       'Tag ' + seriesIDs.length + ' series?',
+        message:     'Tag ' + seriesIDs.length + ' series with "' + tagName + '". Series that currently carry this tag but are no longer flagged will have it removed automatically.',
+        confirmText: 'Tag',
+      })) return;
       this.missingEpisodesApplying = true;
       try {
         const res = await this.apiFetch('/api/scan/missing-episodes/tag', {
@@ -4271,7 +4333,7 @@ function app() {
     // Confirm + execute token rotation. New URL means the user has
     // to update Sonarr/Radarr's Connect entry; warn explicitly so
     // they don't lose the previous URL accidentally.
-    confirmRegenerateWebhookToken(instanceId, name) {
+    async confirmRegenerateWebhookToken(instanceId, name) {
       const cfg = this.webhookConfigs[instanceId];
       const wasConfigured = !!(cfg && cfg.token);
       const arrName = (this.instances.find(i => i.id === instanceId) || {}).type === 'sonarr' ? 'Sonarr' : 'Radarr';
@@ -4280,9 +4342,17 @@ function app() {
       // know they'll need to re-paste the new Secret into Arr's
       // Connect password field too.
       const msg = wasConfigured
-        ? 'Generate a new webhook URL AND new Secret for "' + name + '"?\n\nThe current URL will stop working immediately. You\'ll need to paste BOTH the new URL and the new Secret into ' + arrName + ' → Settings → Connect → your Webhook (Secret goes in the password field).'
-        : 'Generate a webhook URL + Secret for "' + name + '"?';
-      if (!confirm(msg)) return;
+        ? 'The current URL will stop working immediately. You\'ll need to paste BOTH the new URL and the new Secret into ' + arrName + ' → Settings → Connect → your Webhook (Secret goes in the password field).'
+        : 'A unique webhook URL + Secret will be generated for ' + name + '.';
+      const title = wasConfigured
+        ? 'Generate a new webhook URL AND new Secret for "' + name + '"?'
+        : 'Generate webhook URL for "' + name + '"?';
+      if (!await this.confirmDialog({
+        title:       title,
+        message:     msg,
+        confirmText: wasConfigured ? 'Rotate' : 'Generate',
+        kind:        wasConfigured ? 'warning' : 'default',
+      })) return;
       this.regenerateWebhookToken(instanceId);
     },
 
@@ -4326,13 +4396,17 @@ function app() {
     // ability to reach us. Recent activity events are NOT wiped —
     // they're keyed by instance ID, not token, and the user has a
     // separate Clear log button if they want both.
-    confirmDeleteWebhook(instanceId, name) {
+    async confirmDeleteWebhook(instanceId, name) {
       const arr = (this.instances.find(i => i.id === instanceId) || {}).type === 'sonarr' ? 'Sonarr' : 'Radarr';
-      const msg = 'Remove the webhook for "' + name + '"?\n\n' +
-        'The current URL will stop working immediately. To reconfigure later you\'ll need to:\n' +
+      const msg = 'The current URL will stop working immediately. To reconfigure later you\'ll need to:\n' +
         '  1. Generate a new webhook here.\n' +
         '  2. Update the URL in ' + arr + ' → Settings → Connect, or remove the Connect entry there.';
-      if (!confirm(msg)) return;
+      if (!await this.confirmDialog({
+        title:       'Remove the webhook for "' + name + '"?',
+        message:     msg,
+        confirmText: 'Remove',
+        kind:        'danger',
+      })) return;
       this.deleteWebhook(instanceId);
     },
 
@@ -4387,13 +4461,18 @@ function app() {
     // Confirm + clear the per-instance log. Idempotent on the
     // server but the confirm step matches the rest of the
     // destructive-action UX (delete tag, delete instance, etc.).
-    confirmClearWebhookEvents(instanceId) {
+    async confirmClearWebhookEvents(instanceId) {
       if (!instanceId) return;
       const events = this.webhookEvents[instanceId] || [];
       if (events.length === 0) return;
       const inst = this.instances.find(i => i.id === instanceId);
       const name = inst ? inst.name : 'this instance';
-      if (!confirm('Clear ' + events.length + ' logged event(s) for "' + name + '"?')) return;
+      if (!await this.confirmDialog({
+        title:       'Clear logged events?',
+        message:     'Clear ' + events.length + ' logged event(s) for "' + name + '". The events are also removed from the on-disk log file.',
+        confirmText: 'Clear',
+        kind:        'danger',
+      })) return;
       this.clearWebhookEventsApi(instanceId);
     },
 
@@ -6770,6 +6849,46 @@ function app() {
       }, 8000);
     },
 
+    // confirmDialog — Promise<boolean> wrapper around the shared
+    // confirm-modal. Drop-in replacement for window.confirm():
+    //
+    //   if (!await this.confirmDialog({ title: 'Delete?', message: '...' })) return;
+    //
+    // Options: { title, message, confirmText, cancelText, kind }.
+    // 'kind' is 'default' | 'danger' | 'warning' — drives the
+    // Confirm-button colour. Default cancelText is 'Cancel'.
+    //
+    // Returns the previous Promise's resolution as false if a
+    // second confirmDialog call comes in while one is open
+    // (defensive — shouldn't happen with proper UI gating).
+    confirmDialog(opts) {
+      // Resolve any in-flight prompt as Cancel before opening a new
+      // one to avoid orphaned promises.
+      if (this.confirmModal.open && this.confirmModal._resolve) {
+        try { this.confirmModal._resolve(false); } catch (_) { /* noop */ }
+      }
+      return new Promise((resolve) => {
+        this.confirmModal = {
+          open:        true,
+          title:       opts && opts.title ? String(opts.title) : 'Are you sure?',
+          message:     opts && opts.message ? String(opts.message) : '',
+          confirmText: opts && opts.confirmText ? String(opts.confirmText) : 'Confirm',
+          cancelText:  opts && opts.cancelText ? String(opts.cancelText) : 'Cancel',
+          kind:        opts && opts.kind ? String(opts.kind) : 'default',
+          _resolve:    resolve,
+        };
+      });
+    },
+
+    // Helpers wired by the confirm-modal template.
+    _resolveConfirmDialog(value) {
+      const r = this.confirmModal._resolve;
+      this.confirmModal = { open: false, title: '', message: '', confirmText: 'Confirm', cancelText: 'Cancel', kind: 'default', _resolve: null };
+      if (r) r(value);
+    },
+    confirmDialogOk()     { this._resolveConfirmDialog(true); },
+    confirmDialogCancel() { this._resolveConfirmDialog(false); },
+
     // Manual dismiss — wired to the × button on every toast row.
     // Filters by id so dismissing one toast doesn't disturb others
     // that happen to be showing in the stack.
@@ -6856,7 +6975,12 @@ function app() {
     },
 
     async deleteInstance(inst) {
-      if (!confirm(`Delete "${inst.name}"?`)) return;
+      if (!await this.confirmDialog({
+        title:       `Delete "${inst.name}"?`,
+        message:     'Removes the Sonarr/Radarr connection from resolvarr. Webhooks, rules, and schedules tied to this instance will lose their link.',
+        confirmText: 'Delete',
+        kind:        'danger',
+      })) return;
       try {
         const r = await this.apiFetch(`/api/instances/${inst.id}`, { method: 'DELETE' });
         if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -11144,6 +11268,31 @@ function app() {
       // 'review' is always last; others share visibility with their tab.
       return this.ruleEditorSteps.filter(s => s === 'review' || s === 'basics' || this.ruleEditorTabVisible(s));
     },
+    // ruleEditorStepLabel — single source of truth for step labels in
+    // the wizard's progress strip. Without this, the inline ternary
+    // chain in the template missed grabrename / qbitse / qbitcategoryfix
+    // (they fell through to "Review"), so on Sonarr where multiple
+    // qBit-related steps follow each other the user saw four "Review"
+    // labels in a row.
+    ruleEditorStepLabel(step) {
+      // Match the labels used in ruleEditorTabs[] so wizard-mode
+      // progress strip and edit-mode tab strip read identically for
+      // the same section.
+      const labels = {
+        basics:          'Basics',
+        filters:         'Filters',
+        rg:              'Release Groups',
+        audio:           'Audio tags',
+        video:           'Video tags',
+        dvdetail:        'DV detail',
+        grabrename:      'qBit Grab Rename',
+        qbitse:          'qBit S/E tag',
+        qbitcategoryfix: 'qBit category fix',
+        schedule:        'Schedule',
+        review:          'Review',
+      };
+      return labels[step] || step;
+    },
     ruleEditorJumpToTab(tabId) { if (this.ruleEditorTabVisible(tabId)) this.ruleEditor.activeTab = tabId; },
 
     // ruleEditorStepBlockedReason returns null when the current step
@@ -12260,7 +12409,12 @@ function app() {
     // confirm via the browser dialog for now — a styled modal can
     // come in polish.
     async confirmDeleteWebhookRule(rule) {
-      if (!confirm('Delete rule "' + rule.name + '"?\n\nThis cannot be undone. The rule stops firing immediately. Webhook URL + delivery stay configured.')) return;
+      if (!await this.confirmDialog({
+        title:       'Delete rule "' + rule.name + '"?',
+        message:     'This cannot be undone. The rule stops firing immediately. Webhook URL + delivery stay configured.',
+        confirmText: 'Delete',
+        kind:        'danger',
+      })) return;
       try {
         const r = await this.apiFetch('/api/webhook-rules/' + rule.id, { method: 'DELETE' });
         if (!r.ok) {
@@ -12323,7 +12477,12 @@ function app() {
       if (!this.perRuleWebhookRule) return;
       const alreadyConfigured = !!(this.perRuleWebhookData && this.perRuleWebhookData.token);
       if (alreadyConfigured) {
-        if (!confirm('Rotate the webhook URL?\n\nThe old URL stops working immediately — Sonarr/Radarr will start getting 404s until you paste the new URL into Connect. Use this only if you suspect the URL has leaked.')) return;
+        if (!await this.confirmDialog({
+          title:       'Rotate the webhook URL?',
+          message:     'The old URL stops working immediately — Sonarr/Radarr will start getting 404s until you paste the new URL into Connect. Use this only if you suspect the URL has leaked.',
+          confirmText: 'Rotate',
+          kind:        'warning',
+        })) return;
       }
       this.perRuleWebhookActionInFlight = true;
       try {
@@ -12344,7 +12503,12 @@ function app() {
     // have to re-paste the URL in Sonarr/Radarr.
     async doRotatePerRuleWebhookSecret() {
       if (!this.perRuleWebhookRule) return;
-      if (!confirm('Rotate the webhook secret?\n\nThe URL stays the same but you need to paste the new Secret as the Webhook password in Sonarr/Radarr.')) return;
+      if (!await this.confirmDialog({
+        title:       'Rotate the webhook secret?',
+        message:     'The URL stays the same but you need to paste the new Secret as the Webhook password in Sonarr/Radarr.',
+        confirmText: 'Rotate',
+        kind:        'warning',
+      })) return;
       this.perRuleWebhookActionInFlight = true;
       try {
         const r = await this.apiFetch('/api/webhook-rules/' + this.perRuleWebhookRule.id + '/webhook/rotate-secret', { method: 'POST' });

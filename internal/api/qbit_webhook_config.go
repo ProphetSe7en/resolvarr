@@ -532,13 +532,17 @@ func buildResolvarrWebhookURL(r *http.Request, instanceID string) string {
 }
 
 // buildQbitCurlCommand renders the curl command users paste into
-// qBit's "Run external program on torrent added" field. Format:
+// qBit's "Run external program on torrent added" field — emitted as
+// a single line because qBit stores the field as a single command
+// and runs it through OS shell. Multi-line with backslash-newline
+// continuations works in most shells but is brittle when paired
+// with `;`-append (where the trailing-backslash on the appended
+// line can confuse the parser into thinking the next ;-segment is
+// a continuation). Single-line removes the ambiguity entirely.
 //
-//	curl -fsS -X POST "<URL>" \
-//	  -H "X-API-Key: <SECRET>" \
-//	  --data-urlencode "infoHash=%I" \
-//	  --data-urlencode "name=%N" \
-//	  --data-urlencode "category=%L"
+// Format:
+//
+//	curl -fsS -X POST "<URL>" -H "X-API-Key: <SECRET>" --data-urlencode "infoHash=%I" --data-urlencode "name=%N" --data-urlencode "category=%L"
 //
 // `-fsS` = silent + show-errors-on-failure + non-zero exit on HTTP
 // error. Safe for `;`-append with existing scripts (semicolon
@@ -549,7 +553,7 @@ func buildResolvarrWebhookURL(r *http.Request, instanceID string) string {
 // Go format pass and arrive in qBit's field literally.
 func buildQbitCurlCommand(url, secret string) string {
 	return fmt.Sprintf(
-		"curl -fsS -X POST %q \\\n  -H %q \\\n  --data-urlencode \"infoHash=%%I\" \\\n  --data-urlencode \"name=%%N\" \\\n  --data-urlencode \"category=%%L\"",
+		"curl -fsS -X POST %q -H %q --data-urlencode \"infoHash=%%I\" --data-urlencode \"name=%%N\" --data-urlencode \"category=%%L\"",
 		url, "X-API-Key: "+secret,
 	)
 }
