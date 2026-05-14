@@ -2,6 +2,34 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.2-dev — Catch cross-seed adds + clearer rule wording (2026-05-14)
+
+### What you get
+
+- **resolvarr can now tag cross-seed adds (and any other qBit-side adds) that don't go through Sonarr Connect.** Until now the qBit Episode/Season tagging only fired when Sonarr told resolvarr about a grab. Cross-seed adds 5-10 duplicate torrents per release directly into qBit, never touching Sonarr — so those torrents never got tagged. Now qBit itself can call resolvarr per torrent added, and the same Episode/Season tagging runs on every torrent regardless of where it came from. Useful so cross-seed can be told "skip already-tagged Episodes" while still searching for Seasons.
+
+- **One-click setup per qBit instance.** Each qBit instance on the Settings page now has a **Webhook** button. Open it and click **Configure in qBit** — resolvarr writes the right command into qBit's "Run external program on torrent added" setting for you. If you already have another script there (cross-seed-notify.sh, qbit-manage), a popup asks whether to add ours alongside (recommended) or replace it (with a backup so Reset can restore the original). Manual paste is also offered for anyone whose qBit can't be reached for writes.
+
+- **Burst-aggregation so the history doesn't drown.** Cross-seed often adds 8-10 torrents in a few seconds. Without aggregation that would produce 8-10 separate History entries. By default, resolvarr collects all qBit-add events for the same rule within a 60-second window and rolls them up into ONE history entry showing the per-tag breakdown (e.g. "tagged 8 — Episode: 5, Season: 3"). The window length is configurable per rule (1–3600 seconds) so you can make it shorter if you'd rather see each torrent separately.
+
+- **Sonarr Connect events still fire instantly.** The qBit-add path is separate. Normal Sonarr grabs still get tagged immediately, just like before — the new path is purely a safety net for torrents Sonarr doesn't know about. If both paths fire on the same torrent (rare race), qBit's "addTags" call is harmless on an already-tagged torrent so there's no double-tag damage.
+
+### Bug fixes
+
+- **Edit on a rule no longer silently re-points it at the wrong Sonarr/Radarr.** Opening Edit on an existing rule, the instance dropdown sometimes failed to show the rule's actual saved instance — it'd fall back to whichever instance was first in the list. Click Save without checking and the rule got re-pointed at the wrong Sonarr/Radarr. Fixed across all four dropdowns where this happened (Arr instance picker in webhook + schedule modes, qBit picker in Grab Rename + qBit S/E sections).
+
+- **QFA results say "series" on Sonarr runs instead of "movies".** Tag Audio / Tag Video result panel had "movies" hardcoded in every filter label and tooltip even when the run was against a Sonarr instance. Now the wording switches based on instance type.
+
+- **History shows "Import" instead of "Download" (matches what Sonarr/Radarr's UI calls it).** The Connect payload uses "Download" internally for the event Sonarr/Radarr's settings page calls "On Import". The History modal and the Recent activity event-type pills now translate this (plus all other event names) to match the labels in your Arr's Connect screen.
+
+### Help text — clearer wording
+
+- **The wizard now makes it obvious that ONE rule does many things.** Tester feedback: the "How it works" panels read as if each function (Tag Audio, Tag Video, Recover, etc.) needed its own rule, even though the UI clearly shows a checkbox list where you tick many at once. New wording leads with "Most setups only need ONE rule per Sonarr/Radarr — tick all the actions you want and you're done." Multiple rules are now framed as an exception for when you want different settings on the same Sonarr/Radarr (e.g. strict filters for 4K, looser filters for SD).
+
+- **qBit Grab Rename description rewritten to explain what it's actually for.** The old description sold it as "fixes awkward release patterns" — undersold both what it covers and why anyone would care. New description leads with the actual reason: there's a rare grab-loop where Sonarr/Radarr keeps re-grabbing the same release because qBit's name is missing info the release title has, which makes the import-time score lower than the grab-time score. Renaming at grab time so both scores line up breaks the loop. Then lists all seven configurable trigger categories (release group, edition labels, source labels, audio labels, scene-stripped names, custom patterns, "always rename").
+
+- **Plain-language pass on the rule help.** Replaced jargon like "fire on incoming events", "Connect event", "classifying releases", "per-rule snapshots" with clearer phrasings. No behaviour change — just easier to read.
+
 ## v0.6.1-dev — Webhook history modal redesign + UX polish (2026-05-14)
 
 ### What you get

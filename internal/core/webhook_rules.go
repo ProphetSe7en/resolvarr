@@ -412,6 +412,21 @@ type QbitSeRules struct {
 	UnmatchedEnabled bool   `json:"unmatchedEnabled,omitempty"`
 	UnmatchedTag     string `json:"unmatchedTag,omitempty"`
 
+	// AggregationWindowSeconds debounces qBit-side hooks (cross-seed
+	// adds 5-10 torrents in seconds). Within the window, all qBit-Add
+	// events for this rule become ONE history entry + ONE notification
+	// when the window closes. Sonarr-Connect events always fire
+	// instantly regardless — this only affects the qBit-Add path.
+	//
+	// 0 means "use default" (60s). Range 1..3600 enforced at buffer-
+	// enqueue time. Migration-safe: rules saved before this field
+	// landed deserialize to 0 → default 60. The "fire instantly per
+	// torrent" semantic was considered and dropped — aggregation is
+	// the whole point of the qBit-Add path; an instant escape hatch
+	// adds migration friction and a UX cliff for no real user
+	// scenario (set window=1 if near-instant is desired).
+	AggregationWindowSeconds int `json:"aggregationWindowSeconds,omitempty"`
+
 	// Legacy fields preserved for decode compat with rules saved before
 	// the three-rule first-match-wins model. Backfilled on Load via
 	// MigrateLegacyQbitSeFlags; ignored at fire-time once migrated.

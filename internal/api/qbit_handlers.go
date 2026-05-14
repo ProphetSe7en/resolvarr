@@ -111,6 +111,11 @@ func (s *Server) handleListQbitInstances(w http.ResponseWriter, r *http.Request)
 		if copy.Password != "" {
 			copy.Password = maskSentinel
 		}
+		// WebhookSecret only surfaces via the dedicated /webhook
+		// endpoint (Slice 4) — list view masks it like the password.
+		if copy.WebhookSecret != "" {
+			copy.WebhookSecret = maskSentinel
+		}
 		out = append(out, copy)
 	}
 	writeJSON(w, out)
@@ -142,13 +147,25 @@ func (s *Server) handleCreateQbitInstance(w http.ResponseWriter, r *http.Request
 		writeError(w, 400, err.Error())
 		return
 	}
+	// WebhookSecret is generated up-front so the qBit-side webhook
+	// (M-qBit-add — catches cross-seed adds) is ready as soon as the
+	// instance exists. User flips it on later via the dedicated webhook-
+	// config endpoint; without a secret pre-stamped that endpoint would
+	// have to lazy-generate AND save in the same call, which complicates
+	// the round-trip. Cheap to generate, never exposed in plain echos.
+	secret, err := generateWebhookSecret()
+	if err != nil {
+		writeError(w, 500, "generate webhook secret: "+err.Error())
+		return
+	}
 	created := core.QbitInstance{
-		ID:           genID(),
-		Name:         strings.TrimSpace(req.Name),
-		URL:          strings.TrimSpace(req.URL),
-		Username:     strings.TrimSpace(req.Username),
-		Password:     req.Password, // intentionally NOT trimmed — passwords can have leading/trailing whitespace
-		TrustedCerts: req.TrustedCerts,
+		ID:            genID(),
+		Name:          strings.TrimSpace(req.Name),
+		URL:           strings.TrimSpace(req.URL),
+		Username:      strings.TrimSpace(req.Username),
+		Password:      req.Password, // intentionally NOT trimmed — passwords can have leading/trailing whitespace
+		TrustedCerts:  req.TrustedCerts,
+		WebhookSecret: secret,
 	}
 	if err := s.App.Config.Update(func(c *core.Config) {
 		c.QbitInstances = append(c.QbitInstances, created)
@@ -156,12 +173,16 @@ func (s *Server) handleCreateQbitInstance(w http.ResponseWriter, r *http.Request
 		writeError(w, 500, "save: "+err.Error())
 		return
 	}
-	// Echo back with URL token + password masked — same pattern as
-	// the Arr instance create handler.
+	// Echo back with URL token + password + webhook secret masked.
+	// Webhook secret is exposed only via the dedicated /webhook
+	// endpoint (Slice 4) where the user can copy the curl command.
 	echo := created
 	echo.URL = maskQbitURL(echo.URL)
 	if echo.Password != "" {
 		echo.Password = maskSentinel
+	}
+	if echo.WebhookSecret != "" {
+		echo.WebhookSecret = maskSentinel
 	}
 	writeJSON(w, echo)
 }
@@ -216,13 +237,31 @@ func (s *Server) handleUpdateQbitInstance(w http.ResponseWriter, r *http.Request
 	if password == "" || password == maskSentinel {
 		password = existing.Password
 	}
+	// Preserve webhook-related fields — the rule editor doesn't touch
+	// them, and the dedicated /webhook endpoints are the only place
+	// they get rotated/reset. Also backfill WebhookSecret if missing
+	// (existing instances saved before this field landed; first save
+	// stamps a secret so the webhook flow is ready when the user
+	// clicks Configure).
+	webhookSecret := existing.WebhookSecret
+	if webhookSecret == "" {
+		gen, err := generateWebhookSecret()
+		if err != nil {
+			writeError(w, 500, "generate webhook secret: "+err.Error())
+			return
+		}
+		webhookSecret = gen
+	}
 	updated := core.QbitInstance{
-		ID:           id,
-		Name:         strings.TrimSpace(req.Name),
-		URL:          strings.TrimSpace(req.URL),
-		Username:     strings.TrimSpace(req.Username),
-		Password:     password,
-		TrustedCerts: req.TrustedCerts,
+		ID:                      id,
+		Name:                    strings.TrimSpace(req.Name),
+		URL:                     strings.TrimSpace(req.URL),
+		Username:                strings.TrimSpace(req.Username),
+		Password:                password,
+		TrustedCerts:            req.TrustedCerts,
+		WebhookSecret:           webhookSecret,
+		PreviousAutorunBackup:   existing.PreviousAutorunBackup,
+		WebhookConfiguredInQbit: existing.WebhookConfiguredInQbit,
 	}
 	if err := s.App.Config.Update(func(c *core.Config) {
 		for i := range c.QbitInstances {
@@ -239,6 +278,9 @@ func (s *Server) handleUpdateQbitInstance(w http.ResponseWriter, r *http.Request
 	echo.URL = maskQbitURL(echo.URL)
 	if echo.Password != "" {
 		echo.Password = maskSentinel
+	}
+	if echo.WebhookSecret != "" {
+		echo.WebhookSecret = maskSentinel
 	}
 	writeJSON(w, echo)
 }

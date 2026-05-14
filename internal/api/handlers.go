@@ -265,6 +265,13 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		if cfg.QbitInstances[i].Password != "" {
 			cfg.QbitInstances[i].Password = maskSentinel
 		}
+		// WebhookSecret is bearer credential for the qBit→resolvarr
+		// hook — same masking story as Password and Arr API keys.
+		// Plain value is exposed only via the dedicated /webhook
+		// endpoint where the user copies the curl command.
+		if cfg.QbitInstances[i].WebhookSecret != "" {
+			cfg.QbitInstances[i].WebhookSecret = maskSentinel
+		}
 	}
 	cfg.Discord.WebhookURL = maskSecret(cfg.Discord.WebhookURL, maskedDiscordWebhook)
 	// Mask credentials inside notification agents so the legacy /api/config

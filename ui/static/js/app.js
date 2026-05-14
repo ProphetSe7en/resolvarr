@@ -206,7 +206,7 @@ function app() {
         id: 'grabRename',
         optionFlag: 'fnGrabRename',
         label: 'qBit Grab Rename',
-        summary: 'Renames the torrent in qBittorrent the moment it\'s grabbed so the eventual filename is parser-friendly. Catches awkward release patterns (space-dash-space group names, missing release-group tokens) that otherwise force a manual rename + re-import.',
+        summary: 'Fixes a rare grab-loop where Sonarr/Radarr keeps re-grabbing the same release. The loop happens when the qBittorrent torrent name is missing info the release title has — the import-time score then comes out lower than the grab-time score, so the Arr decides the file isn\'t good enough and grabs again. This action renames the qBit torrent to match the release title at grab time so both scores line up. You pick which kinds of missing info to fix per rule: release group at the end of the name, edition labels (Remastered, Director\'s Cut), source tokens (WEB-DL, BluRay, REMUX), audio tokens (Atmos, DD+, TrueHD), names that look stripped of their scene group, plus your own custom patterns. Includes a "rename every time" option if you just want everything to land with the full release title.',
         triggers: ['On Grab'],
         appliesTo: 'both',
         webhookOnly: true,
@@ -418,6 +418,17 @@ function app() {
     qbitStatus: {},
     qbitError: {},
     deleteQbitTarget: null,
+
+    // M-qBit-add Slice 5 — per-instance webhook hook modal state.
+    qbitWebhookOpen: false,
+    qbitWebhookInstance: null,
+    qbitWebhookData: null,
+    qbitWebhookLoading: false,
+    qbitWebhookActionInFlight: false,
+    qbitWebhookShowCurl: false,
+    qbitWebhookTestResult: null,
+    qbitWebhookConflictOpen: false,
+    qbitWebhookConflictMode: 'append',
     deleteQbitBusy: false,
     // (legacy single-Discord state was here — replaced by multi-agent)
     // Notification agents (multi-provider). Each entry is one Discord/
@@ -1572,6 +1583,200 @@ function app() {
       } finally {
         this.deleteQbitBusy = false;
       }
+    },
+
+    // ---- qBit webhook hook (M-qBit-add Slice 5) -------------------
+    //
+    // Per-instance modal showing the curl ready to paste into qBit's
+    // "Run external program on torrent added" field, plus auto-
+    // configure / rotate / test / reset helpers backed by the Slice 4
+    // endpoints. State indicator at the top distinguishes:
+    //   - Not configured        — qBit autorun field is empty
+    //   - Configured by us      — our path prefix is in the field
+    //   - Third-party content   — non-empty + not ours (Configure
+    //                             prompts for Append vs Replace)
+    //   - qBit unreachable      — fetchError surfaced; manual paste
+    //                             still viable
+
+    openQbitWebhookModal(qi) {
+      this.qbitWebhookInstance = qi;
+      this.qbitWebhookData = null;
+      this.qbitWebhookShowCurl = false;
+      this.qbitWebhookTestResult = null;
+      this.qbitWebhookConflictMode = 'append';
+      this.qbitWebhookConflictOpen = false;
+      this.qbitWebhookOpen = true;
+      this.loadQbitWebhookConfig();
+    },
+
+    closeQbitWebhookModal() {
+      if (this.qbitWebhookActionInFlight) return;
+      this.qbitWebhookOpen = false;
+      this.qbitWebhookInstance = null;
+      this.qbitWebhookData = null;
+      this.qbitWebhookShowCurl = false;
+      this.qbitWebhookTestResult = null;
+      this.qbitWebhookConflictOpen = false;
+    },
+
+    async loadQbitWebhookConfig() {
+      if (!this.qbitWebhookInstance) return;
+      this.qbitWebhookLoading = true;
+      try {
+        const r = await this.apiFetch('/api/qbit-instances/' + this.qbitWebhookInstance.id + '/webhook');
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        this.qbitWebhookData = d;
+      } catch (e) {
+        this.showToast('Load webhook config failed: ' + e.message, 'error');
+        this.qbitWebhookData = null;
+      } finally {
+        this.qbitWebhookLoading = false;
+      }
+    },
+
+    // qbitWebhookStateLabel derives a human-friendly status string +
+    // colour from the loaded config + qBit fetch state. Used in the
+    // modal header.
+    qbitWebhookStateLabel() {
+      const d = this.qbitWebhookData;
+      if (!d) return { text: 'Loading…', color: 'var(--text-muted)' };
+      const st = d.qbitState || {};
+      if (st.fetchError) {
+        return { text: 'qBit unreachable — manual paste only', color: 'var(--accent-orange)' };
+      }
+      if (st.configuredByUs) {
+        return { text: 'Configured (resolvarr is wired into qBit)', color: 'var(--accent-green)' };
+      }
+      if (st.thirdPartyContent) {
+        return { text: 'qBit autorun has third-party content — Configure will prompt', color: 'var(--accent-orange)' };
+      }
+      return { text: 'Not configured (qBit autorun is empty)', color: 'var(--text-secondary)' };
+    },
+
+    // Configure click — if qBit has third-party content, opens the
+    // conflict resolution sub-flow. Otherwise fires append directly
+    // (semantics for empty + already-ours are the same regardless
+    // of mode, so 'append' is safe).
+    onQbitConfigureClick() {
+      const st = (this.qbitWebhookData || {}).qbitState || {};
+      if (st.thirdPartyContent && !st.fetchError) {
+        this.qbitWebhookConflictMode = 'append';
+        this.qbitWebhookConflictOpen = true;
+        return;
+      }
+      this.doConfigureQbitWebhook('append');
+    },
+
+    async doConfigureQbitWebhook(mode) {
+      if (!this.qbitWebhookInstance) return;
+      this.qbitWebhookActionInFlight = true;
+      try {
+        const r = await this.apiFetch('/api/qbit-instances/' + this.qbitWebhookInstance.id + '/webhook/configure', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
+        this.qbitWebhookConflictOpen = false;
+        this.showToast('qBit autorun configured — hook should fire on next add', 'success');
+        await this.loadQbitWebhookConfig();
+      } catch (e) {
+        // Surface the qBit-side error verbatim (often "qui blocked
+        // this") so user knows manual paste is the workaround.
+        this.showToast('Configure failed: ' + e.message + ' — try Show command for manual paste', 'error');
+      } finally {
+        this.qbitWebhookActionInFlight = false;
+      }
+    },
+
+    async doRotateQbitWebhookSecret() {
+      if (!this.qbitWebhookInstance) return;
+      if (!confirm('Rotate the webhook secret?\n\nThe old secret stops working immediately. If qBit was auto-configured, the new secret is pushed there too — but if that push fails (qui block / network), you will need to manually update qBit\'s autorun field with the new curl.')) return;
+      this.qbitWebhookActionInFlight = true;
+      try {
+        const r = await this.apiFetch('/api/qbit-instances/' + this.qbitWebhookInstance.id + '/webhook/rotate-secret', { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        if (d.qbitOutOfSync) {
+          this.showToast('Secret rotated locally, but qBit update failed: ' + (d.qbitUpdateError || 'unknown') + ' — re-run Configure to fix qBit', 'error');
+        } else {
+          this.showToast('Secret rotated', 'success');
+        }
+        await this.loadQbitWebhookConfig();
+      } catch (e) {
+        this.showToast('Rotate failed: ' + e.message, 'error');
+      } finally {
+        this.qbitWebhookActionInFlight = false;
+      }
+    },
+
+    async doTestQbitWebhook() {
+      if (!this.qbitWebhookInstance) return;
+      this.qbitWebhookActionInFlight = true;
+      this.qbitWebhookTestResult = null;
+      try {
+        const r = await this.apiFetch('/api/qbit-instances/' + this.qbitWebhookInstance.id + '/webhook/test', { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        this.qbitWebhookTestResult = { ok: true, message: 'Receiver is wired correctly. (This does NOT verify qBit can reach resolvarr — only an actual qBit add proves end-to-end.)' };
+      } catch (e) {
+        this.qbitWebhookTestResult = { ok: false, message: 'Test failed: ' + e.message };
+      } finally {
+        this.qbitWebhookActionInFlight = false;
+      }
+    },
+
+    async doResetQbitWebhook() {
+      if (!this.qbitWebhookInstance) return;
+      const hadBackup = !!((this.qbitWebhookData || {}).qbitState && this.qbitWebhookInstance.previousAutorunBackup);
+      const msg = hadBackup
+        ? 'Reset qBit autorun?\n\nResolvarr will restore the value qBit had before you clicked Configure, then forget the backup. The hook stops firing.'
+        : 'Reset qBit autorun?\n\nResolvarr will clear qBit\'s autorun field and disable it (no previous value to restore). The hook stops firing.';
+      if (!confirm(msg)) return;
+      this.qbitWebhookActionInFlight = true;
+      try {
+        const r = await this.apiFetch('/api/qbit-instances/' + this.qbitWebhookInstance.id + '/webhook/reset', { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        this.showToast(d.hadPreviousBackup ? 'qBit autorun restored to previous value' : 'qBit autorun cleared', 'success');
+        await this.loadQbitWebhookConfig();
+      } catch (e) {
+        this.showToast('Reset failed: ' + e.message, 'error');
+      } finally {
+        this.qbitWebhookActionInFlight = false;
+      }
+    },
+
+    // qbitWebhookConflictPreview computes the resulting qBit autorun
+    // field for the conflict resolution sub-modal. Same join semantics
+    // the backend uses ("; " separator on append).
+    qbitWebhookConflictPreview() {
+      const d = this.qbitWebhookData;
+      if (!d || !d.qbitState) return '';
+      const current = d.qbitState.currentProgram || '';
+      const ours = d.curlCommand || '';
+      if (this.qbitWebhookConflictMode === 'replace') return ours;
+      // append (default)
+      if (!current) return ours;
+      return current + '; ' + ours;
+    },
+
+    async copyQbitWebhookSecret() {
+      const d = this.qbitWebhookData;
+      if (!d) return;
+      const ok = await this.copyToClipboard(d.secret || '');
+      this.showToast(ok ? 'Secret copied' : 'Copy failed — select and copy manually', ok ? 'success' : 'error');
+    },
+
+    async copyQbitWebhookCurl() {
+      const d = this.qbitWebhookData;
+      if (!d) return;
+      const ok = await this.copyToClipboard(d.curlCommand || '');
+      this.showToast(ok ? 'Curl command copied' : 'Copy failed — select and copy manually', ok ? 'success' : 'error');
     },
 
     async loadLogging() {
@@ -4199,9 +4404,44 @@ function app() {
       }
     },
 
-    // Build [type, count] pairs from the per-instance event cache,
-    // sorted by count desc. Drives the filter chip row on the
-    // Recent activity sub-tab.
+    // connectEventLabel maps the raw Connect event-type strings
+    // (what the payload calls them) to the labels Sonarr/Radarr show
+    // in their own UI — so the user sees the same word here that
+    // they ticked in the Arr's Connect settings. Most notable: the
+    // payload says "Download" for what the Arr UI calls "Import".
+    //
+    // Unknown event types pass through verbatim so future Arr
+    // additions don't crash the UI. Also handles resolvarr's own
+    // custom event types (qbit:torrentAdded).
+    connectEventLabel(rawType) {
+      if (!rawType) return '(unknown event)';
+      switch (rawType) {
+        case 'Grab':                return 'Grab';
+        case 'Download':            return 'Import';
+        case 'Upgrade':             return 'Upgrade';
+        case 'Rename':              return 'Rename';
+        case 'MovieAdded':          return 'Movie added';
+        case 'MovieDelete':         return 'Movie deleted';
+        case 'MovieFileDelete':     return 'Movie file deleted';
+        case 'SeriesAdd':           return 'Series added';
+        case 'SeriesDelete':        return 'Series deleted';
+        case 'EpisodeFileDelete':   return 'Episode file deleted';
+        case 'HealthIssue':         return 'Health issue';
+        case 'HealthRestored':      return 'Health restored';
+        case 'ApplicationUpdate':   return 'Application update';
+        case 'ManualInteractionRequired': return 'Manual interaction required';
+        case 'Test':                return 'Test';
+        case 'qbit:torrentAdded':   return 'qBit torrent added';
+        default:                    return rawType;
+      }
+    },
+
+    // Build [label, rawType, count] triples from the per-instance event
+    // cache, sorted by count desc. Drives the filter chip row on the
+    // Recent activity sub-tab. Label is the user-facing version (so
+    // "Download" appears as "Import" in chips); rawType is what the
+    // filter compares against to keep the filter logic correct even
+    // when labels collide between Arr versions.
     webhookEventTypeCounts(instanceId) {
       const events = this.webhookEvents[instanceId] || [];
       const counts = new Map();
@@ -9530,6 +9770,27 @@ function app() {
       return null;
     },
 
+    // qfaDetailAutoNounPlural / qfaDetailAutoNounSingular pick the
+    // right word for the active QFA result based on the instance
+    // type. Sonarr Audio/Video tags apply at the series level (per
+    // the help text in the rule editor), so "series" is the right
+    // word — not "episode". Radarr is "movie" / "movies".
+    qfaDetailAutoNounPlural() {
+      const r = this.qfaDetailAutoActive();
+      if (r && r.instance && r.instance.type === 'sonarr') return 'series';
+      return 'movies';
+    },
+    qfaDetailAutoNounSingular() {
+      const r = this.qfaDetailAutoActive();
+      if (r && r.instance && r.instance.type === 'sonarr') return 'series';
+      return 'movie';
+    },
+    // Capitalised plural for sentence-start titles + tooltips. Saves
+    // .charAt(0).toUpperCase() inlining in every template.
+    qfaDetailAutoNounPluralCap() {
+      return this.qfaDetailAutoNounPlural() === 'series' ? 'Series' : 'Movies';
+    },
+
     // Counts of items whose at least one decision has a given action
     // (movie-level, not decision-level — same convention as the
     // standalone fane). Used for the chip badges.
@@ -10617,6 +10878,11 @@ function app() {
           episodeEnabled: true,  episodeTag: 'Episode',
           seasonEnabled: true,   seasonTag: 'Season',
           unmatchedEnabled: true, unmatchedTag: 'Unmatched',
+          // M-qBit-add Slice 6 — qBit-add debounce window (only
+          // affects the qBit-side webhook path; Sonarr Connect Grab
+          // events fire instantly regardless). 60s is a good default
+          // for typical cross-seed bursts.
+          aggregationWindowSeconds: 60,
         },
         // qBit Category Fix — defensive reconcile of stuck pre-import
         // categories. Snapshot fields filled in by autoFillQbitCategories
@@ -10647,6 +10913,13 @@ function app() {
         if (rule[key] == null) {
           rule[key] = JSON.parse(JSON.stringify(defaults[key]));
         }
+      }
+      // M-qBit-add Slice 6 — field-level backfill for legacy rules
+      // that pre-date AggregationWindowSeconds. Server treats stored
+      // 0 as "use default 60" but UI input accepts 1..3600 only, so
+      // pre-fill 60 for an unambiguous edit experience.
+      if (rule.qbitSe && (rule.qbitSe.aggregationWindowSeconds == null || rule.qbitSe.aggregationWindowSeconds === 0)) {
+        rule.qbitSe.aggregationWindowSeconds = 60;
       }
       return rule;
     },

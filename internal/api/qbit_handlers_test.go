@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -480,4 +481,281 @@ func staticStars(n int) string {
 		out[i] = '*'
 	}
 	return string(out)
+}
+
+// TestQbitHandlers_WebhookSecretLifecycle covers the per-instance
+// WebhookSecret added in Slice 1 of M-qBit-add. Three contracts:
+//
+//  1. Create generates a non-empty secret + masks it in the echo.
+//  2. Update preserves the secret + masks it in the echo (regardless
+//     of whether the request body sends maskSentinel or omits the
+//     field entirely — the dedicated /webhook/rotate-secret endpoint
+//     is the only path that changes the secret).
+//  3. Backfill — instances stored before this field landed (zero-value
+//     WebhookSecret) get a fresh secret stamped on the next Update.
+//     Belt-and-braces migration so a long-running install doesn't
+//     fail at the qBit-side webhook handler when the auth check runs
+//     against an empty secret.
+func TestQbitHandlers_WebhookSecretLifecycle(t *testing.T) {
+	s, store := newQbitTestServer(t)
+
+	// 1. Create — secret generated + masked in echo, plaintext in store.
+	createBody := `{
+		"name": "qui-main",
+		"url": "` + realQuiURL + `",
+		"password": "` + realPassword + `"
+	}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/qbit-instances", strings.NewReader(createBody))
+	s.handleCreateQbitInstance(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Create: status %d, body %s", rr.Code, rr.Body.String())
+	}
+	var created core.QbitInstance
+	readJSON(t, rr, &created)
+
+	if created.WebhookSecret != maskSentinel {
+		t.Errorf("Create echo WebhookSecret = %q, want masked sentinel", created.WebhookSecret)
+	}
+	storedSecret := store.Get().QbitInstances[0].WebhookSecret
+	if storedSecret == "" {
+		t.Fatal("stored WebhookSecret is empty after Create — generator didn't run")
+	}
+	if storedSecret == maskSentinel {
+		t.Errorf("stored WebhookSecret = mask sentinel, want random string")
+	}
+	if len(storedSecret) < 32 {
+		t.Errorf("stored WebhookSecret length = %d, want ≥32 (base64url of 32 random bytes ≈ 43 chars)", len(storedSecret))
+	}
+
+	// 2. Update — preserve when req body is empty / round-trips mask.
+	updateBody := `{
+		"name": "qui-renamed",
+		"url": "` + created.URL + `",
+		"password": "` + maskSentinel + `"
+	}`
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/qbit-instances/"+created.ID, strings.NewReader(updateBody))
+	req.SetPathValue("id", created.ID)
+	s.handleUpdateQbitInstance(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Update (preservation): status %d, body %s", rr.Code, rr.Body.String())
+	}
+	var updated core.QbitInstance
+	readJSON(t, rr, &updated)
+	if updated.WebhookSecret != maskSentinel {
+		t.Errorf("Update echo WebhookSecret = %q, want masked sentinel", updated.WebhookSecret)
+	}
+	if got := store.Get().QbitInstances[0].WebhookSecret; got != storedSecret {
+		t.Errorf("after Update, stored WebhookSecret changed: was %q, now %q", storedSecret, got)
+	}
+
+	// 2b. Update — masked-sentinel round-trip in the request body must
+	// not overwrite storage (UI may send echo back verbatim).
+	updateBody = `{
+		"name": "qui-renamed",
+		"url": "` + created.URL + `",
+		"password": "` + maskSentinel + `",
+		"webhookSecret": "` + maskSentinel + `"
+	}`
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/qbit-instances/"+created.ID, strings.NewReader(updateBody))
+	req.SetPathValue("id", created.ID)
+	s.handleUpdateQbitInstance(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Update (mask round-trip): status %d, body %s", rr.Code, rr.Body.String())
+	}
+	if got := store.Get().QbitInstances[0].WebhookSecret; got != storedSecret {
+		t.Errorf("masked-sentinel round-trip overwrote stored secret: was %q, now %q", storedSecret, got)
+	}
+
+	// 3. Backfill — directly clear the stored secret (simulating an
+	// instance saved before this field landed), then run Update. Next
+	// save must stamp a new secret automatically.
+	if err := store.Update(func(c *core.Config) {
+		for i := range c.QbitInstances {
+			if c.QbitInstances[i].ID == created.ID {
+				c.QbitInstances[i].WebhookSecret = ""
+				return
+			}
+		}
+	}); err != nil {
+		t.Fatalf("clear stored secret: %v", err)
+	}
+	updateBody = `{
+		"name": "qui-renamed",
+		"url": "` + created.URL + `",
+		"password": "` + maskSentinel + `"
+	}`
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/qbit-instances/"+created.ID, strings.NewReader(updateBody))
+	req.SetPathValue("id", created.ID)
+	s.handleUpdateQbitInstance(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Update (backfill): status %d, body %s", rr.Code, rr.Body.String())
+	}
+	backfilled := store.Get().QbitInstances[0].WebhookSecret
+	if backfilled == "" {
+		t.Fatal("backfill failed — stored WebhookSecret still empty after Update on legacy entry")
+	}
+	if backfilled == storedSecret {
+		t.Errorf("backfill reused old secret %q — should be freshly generated", backfilled)
+	}
+	if len(backfilled) < 32 {
+		t.Errorf("backfilled WebhookSecret length = %d, want ≥32", len(backfilled))
+	}
+}
+
+// TestQbitHandlers_WebhookSecretBackfill_MultiInstance regression-
+// guards the ID-matching loop in handleUpdateQbitInstance: a backfill
+// must target ONLY the instance being updated, not splash secrets onto
+// other entries. Two instances seeded; clear secrets on both; update
+// only the second; verify the first stays empty (not yet edited) and
+// the second got a freshly-stamped non-empty secret.
+func TestQbitHandlers_WebhookSecretBackfill_MultiInstance(t *testing.T) {
+	s, store := newQbitTestServer(t)
+
+	// Seed two instances directly (bypass Create so neither gets a
+	// secret stamped at construction time — emulates legacy state).
+	if err := store.Update(func(c *core.Config) {
+		c.QbitInstances = append(c.QbitInstances,
+			core.QbitInstance{ID: "qbit-1", Name: "first", URL: "http://qbit-1:8080"},
+			core.QbitInstance{ID: "qbit-2", Name: "second", URL: "http://qbit-2:8080"},
+		)
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Update only qbit-2. Body includes the new fields' zero values
+	// implicitly (omitted from JSON entirely).
+	updateBody := `{"name":"second-renamed","url":"http://qbit-2:8080"}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/qbit-instances/qbit-2", strings.NewReader(updateBody))
+	req.SetPathValue("id", "qbit-2")
+	s.handleUpdateQbitInstance(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Update: status %d, body %s", rr.Code, rr.Body.String())
+	}
+
+	cfg := store.Get()
+	var first, second *core.QbitInstance
+	for i := range cfg.QbitInstances {
+		switch cfg.QbitInstances[i].ID {
+		case "qbit-1":
+			first = &cfg.QbitInstances[i]
+		case "qbit-2":
+			second = &cfg.QbitInstances[i]
+		}
+	}
+	if first == nil || second == nil {
+		t.Fatalf("instance lookup: first=%v second=%v", first, second)
+	}
+
+	// First wasn't touched → still empty.
+	if first.WebhookSecret != "" {
+		t.Errorf("qbit-1 (untouched) has WebhookSecret = %q, want empty (only qbit-2 was updated)", first.WebhookSecret)
+	}
+	// Second got backfilled → non-empty + reasonable length.
+	if second.WebhookSecret == "" {
+		t.Error("qbit-2 (updated) has empty WebhookSecret, want backfilled")
+	}
+	if len(second.WebhookSecret) < 32 {
+		t.Errorf("qbit-2 WebhookSecret length = %d, want ≥32", len(second.WebhookSecret))
+	}
+}
+
+// TestConfigStore_LoadBackfillsQbitWebhookSecrets covers the
+// migrate-on-Load path added alongside Slice 1: legacy installs whose
+// QbitInstances were saved before the WebhookSecret field landed get a
+// freshly-stamped secret on next startup, no manual edit required.
+// Two instances with empty secrets after a fresh ConfigStore.Load must
+// both come out with non-empty unique secrets.
+func TestConfigStore_LoadBackfillsQbitWebhookSecrets(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-seed resolvarr.json with two QbitInstances missing
+	// WebhookSecret — emulates a config saved before Slice 1 landed.
+	cfgPath := dir + "/resolvarr.json"
+	legacy := `{"qbitInstances":[{"id":"a","name":"A","url":"http://a"},{"id":"b","name":"B","url":"http://b"}]}`
+	if err := os.WriteFile(cfgPath, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+
+	store := core.NewConfigStore(dir)
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	cfg := store.Get()
+	if len(cfg.QbitInstances) != 2 {
+		t.Fatalf("loaded %d instances, want 2", len(cfg.QbitInstances))
+	}
+
+	a := cfg.QbitInstances[0].WebhookSecret
+	b := cfg.QbitInstances[1].WebhookSecret
+	if a == "" || b == "" {
+		t.Fatalf("Load-time backfill failed: a=%q b=%q (want both non-empty)", a, b)
+	}
+	if a == b {
+		t.Errorf("backfill produced identical secrets — entropy bug? a=%q b=%q", a, b)
+	}
+	if len(a) < 32 || len(b) < 32 {
+		t.Errorf("backfilled secret lengths a=%d b=%d, want ≥32 each", len(a), len(b))
+	}
+
+	// Idempotency: a second Load on already-migrated data must not
+	// rotate the existing secrets.
+	store2 := core.NewConfigStore(dir)
+	if err := store2.Load(); err != nil {
+		t.Fatalf("Load (round 2): %v", err)
+	}
+	cfg2 := store2.Get()
+	if cfg2.QbitInstances[0].WebhookSecret != a {
+		t.Errorf("second Load rotated qbit-a secret: was %q, now %q", a, cfg2.QbitInstances[0].WebhookSecret)
+	}
+	if cfg2.QbitInstances[1].WebhookSecret != b {
+		t.Errorf("second Load rotated qbit-b secret: was %q, now %q", b, cfg2.QbitInstances[1].WebhookSecret)
+	}
+}
+
+// TestQbitInstance_WebhookSecretMaskedInListAndConfig verifies the
+// secret is masked everywhere it might leak. List endpoint + the
+// broader /api/config echo (which includes the full QbitInstances
+// slice). Slice 4 will add a dedicated /webhook endpoint that
+// returns the plaintext — this test guards the OTHER surfaces.
+func TestQbitInstance_WebhookSecretMaskedInListAndConfig(t *testing.T) {
+	s, store := newQbitTestServer(t)
+	if err := store.Update(func(c *core.Config) {
+		c.QbitInstances = append(c.QbitInstances, core.QbitInstance{
+			ID:            "test-instance",
+			Name:          "test",
+			URL:           "http://qbit:8080",
+			Password:      "p",
+			WebhookSecret: "secret-that-must-never-leak",
+		})
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// /api/qbit-instances (list)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/qbit-instances", nil)
+	s.handleListQbitInstances(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("List: status %d", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "secret-that-must-never-leak") {
+		t.Errorf("List endpoint leaked WebhookSecret in body: %s", rr.Body.String())
+	}
+
+	// /api/config (broader echo)
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	s.handleGetConfig(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Config: status %d", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "secret-that-must-never-leak") {
+		t.Errorf("/api/config leaked WebhookSecret in body: %s", rr.Body.String())
+	}
 }

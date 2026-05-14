@@ -2,6 +2,7 @@ package core
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -362,6 +363,30 @@ type QbitInstance struct {
 	Username     string `json:"username,omitempty"`
 	Password     string `json:"password,omitempty"`
 	TrustedCerts bool   `json:"trustedCerts,omitempty"`
+
+	// WebhookSecret is the per-instance shared secret stamped into the
+	// X-API-Key header on the qBit-side "torrent added" webhook. qBit's
+	// "Run external program on torrent added" curls our endpoint and
+	// includes this value; we constant-time-compare to authenticate.
+	// Generated on Create (32-byte base64url-encoded crypto/rand);
+	// preserved on Update; backfilled on first save for instances that
+	// existed before this field landed.
+	WebhookSecret string `json:"webhookSecret,omitempty"`
+
+	// PreviousAutorunBackup stores the contents of qBit's
+	// "Run external program on torrent added" field BEFORE we wrote
+	// our curl into it. Lets the user undo our auto-config via a
+	// "Restore previous autorun" button. Empty string means either
+	// (a) we never auto-configured, or (b) qBit's field was empty
+	// when we configured (so there's nothing to restore).
+	PreviousAutorunBackup string `json:"previousAutorunBackup,omitempty"`
+
+	// WebhookConfiguredInQbit is true when we successfully wrote our
+	// curl into qBit's autorun field via the auto-config endpoint.
+	// Drives UI state (shows "Configured automatically" badge + Reset
+	// button) AND tells the rotate-secret flow it needs to also
+	// update qBit's autorun field with the new key.
+	WebhookConfiguredInQbit bool `json:"webhookConfiguredInQbit,omitempty"`
 }
 
 // RecoverExclusion is the per-instance skip list. Movies (Radarr) is
@@ -790,11 +815,18 @@ func (s *ConfigStore) Load() error {
 	// Idempotent — rules already on the new shape are skipped.
 	fileDeleteCleanMigrated := s.migrateLegacyFileDeleteClean()
 
+	// QbitInstance.WebhookSecret backfill (Slice 1 of M-qBit-add).
+	// Existing instances saved before the field landed have empty
+	// secret; stamp one at startup so the dedicated webhook-config
+	// endpoint works on day 1 without forcing a manual edit-and-save.
+	// Idempotent — entries with a non-empty secret are skipped.
+	qbitSecretsMigrated := s.migrateBackfillQbitWebhookSecrets()
+
 	// Persist if any migration touched anything. Best-effort — if
 	// the write fails, the migration runs again next start (all are
 	// idempotent). Surface the write failure in logs so a read-only
 	// mount or full disk doesn't go silently unobserved.
-	if discordMigrated || audioTagsMigrated || videoTagsMigrated || dvDetailMigrated || schedulesMigrated || fileDeleteCleanMigrated {
+	if discordMigrated || audioTagsMigrated || videoTagsMigrated || dvDetailMigrated || schedulesMigrated || fileDeleteCleanMigrated || qbitSecretsMigrated {
 		if err := s.saveLocked(); err != nil {
 			fmt.Fprintf(os.Stderr, "tagarr: config migration save failed (will retry on next Load): %v\n", err)
 		}
@@ -1084,6 +1116,39 @@ func (s *ConfigStore) migrateLegacyFileDeleteClean() bool {
 		}
 		r.Functions = newFns
 
+		migrated = true
+	}
+	return migrated
+}
+
+// migrateBackfillQbitWebhookSecrets stamps a fresh WebhookSecret on
+// any QbitInstance loaded with an empty value. Backfill-on-Load (vs
+// backfill-on-Update) means the dedicated /webhook endpoint added in
+// Slice 4 of M-qBit-add works on day 1 for legacy installs without
+// requiring the user to edit-and-save the qBit instance first.
+//
+// Format mirrors api/webhooks.go generateWebhookSecret: 32 bytes of
+// crypto/rand, base64url-encoded (no padding) → 43 chars, same threat
+// model as the per-Arr webhook secret. Caller must hold s.mu.
+//
+// Idempotent — entries with a non-empty secret are skipped, so re-
+// running on already-migrated data is a no-op.
+func (s *ConfigStore) migrateBackfillQbitWebhookSecrets() bool {
+	migrated := false
+	for i := range s.cfg.QbitInstances {
+		if s.cfg.QbitInstances[i].WebhookSecret != "" {
+			continue
+		}
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			// Defensive: rand.Read on Linux can't fail under normal
+			// conditions, but if it does we skip this entry rather
+			// than stamp an empty secret. Next Update will retry
+			// via the handler-side generator.
+			fmt.Fprintf(os.Stderr, "tagarr: backfill QbitInstance.WebhookSecret rand: %v (skipping %s)\n", err, s.cfg.QbitInstances[i].ID)
+			continue
+		}
+		s.cfg.QbitInstances[i].WebhookSecret = base64.RawURLEncoding.EncodeToString(b)
 		migrated = true
 	}
 	return migrated

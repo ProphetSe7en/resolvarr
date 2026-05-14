@@ -144,6 +144,22 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/qbit-instances/{id}/test", s.handleTestQbitInstance)
 	mux.HandleFunc("POST /api/qbit-instances/test", s.handleTestQbitInline)
 
+	// M-qBit-add Slice 3 — qBit's "Run external program on torrent
+	// added" hook target. qBit curls this per-torrent; per-rule
+	// debounce buffer aggregates burst-events. X-API-Key auth via
+	// per-instance WebhookSecret.
+	mux.HandleFunc("POST /api/qbit/torrent-added/{instanceId}", s.handleQbitTorrentAdded)
+
+	// M-qBit-add Slice 4 — per-instance webhook config endpoints.
+	// Session-authenticated UI helpers for showing the curl, auto-
+	// configuring qBit's autorun field, rotating the secret,
+	// synthetically testing the receiver, and resetting.
+	mux.HandleFunc("GET /api/qbit-instances/{id}/webhook", s.handleQbitWebhookConfig)
+	mux.HandleFunc("POST /api/qbit-instances/{id}/webhook/configure", s.handleQbitConfigureWebhook)
+	mux.HandleFunc("POST /api/qbit-instances/{id}/webhook/rotate-secret", s.handleQbitRotateWebhookSecret)
+	mux.HandleFunc("POST /api/qbit-instances/{id}/webhook/test", s.handleQbitTestWebhookEndpoint)
+	mux.HandleFunc("POST /api/qbit-instances/{id}/webhook/reset", s.handleQbitResetWebhook)
+
 	mux.HandleFunc("POST /api/webhooks/{token}", s.handleWebhookReceive)
 	mux.HandleFunc("GET /api/instances/{id}/webhook", s.handleWebhookGet)
 	mux.HandleFunc("GET /api/instances/{id}/webhook/events", s.handleWebhookListEvents)
