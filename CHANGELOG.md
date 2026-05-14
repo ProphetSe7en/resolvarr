@@ -2,25 +2,23 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
-## v0.6.3-dev — Per-rule webhook URLs + edit-modal pre-select fixes (2026-05-14)
+## v0.6.3-dev — Per-rule webhook URLs (2026-05-14)
 
 ### What you get
 
-- **Each rule can now have its own dedicated webhook URL.** Until now all rules on a Sonarr/Radarr instance shared one webhook URL — every event triggered every matching rule. New: click the **🔗 URL** button on any rule card, then **Generate URL**. Resolvarr makes a unique URL + Secret for that one rule. Paste them as a NEW Webhook entry in Sonarr/Radarr → Settings → Connect, and only that one rule fires from there. The shared instance URL still works for any rules you leave on the default. Useful when you want two rules on the same Sonarr/Radarr to react to different Connect-webhook entries (e.g. one rule for 4K imports, another for SD imports, both wired to separate Sonarr Connect entries with different event-type triggers).
+- **Each rule can have its own webhook URL.** Click the 🔗 URL button on a rule card → Generate URL → paste it as a new Webhook in Sonarr/Radarr → Settings → Connect. Only that one rule fires from that URL. Useful when you want two rules on the same Sonarr/Radarr to react to different Connect events independently.
 
-- **Configure / Rotate / Disable controls.** Per-rule URL modal lets you copy the URL + Secret, rotate the Secret without changing the URL (for Sonarr/Radarr password updates without re-pasting the URL), rotate the full URL on suspected leak, toggle "Require signature" strict mode, or disable the per-rule URL entirely (rule reverts to firing via the shared instance URL).
+- **Rotate, replace or turn off the URL** any time from the same modal, without affecting other rules.
 
-- **Strict mode (Require signature) per rule.** Same protection as the instance-level Secret check — events that arrive without the matching Secret in their Authorization header get rejected (logged as `(rejected)` in Recent activity). Turn it on AFTER you've pasted both URL + Secret into Sonarr/Radarr's Connect config and verified a Test event arrives.
+- **Strict mode** rejects events that don't include the matching Secret. Turn it on after you've verified a Test event arrives.
 
-- **"Own URL" badge on rule cards.** The pill row on each rule card shows a purple `+ own URL` badge when that rule is wired to its own dedicated URL — at-a-glance signal that this rule is routing independently.
-
-- **Orphan-URL nudge.** The modal warns you if a per-rule URL is configured but the rule has zero history entries — strong signal you generated the URL but forgot to paste it into Sonarr/Radarr Connect. Self-heals on the first received event.
+- **Heads-up if you forget to paste.** The modal warns when a URL is generated but no events have arrived yet — usually means you forgot to add the webhook in Sonarr/Radarr Connect.
 
 ### Bug fixes
 
-- **qBit Category Fix edit-modal now remembers both pickers.** Opening Edit on a rule that uses qBit Category Fix would reset the qBit instance picker AND the "Download client in Sonarr/Radarr" picker to empty. Click Save without checking and the rule got silently re-pointed at the wrong picks. Both dropdowns now restore their saved values. The Download-client one was extra tricky because options load asynchronously after the modal opens — switched to a `:selected`-on-each-option pattern that handles async-loaded options reliably.
+- **qBit Category Fix rule remembers its picks on edit.** Opening Edit used to clear the qBit instance and Download client dropdowns — clicking Save without checking would re-point the rule. Both stick now.
 
-- **Webhook-rule edit-modal now remembers the "When Discover finds a new release group" choice.** The radio for "Add to config — leave disabled" / "Add to config and enable" appeared as nothing-selected on Edit even though the rule had a saved value. Click Save without re-picking and the rule lost its preference. Now restores correctly.
+- **Discover preference remembered on edit.** The "When Discover finds a new release group" choice (leave disabled / add and enable) showed as nothing-picked on Edit. Now restores.
 
 ## v0.6.2-dev — Catch cross-seed adds + clearer rule wording (2026-05-14)
 
