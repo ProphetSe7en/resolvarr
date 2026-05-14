@@ -70,6 +70,15 @@ type Server struct {
 	// directly without calling NewServer keep working.
 	arrDLCache   *arrDownloadClientCache
 	arrDLCacheMu sync.Mutex
+
+	// qbitBuffer is the per-rule debounce buffer for qBit-side
+	// "torrent added" hooks (M-qBit-add Slice 3). Lazily allocated by
+	// QbitEventBuffer() on first call so test factories that build
+	// Server{} directly don't need explicit wiring. main.go should
+	// call buf.FlushAll() during graceful shutdown so in-flight
+	// cross-seed bursts get processed before exit.
+	qbitBuffer   *qbitEventBuffer
+	qbitBufferMu sync.Mutex
 }
 
 // DvScanState is the atomic snapshot the progress endpoint returns.

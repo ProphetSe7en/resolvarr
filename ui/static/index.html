@@ -189,6 +189,7 @@
                   </template>
                   <div style="display:flex;gap:6px">
                     <button class="btn btn-sm" @click="testQbitInstance(qi.id)" :disabled="qbitStatus[qi.id] === 'testing'">Test</button>
+                    <button class="btn btn-sm" @click="openQbitWebhookModal(qi)" title="Configure qBit-side webhook hook (catches cross-seed adds)">Webhook</button>
                     <button class="btn btn-sm" @click="openQbitInstanceModal(qi)">Edit</button>
                     <button class="btn btn-sm btn-danger" @click="confirmDeleteQbitInstance(qi)">Delete</button>
                   </div>
@@ -1814,7 +1815,7 @@
                   <span style="font-size:12px;color:var(--text-secondary);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Per-tag breakdown</span>
                   <span style="font-size:12px;color:var(--text-muted-secondary)" x-text="'(' + qfaDetailAutoActive().totals.autoTagRollups.length + ' rows)'"></span>
                   <div style="flex:1"></div>
-                  <span x-show="!qfaDetailBreakdownOpen" style="font-size:11px;color:var(--text-muted-secondary)">click rows to filter movies</span>
+                  <span x-show="!qfaDetailBreakdownOpen" style="font-size:11px;color:var(--text-muted-secondary)" x-text="'click rows to filter ' + qfaDetailAutoNounPlural()"></span>
                 </div>
                 <template x-if="qfaDetailBreakdownOpen">
                   <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -1831,7 +1832,7 @@
                         <tr :class="idx % 2 ? 'qfa-rollup-alt' : ''"
                             :style="{ cursor: 'pointer', background: (qfaDetailAutoTagFilter && qfaDetailAutoTagFilter.bucket === row.bucket && qfaDetailAutoTagFilter.tag === row.tag && qfaDetailAutoFilter === row.action) ? 'var(--alpha-blue)' : '' }"
                             @click="setAutoTagFilter(row.action, row.bucket, row.tag)"
-                            :title="'Click to show only movies that ' + row.action + ' ' + row.tag">
+                            :title="'Click to show only ' + qfaDetailAutoNounPlural() + ' that ' + row.action + ' ' + row.tag">
                           <td style="padding:6px 16px">
                             <span :class="row.action === 'add' ? 'v-add' : row.action === 'remove' ? 'v-rem' : 'v-keep'" x-text="row.action"></span>
                           </td>
@@ -1853,21 +1854,21 @@
                  breakdown row narrowed the list further; click × to
                  clear and return to the action-chip view. -->
             <div class="filter-row" style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px">
-              <span class="filter-label">Show movies where tags will be:</span>
+              <span class="filter-label" x-text="'Show ' + qfaDetailAutoNounPlural() + ' where tags will be:'"></span>
               <button class="filter-pill" :class="{ 'is-active': qfaDetailAutoFilter === 'add' }" @click="qfaDetailAutoFilter = 'add'; clearAutoTagFilter()"
-                      :title="qfaDetailAutoActive().mode === 'apply' ? 'Movies that just had tags added' : 'Movies that will get tags added on Apply'">
+                      :title="qfaDetailAutoActive().mode === 'apply' ? qfaDetailAutoNounPluralCap() + ' that just had tags added' : qfaDetailAutoNounPluralCap() + ' that will get tags added on Apply'">
                 <span class="filter-symbol" style="color:var(--accent-green)">+</span>
                 <span x-text="qfaDetailAutoActive().mode === 'apply' ? 'Added' : 'Add'"></span>
                 <span class="filter-count" x-text="'(' + qfaDetailAutoFilterCounts().add + ')'"></span>
               </button>
               <button class="filter-pill" :class="{ 'is-active': qfaDetailAutoFilter === 'remove' }" @click="qfaDetailAutoFilter = 'remove'; clearAutoTagFilter()"
-                      :title="qfaDetailAutoActive().mode === 'apply' ? 'Movies that just had tags removed' : 'Movies that will have tags removed on Apply'">
+                      :title="qfaDetailAutoActive().mode === 'apply' ? qfaDetailAutoNounPluralCap() + ' that just had tags removed' : qfaDetailAutoNounPluralCap() + ' that will have tags removed on Apply'">
                 <span class="filter-symbol" style="color:var(--accent-red)">−</span>
                 <span x-text="qfaDetailAutoActive().mode === 'apply' ? 'Removed' : 'Remove'"></span>
                 <span class="filter-count" x-text="'(' + qfaDetailAutoFilterCounts().remove + ')'"></span>
               </button>
               <button class="filter-pill" :class="{ 'is-active': qfaDetailAutoFilter === 'keep' }" @click="qfaDetailAutoFilter = 'keep'; clearAutoTagFilter()"
-                      :title="'Movies whose tags already match — no changes needed'">
+                      :title="qfaDetailAutoNounPluralCap() + ' whose tags already match — no changes needed'">
                 <span class="filter-symbol" style="color:var(--text-muted-secondary)">=</span>
                 <span x-text="qfaDetailAutoActive().mode === 'apply' ? 'Kept' : 'Keep'"></span>
                 <span class="filter-count" x-text="'(' + qfaDetailAutoFilterCounts().keep + ')'"></span>
@@ -4907,20 +4908,20 @@
           <div class="help-panel" x-show="helpOpen.webhooks" x-cloak>
             <div class="help-section">
               <h4>What does this page do?</h4>
-              <p>Sonarr and Radarr have a <strong>Connect</strong> feature that pushes events (file imports, grabs, deletes) to external services in real time. resolvarr listens for those events and runs functions on them: tag the imported file with audio/video info, recover a missing release-group field, mirror tags to a second instance, rename the qBit torrent for cleaner imports.</p>
-              <p>This page is where you set it up — one webhook URL per instance, then any number of rules on top.</p>
+              <p>Sonarr and Radarr have a <strong>Connect</strong> feature that tells external services when something happens — a file imported, a torrent grabbed, a file deleted. resolvarr listens for those messages and runs actions on them: tag the imported file with audio/video info, recover a missing release group, mirror tags to a second instance, rename the qBit torrent for cleaner imports.</p>
+              <p>This page is where you set it up. Two steps: <strong>(1)</strong> Configure webhook on each Sonarr/Radarr instance — done once per instance, opens the line so messages can reach resolvarr. <strong>(2)</strong> Add a rule with the actions you want — usually ONE rule per Sonarr/Radarr with all the actions ticked you care about. More than one rule is only needed if you want different settings for different kinds of files on the same Sonarr/Radarr (see below).</p>
             </div>
             <div class="help-section">
               <h4>Configure webhook vs Add rule</h4>
               <ul>
-                <li><strong>Configure webhook</strong> — runs once per instance. Generates a unique URL you paste into Sonarr / Radarr's Connect settings. Doesn't decide anything by itself; just opens the delivery channel so events can arrive.</li>
-                <li><strong>+ Add rule</strong> — picks <em>which</em> functions fire on incoming events. Multiple rules per instance with different function sets are fine. Each rule runs independently when its events arrive.</li>
+                <li><strong>Configure webhook</strong> — done once per Sonarr/Radarr. Gives you a unique URL to paste into that Sonarr/Radarr's Connect settings. It just opens the line so messages from Sonarr/Radarr can reach resolvarr — it doesn't decide what to do with them.</li>
+                <li><strong>+ Add rule</strong> — this is where you pick what should actually happen when a message arrives. <strong>Tick all the actions you want on the same rule</strong> — most setups need just one rule per Sonarr/Radarr with several actions ticked. Each rule does its own job when its trigger happens.</li>
               </ul>
-              <p>Typical first-time flow: Configure webhook → paste URL into Sonarr/Radarr → click Test there to verify delivery → come back and Add rule(s).</p>
+              <p>First-time flow: Configure webhook → paste URL into Sonarr/Radarr → click Test there to check the message arrives → come back here and Add ONE rule with all the actions you want.</p>
             </div>
             <div class="help-section">
-              <h4>Why multiple rules per instance?</h4>
-              <p>You might want a rule that tags every imported file (Tag Audio + Tag Video) and a separate rule that strips tags on file delete. Keeping them apart means you can pause / edit / delete each independently. You can also have two rules with overlapping functions but different filter snapshots — useful when one instance handles different quality tiers.</p>
+              <h4>When would I want more than one rule on the same Sonarr/Radarr?</h4>
+              <p>Most setups only need ONE rule per Sonarr/Radarr — tick all the actions you want and you're done. A second rule is useful when you want <strong>different settings on the same Sonarr/Radarr</strong>. For example: one rule for 4K imports with a strict "lossless audio only" filter, plus a second rule for everything else with looser rules. Both run on the same Radarr, but each treats its files differently. If you don't need different settings for different kinds of files, stick with one rule.</p>
             </div>
             <div class="help-section">
               <h4>Per-rule snapshots vs Library scan globals</h4>
@@ -5198,7 +5199,7 @@
               </button>
               <template x-for="[type, count] in webhookEventTypeCounts(webhookActivityInstanceId)" :key="type">
                 <button class="filter-pill" :class="{ 'is-active': webhookEventFilter === type }" @click="webhookEventFilter = type">
-                  <span x-text="type"></span>
+                  <span x-text="connectEventLabel(type)"></span>
                   <span class="filter-count" x-text="'(' + count + ')'"></span>
                 </button>
               </template>
@@ -5243,7 +5244,7 @@
                 <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
                   <div style="display:grid;grid-template-columns:140px 1fr 170px 20px;gap:12px;align-items:center;padding:10px 14px;cursor:pointer" @click="toggleWebhookEventExpanded(ev.id)">
                     <!-- Column 1: event-type pill, fixed width -->
-                    <span class="pill blue" style="font-size:11px;text-transform:none;justify-self:start;white-space:nowrap" x-text="ev.eventType"></span>
+                    <span class="pill blue" style="font-size:11px;text-transform:none;justify-self:start;white-space:nowrap" x-text="connectEventLabel(ev.eventType)"></span>
                     <!-- Column 2: title (+ inline subtitle), single line, ellipsis on overflow -->
                     <div style="font-size:13px;color:var(--text-primary);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">
                       <span x-text="ev.title || '(no title)'"></span>
@@ -5347,6 +5348,159 @@
           <span x-show="qbitInstanceModal.busy">Saving…</span>
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- ===== qBit webhook hook modal (M-qBit-add Slice 5) =====
+       Per-instance config for qBit's "Run external program on torrent
+       added" hook. Catches cross-seed adds + manual qBit adds that
+       don't trigger Sonarr Connect. State indicator at the top tells
+       the user which of the four scenarios applies (not configured /
+       configured by us / third-party content / qBit unreachable),
+       Configure button auto-writes our curl into qBit (with conflict
+       resolution if third-party content present), Show command
+       reveals the curl for manual paste, Test fires a synthetic
+       in-process ping, Reset restores the pre-our-config value.
+       Backdrop click does NOT close — Configure changes are commit
+       to qBit; Cancel button or Escape only. -->
+  <div class="modal-overlay" x-show="qbitWebhookOpen" x-cloak
+       @keydown.escape.window="if (qbitWebhookOpen && !qbitWebhookActionInFlight) closeQbitWebhookModal()">
+    <div class="modal" style="width:720px;max-width:96vw;max-height:90vh;overflow-y:auto" x-cloak>
+      <template x-if="qbitWebhookInstance">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <span style="font-size:11px;font-weight:500;background:var(--alpha-blue);color:var(--accent-sky);padding:2px 10px;border-radius:8px;text-transform:uppercase;letter-spacing:0.4px">Webhook hook</span>
+            <div class="modal-title" style="margin:0;flex:1" x-text="qbitWebhookInstance.name || ''"></div>
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;line-height:1.5">
+            qBit calls resolvarr per torrent added — catches cross-seed adds and manual qBit adds that don't trigger Sonarr Connect. Per-rule debounce buffer aggregates burst events into ONE history entry per window.
+          </div>
+
+          <!-- Loading state -->
+          <template x-if="qbitWebhookLoading">
+            <div style="padding:24px;text-align:center;color:var(--text-muted)">Loading…</div>
+          </template>
+
+          <!-- Load-failure fallback — toast fires but inside a blank
+               modal that's not discoverable, so surface the failure
+               inline too so the user knows what happened. -->
+          <template x-if="!qbitWebhookLoading && !qbitWebhookData">
+            <div style="padding:24px;text-align:center;color:var(--text-secondary);font-size:13px;line-height:1.5">
+              Could not load webhook config.<br>
+              <span style="color:var(--text-muted-secondary)">Check the toast message at the top of the page for details; common causes are an unreachable qBit instance or a session timeout. Close this modal and try again, or reload the page.</span>
+            </div>
+          </template>
+
+          <!-- Loaded — main content -->
+          <template x-if="!qbitWebhookLoading && qbitWebhookData">
+            <div>
+              <!-- State indicator -->
+              <div style="padding:10px 14px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page);margin-bottom:14px;display:flex;align-items:center;gap:8px">
+                <div style="width:8px;height:8px;border-radius:50%" :style="'background:' + qbitWebhookStateLabel().color"></div>
+                <div style="font-size:13px;color:var(--text-body)" x-text="qbitWebhookStateLabel().text"></div>
+              </div>
+
+              <!-- qBit current state preview (when fetch succeeded + non-empty) -->
+              <template x-if="qbitWebhookData.qbitState && qbitWebhookData.qbitState.currentProgram">
+                <div style="margin-bottom:14px">
+                  <label class="label" style="font-size:12px;color:var(--text-secondary)">qBit currently runs on torrent added:</label>
+                  <div style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:4px;padding:8px;word-break:break-all;color:var(--text-secondary);max-height:120px;overflow-y:auto" x-text="qbitWebhookData.qbitState.currentProgram"></div>
+                </div>
+              </template>
+
+              <!-- qBit fetch error -->
+              <template x-if="qbitWebhookData.qbitState && qbitWebhookData.qbitState.fetchError">
+                <div style="margin-bottom:14px;padding:10px 14px;background:var(--alpha-orange);border:1px solid var(--accent-orange);border-radius:6px;font-size:12px;color:var(--accent-orange);line-height:1.5">
+                  <strong>Could not read qBit's current autorun state:</strong> <span x-text="qbitWebhookData.qbitState.fetchError"></span><br>
+                  Auto-Configure won't work — use <strong>Show command</strong> below to copy the curl, then paste it into qBit's WebUI yourself (Settings → Downloads → "Run external program on torrent added"). Most common cause: qui-proxy URL where qui blocks writes to qBit's preferences.
+                </div>
+              </template>
+
+              <!-- Generated secret + rotate -->
+              <div style="margin-bottom:14px">
+                <label class="label" style="font-size:12px;color:var(--text-secondary)">Webhook secret (X-API-Key) — qBit needs this to authenticate to resolvarr</label>
+                <div style="display:flex;gap:6px;align-items:stretch">
+                  <input class="input" readonly :value="qbitWebhookData.secret" style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;flex:1">
+                  <button class="btn btn-sm" @click="copyQbitWebhookSecret()" style="white-space:nowrap">Copy</button>
+                  <button class="btn btn-sm" @click="doRotateQbitWebhookSecret()" :disabled="qbitWebhookActionInFlight" style="white-space:nowrap">Rotate</button>
+                </div>
+              </div>
+
+              <!-- Action buttons -->
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+                <button class="btn btn-primary" @click="onQbitConfigureClick()" :disabled="qbitWebhookActionInFlight || (qbitWebhookData.qbitState && qbitWebhookData.qbitState.fetchError)" title="Auto-write our curl into qBit's autorun field">
+                  <span x-show="!qbitWebhookActionInFlight">Configure in qBit</span>
+                  <span x-show="qbitWebhookActionInFlight">Working…</span>
+                </button>
+                <button class="btn" @click="qbitWebhookShowCurl = !qbitWebhookShowCurl" :title="qbitWebhookShowCurl ? 'Hide curl command' : 'Reveal curl for manual paste into qBit'">
+                  <span x-show="!qbitWebhookShowCurl">Show command</span>
+                  <span x-show="qbitWebhookShowCurl">Hide command</span>
+                </button>
+                <button class="btn" @click="doTestQbitWebhook()" :disabled="qbitWebhookActionInFlight" title="Synthetic in-process ping — verifies the receiver path is wired (does NOT verify qBit can reach resolvarr)">Test</button>
+                <template x-if="qbitWebhookData.qbitState && qbitWebhookData.qbitState.configuredByUs">
+                  <button class="btn btn-danger" @click="doResetQbitWebhook()" :disabled="qbitWebhookActionInFlight" title="Restore qBit's pre-our-config autorun value (or clear it if there was no backup)">Reset</button>
+                </template>
+              </div>
+
+              <!-- Test result banner -->
+              <template x-if="qbitWebhookTestResult">
+                <div :style="qbitWebhookTestResult.ok ? 'background:var(--alpha-green);border:1px solid var(--accent-green);color:var(--accent-green)' : 'background:var(--alpha-red);border:1px solid var(--accent-red);color:var(--accent-red)'"
+                     style="padding:10px 14px;border-radius:6px;font-size:12px;line-height:1.5;margin-bottom:14px"
+                     x-text="qbitWebhookTestResult.message"></div>
+              </template>
+
+              <!-- Manual paste curl reveal -->
+              <template x-if="qbitWebhookShowCurl">
+                <div style="margin-bottom:14px">
+                  <label class="label" style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;justify-content:space-between">
+                    <span>Curl command for manual paste into qBit Settings → Downloads → "Run external program on torrent added":</span>
+                    <button class="btn btn-sm" @click="copyQbitWebhookCurl()" style="margin-left:8px;white-space:nowrap">Copy curl</button>
+                  </label>
+                  <pre style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:4px;padding:10px;word-break:break-all;white-space:pre-wrap;color:var(--text-body);max-height:200px;overflow-y:auto;margin:0" x-text="qbitWebhookData.curlCommand"></pre>
+                  <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:6px;line-height:1.5">
+                    The URL uses your browser's resolvarr hostname (<span x-text="qbitWebhookData.webhookUrl"></span>). If qBit is on a different network and reaches resolvarr at a different address, edit the URL portion before pasting. The qBit container needs to be able to reach resolvarr's port (default 6075).
+                  </div>
+                </div>
+              </template>
+
+              <!-- ===== Conflict resolution sub-flow =====
+                   Opens when user clicks Configure but qBit autorun
+                   has third-party content. Three radio options +
+                   live preview of the resulting field. Apply commits;
+                   Cancel returns to main modal. -->
+              <template x-if="qbitWebhookConflictOpen">
+                <div style="border:2px solid var(--accent-orange);border-radius:6px;padding:14px;background:var(--alpha-orange);margin-bottom:14px">
+                  <div style="font-size:14px;font-weight:600;color:var(--accent-orange);margin-bottom:8px">⚠ qBit's autorun field already has content</div>
+                  <div style="font-size:12px;color:var(--text-body);margin-bottom:10px;line-height:1.5">
+                    Choose how to combine our curl with the existing script. Append runs both (semicolon-separated, neither blocks the other). Replace overwrites — we'll save your existing value as a backup so you can restore via Reset later.
+                  </div>
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:6px">
+                    <input type="radio" value="append" x-model="qbitWebhookConflictMode" :disabled="qbitWebhookActionInFlight" style="accent-color:var(--accent-blue)">
+                    <span><strong>Append</strong> — keep existing script, add our curl after it</span>
+                  </label>
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:10px">
+                    <input type="radio" value="replace" x-model="qbitWebhookConflictMode" :disabled="qbitWebhookActionInFlight" style="accent-color:var(--accent-blue)">
+                    <span><strong>Replace</strong> — overwrite existing (saved as backup, restorable via Reset)</span>
+                  </label>
+                  <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px">Preview of resulting qBit autorun field:</div>
+                  <pre style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:10px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:4px;padding:8px;word-break:break-all;white-space:pre-wrap;max-height:160px;overflow-y:auto;color:var(--text-body);margin:0" x-text="qbitWebhookConflictPreview()"></pre>
+                  <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end">
+                    <button class="btn" @click="qbitWebhookConflictOpen = false" :disabled="qbitWebhookActionInFlight">Cancel</button>
+                    <button class="btn btn-primary" @click="doConfigureQbitWebhook(qbitWebhookConflictMode)" :disabled="qbitWebhookActionInFlight">
+                      <span x-show="!qbitWebhookActionInFlight">Apply</span>
+                      <span x-show="qbitWebhookActionInFlight">Writing…</span>
+                    </button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <div class="modal-actions" style="margin-top:18px">
+            <button class="btn" @click="closeQbitWebhookModal()" :disabled="qbitWebhookActionInFlight">Close</button>
+          </div>
+        </div>
+      </template>
     </div>
   </div>
 
@@ -5527,7 +5681,7 @@
                  +Add rule button on the Webhooks page themselves. -->
             <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--alpha-blue-soft);border:1px solid var(--alpha-blue-border-strong);border-radius:8px">
               <div style="flex:1;font-size:12px;color:var(--text-body);line-height:1.5">
-                <strong style="color:var(--accent-sky)">Now configure functions.</strong> Add a rule that picks which functions fire on incoming events. The rule editor's Review step will tell you which Connect triggers to enable in <span x-text="webhookWizard.appType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> based on your function picks.
+                <strong style="color:var(--accent-sky)">Now pick what should happen.</strong> Add a rule and tick the actions you want resolvarr to run on incoming messages. The Review step at the end of the wizard will tell you exactly which triggers to turn on in <span x-text="webhookWizard.appType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> so the right messages actually reach resolvarr.
               </div>
               <button class="btn btn-sm btn-primary" @click="closeWebhookWizard(); openWebhookRuleEditor(webhookWizard.instanceId)" style="white-space:nowrap">+ Add rule</button>
             </div>
@@ -6017,8 +6171,8 @@
           </button>
           <div class="help-panel" x-show="helpOpen.ruleBasics" x-cloak>
             <div class="help-section">
-              <h4>What does a rule do?</h4>
-              <p>Pick the functions you want to run automatically when Sonarr or Radarr sends a Connect event. Each function is independent — tick the ones you want, leave the rest alone. The list of Connect events you'll need to enable in Sonarr / Radarr is built from your function picks and shown on the Review step at the end.</p>
+              <h4>What is a rule?</h4>
+              <p>A rule is a saved set of actions that run automatically when Sonarr or Radarr tells resolvarr something happened — a file imported, a torrent grabbed, a file deleted. <strong>Tick all the actions you want — they all live on the same rule and run together</strong>. Most setups only need ONE rule per Sonarr/Radarr instance with several actions ticked. At the end of the wizard you'll get a checklist of what to turn on in Sonarr/Radarr so the messages actually reach resolvarr.</p>
             </div>
             <div class="help-section">
               <h4>What each function does</h4>
@@ -6045,12 +6199,12 @@
               </ul>
             </div>
             <div class="help-section">
-              <h4>Why pick functions per rule instead of all in one?</h4>
-              <p>Each rule fires independently. A "Tag everything imported" rule and a "Cleanup tags on delete" rule do different work on different events — keeping them separate means you can pause / edit / delete them individually. You can also have two rules with overlapping functions if you want different filter snapshots (e.g. one rule with relaxed filters for 4K Radarr, another with strict filters for SD).</p>
+              <h4>When would I want more than one rule?</h4>
+              <p>Most setups only need ONE rule per Sonarr/Radarr — tick all the actions you want and you're done. A second rule is useful when you want <strong>different settings on the same Sonarr/Radarr</strong>. For example: one rule for 4K imports with a strict "lossless audio only" filter, plus a second rule for everything else with looser rules. Both run on the same Radarr, but each treats its files differently. If you don't need different settings for different kinds of files, stick with one rule.</p>
             </div>
             <div class="help-section">
-              <h4>Per-rule snapshots</h4>
-              <p>Filters, Audio / Video / DV bucket configs and Active-groups picks all have global defaults under <strong>Library scan</strong>. When this rule saves, those globals get copied into the rule as a snapshot. Future global changes don't drift this rule's behaviour. The steps after Basics let you override any snapshot per-rule.</p>
+              <h4>Rules remember their settings</h4>
+              <p>The Filters, Audio / Video / DV tag picks, and Active-groups list all have defaults you set under <strong>Library scan</strong>. When you save a rule, those defaults are copied into the rule so the rule keeps working the same way even if you later change the Library scan defaults. The steps after Basics let you override any of those copied settings for this rule only.</p>
             </div>
           </div>
 
@@ -6062,7 +6216,17 @@
 
           <div class="form-group">
             <label class="label" x-text="'Target ' + (ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance'"></label>
-            <select class="input" x-model="editingRule.instanceId" @change="ruleEditorOnInstanceChange()">
+            <!-- $nextTick force-sync: classic Alpine x-model + x-for
+                 timing bug — the select binds its value BEFORE the
+                 template-for has rendered options, so the browser
+                 silently drops the saved instanceId and falls back
+                 to the first option. Forcing $el.value AFTER the
+                 next tick (when options exist) re-selects the right
+                 row. Without this, opening Edit on a rule and
+                 clicking Save silently re-points it at whichever
+                 instance happens to be first in the list. -->
+            <select class="input" x-model="editingRule.instanceId" @change="ruleEditorOnInstanceChange()"
+                    x-init="$nextTick(() => { if (editingRule.instanceId) $el.value = editingRule.instanceId })">
               <template x-for="inst in ruleEditorInstancesAvailable()" :key="inst.id">
                 <option :value="inst.id" x-text="inst.name"></option>
               </template>
@@ -6330,7 +6494,11 @@
           <template x-if="!isPerActionAutoTag()">
             <div class="form-group">
               <label class="label">Primary instance</label>
-              <select class="input" x-model="editingRule.instanceId" @change="ruleEditorOnInstanceChange()">
+              <!-- $nextTick force-sync — see same comment on the
+                   webhook-mode instance picker above. Same Alpine
+                   x-model + x-for timing bug. -->
+              <select class="input" x-model="editingRule.instanceId" @change="ruleEditorOnInstanceChange()"
+                      x-init="$nextTick(() => { if (editingRule.instanceId) $el.value = editingRule.instanceId })">
                 <template x-for="inst in ruleEditorInstancesAvailable()" :key="inst.id">
                   <option :value="inst.id" x-text="inst.name"></option>
                 </template>
@@ -7171,9 +7339,10 @@
           </button>
           <div class="help-panel" x-show="helpOpen.ruleGrabRename" x-cloak>
             <div class="help-section">
-              <h4>What Grab Rename does</h4>
-              <p>When Sonarr/Radarr fires the <strong>On Grab</strong> Connect event, this step compares the indexer's release title to what your qBit client is about to call the torrent. If the qBit name is missing tokens that the grab title has — release group, source like <code>AMZN</code>, audio tokens like <code>TrueHD Atmos</code> — it renames the torrent in qBit to match the grab title.</p>
-              <p style="margin-top:6px">The <em>file</em> on disk isn't renamed — only qBit's display name. Radarr/Sonarr import-time parsing then sees the corrected name and scores it correctly. Useful when your indexer strips tokens that affect custom-format scoring.</p>
+              <h4>What Grab Rename does — and why</h4>
+              <p>The main reason this exists: there's a rare grab-loop where Sonarr/Radarr keeps re-grabbing the same release. It happens when the qBittorrent torrent name is missing info the release title has — release group, source like <code>WEB-DL</code>, audio like <code>TrueHD Atmos</code>. At import time the Arr re-scores the file using whatever name qBit gave it, sees a lower custom-format score than at grab time, decides the file isn't good enough, and grabs again. Same release, same name, same outcome — loop.</p>
+              <p style="margin-top:6px">This action renames the qBit torrent at grab time to match the release title from the indexer, so the import-time score lines up with the grab-time score and the loop never starts. You pick which kinds of missing info to fix per rule (see triggers below).</p>
+              <p style="margin-top:6px">Only the qBit torrent's display name changes — the file on disk stays untouched.</p>
             </div>
             <div class="help-section">
               <h4>qBit instance pairing</h4>
@@ -7183,12 +7352,12 @@
               <h4>Triggers — when does rename fire?</h4>
               <p>Each trigger looks for a different kind of mismatch between the qBit name and the grab title. They OR together — any one detecting a diff fires a rename. Pick the categories you care about; un-ticked categories are silent.</p>
               <ul>
-                <li><strong>Missing release-group</strong> — the qBit name doesn't have a parseable release group (<code>-GROUP</code> suffix). Catches the Rango/Matilda failure mode where the group is visually present but Radarr's strict parser rejects it.</li>
-                <li><strong>Movie-version mismatch</strong> — Radarr only. Grab title has Director's Cut / Theatrical / Extended / Unrated / etc. but qBit name lacks it.</li>
-                <li><strong>Source mismatch</strong> — grab title has a streaming-source token the qBit name lacks. Checked tokens: <code>MA WEB-DL</code>, <code>Play WEB-DL</code>, <code>AMZN</code>, <code>NF</code>, <code>DSNP</code>, <code>HMAX</code>, <code>HULU</code>, <code>PCOK</code>, <code>CR</code>, <code>ATVP</code>, and plain <code>WEB-DL</code> as a fallback. (<code>MA</code> and <code>Play</code> only count when paired with <code>WEB-DL</code> — that's the premium-source TRaSH CFs key on.)</li>
-                <li><strong>Audio mismatch</strong> — grab title has an audio token (<code>TrueHD Atmos</code>, <code>DTS-HD MA</code>, <code>DTS-X</code>, etc.) the qBit name lacks.</li>
-                <li><strong>Scene mismatch</strong> — nuanced: fires when the qBit name <em>looks</em> scene-stripped (<code>WEB</code> without <code>WEB-DL</code>) AND the release group is NOT on the TRaSH scene-CF list. Legit scene releases (group IS on the list) are left alone to preserve scene-CF scoring.</li>
-                <li><strong>Always rename</strong> — bypass token detection; rename whenever qBit and grab title differ. Cosmetic-churn risk.</li>
+                <li><strong>Missing release-group</strong> — the qBit name doesn't end with a clean <code>-GROUP</code> suffix that Sonarr/Radarr can read. Catches cases where the group is visually there but in a format the Arr can't pick up (e.g. a space before the dash).</li>
+                <li><strong>Edition / version mismatch</strong> — Radarr only. The release title has Director's Cut / Theatrical / Extended / Unrated / etc. but the qBit name doesn't.</li>
+                <li><strong>Source mismatch</strong> — the release title has a streaming-source label the qBit name doesn't. We look for <code>MA WEB-DL</code>, <code>Play WEB-DL</code>, <code>AMZN</code>, <code>NF</code>, <code>DSNP</code>, <code>HMAX</code>, <code>HULU</code>, <code>PCOK</code>, <code>CR</code>, <code>ATVP</code>, and plain <code>WEB-DL</code> as a fallback. (<code>MA</code> and <code>Play</code> only count when paired with <code>WEB-DL</code> — that matches the premium-source rules from TRaSH Guides.)</li>
+                <li><strong>Audio mismatch</strong> — the release title has an audio label (<code>TrueHD Atmos</code>, <code>DTS-HD MA</code>, <code>DTS-X</code>, etc.) the qBit name doesn't.</li>
+                <li><strong>Scene-stripped name</strong> — the qBit name looks like it had its scene info stripped (<code>WEB</code> instead of <code>WEB-DL</code>) AND the release group is NOT a known scene group from TRaSH Guides. Actual scene releases from a real scene group are left alone so their original score isn't disturbed.</li>
+                <li><strong>Always rename</strong> — skip the checks above; rename whenever the qBit name differs from the release title. Heads-up: this can rename torrents purely cosmetically and trigger Sonarr/Radarr rescans more often than needed.</li>
               </ul>
             </div>
             <div class="help-section">
@@ -7197,7 +7366,7 @@
             </div>
             <div class="help-section">
               <h4>Custom tokens</h4>
-              <p>Optional escape hatch. Each entry is a <code>Label:regex</code> pair — when the regex matches the grab title but not the qBit name, rename fires (independent of the trigger checkboxes above). The label appears in the audit log when the token fires. Server uses Go's RE2 regex engine; client-side validation catches obvious typos but isn't authoritative.</p>
+              <p>For anything the built-in triggers above don't cover. Each entry is a <code>Label:pattern</code> pair — when the pattern matches the release title but not the qBit name, rename runs (no matter which checkboxes you ticked above). The label is what shows up in the audit log when that token fires. Patterns use standard regex; basic typos are caught when you save, but the real check happens server-side.</p>
             </div>
           </div>
 
@@ -7214,9 +7383,12 @@
               </div>
             </template>
             <template x-if="(qbitInstances || []).length > 0">
+              <!-- $nextTick force-sync — same Alpine x-model + x-for
+                   timing bug fix as the Arr instance picker above. -->
               <select class="input"
                       x-model="editingRule.grabRename.qbitInstanceId"
                       :class="!editingRule.grabRename.qbitInstanceId && 'input-invalid'"
+                      x-init="$nextTick(() => { if (editingRule.grabRename && editingRule.grabRename.qbitInstanceId) $el.value = editingRule.grabRename.qbitInstanceId })"
                       style="max-width:320px">
                 <option value="">Select a qBit instance...</option>
                 <template x-for="q in (qbitInstances || [])" :key="q.id">
@@ -7403,9 +7575,13 @@
                   </div>
                 </template>
                 <template x-if="(qbitInstances || []).length > 0">
+                  <!-- $nextTick force-sync — same Alpine x-model +
+                       x-for timing bug fix as the Arr instance picker
+                       at the top of the wizard. -->
                   <select class="input"
                           x-model="editingRule.qbitSe.qbitInstanceId"
                           :class="!editingRule.qbitSe.qbitInstanceId && 'input-invalid'"
+                          x-init="$nextTick(() => { if (editingRule.qbitSe && editingRule.qbitSe.qbitInstanceId) $el.value = editingRule.qbitSe.qbitInstanceId })"
                           style="max-width:320px">
                     <option value="">Select a qBit instance...</option>
                     <template x-for="q in (qbitInstances || [])" :key="q.id">
@@ -7486,6 +7662,28 @@
                     ⚠ At least one rule must be enabled — otherwise the function has nothing to do.
                   </div>
                 </template>
+
+                <!-- M-qBit-add Slice 6 — aggregation window. Only
+                     relevant for the qBit-side "torrent added" hook
+                     path (catches cross-seed adds). Sonarr Connect
+                     "Grab" events fire instantly regardless. Field
+                     stores 0 = use default 60s; range 1..3600
+                     enforced server-side at buffer-enqueue. -->
+                <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border-subtle)">
+                  <label class="label" style="font-size:13px;color:var(--text-primary);font-weight:500;margin-bottom:4px">Aggregation window (seconds)</label>
+                  <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+                    <input class="input"
+                           type="number"
+                           min="1" max="3600" step="1"
+                           x-model.number="editingRule.qbitSe.aggregationWindowSeconds"
+                           placeholder="60"
+                           style="width:120px;font-size:13px">
+                    <span style="font-size:11px;color:var(--text-secondary)">Default: 60 · Range: 1–3600 seconds</span>
+                  </div>
+                  <div style="font-size:11px;color:var(--text-secondary);line-height:1.5">
+                    Cross-seed often adds 5–10 torrents in seconds. With aggregation, all qBit-side webhook fires for this rule within the window become <strong>ONE</strong> history entry + ONE notification — instead of 10 separate ones flooding your history. Sonarr Connect "Grab" events always fire instantly regardless of this setting. Set to <strong>1</strong> if you want near-instant qBit-add notifications and don't mind the noise on cross-seed bursts.
+                  </div>
+                </div>
               </div>
             </div>
           </template>
@@ -8262,7 +8460,7 @@
                           :class="run.status === 'ok' ? 'green' : (run.status === 'partial' ? 'amber' : (run.status === 'error' ? 'red' : 'gray'))"
                           style="font-size:10px"
                           x-text="run.status || 'unknown'"></span>
-                    <span style="font-size:13px;color:var(--text-body);font-weight:500" x-text="run.eventType || '(unknown event)'"></span>
+                    <span style="font-size:13px;color:var(--text-body);font-weight:500" x-text="connectEventLabel(run.eventType)"></span>
                     <template x-if="run.itemTitle">
                       <span style="font-size:13px;color:var(--text-secondary)" x-text="'· ' + run.itemTitle + (run.itemContext ? ' (' + run.itemContext + ')' : '')"></span>
                     </template>
