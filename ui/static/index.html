@@ -189,7 +189,6 @@
                   </template>
                   <div style="display:flex;gap:6px">
                     <button class="btn btn-sm" @click="testQbitInstance(qi.id)" :disabled="qbitStatus[qi.id] === 'testing'">Test</button>
-                    <button class="btn btn-sm" @click="openQbitWebhookModal(qi)" title="Configure qBit-side webhook hook (catches cross-seed adds)">Webhook</button>
                     <button class="btn btn-sm" @click="openQbitInstanceModal(qi)">Edit</button>
                     <button class="btn btn-sm btn-danger" @click="confirmDeleteQbitInstance(qi)">Delete</button>
                   </div>
@@ -4910,6 +4909,7 @@
               <h4>What does this page do?</h4>
               <p>Sonarr and Radarr have a <strong>Connect</strong> feature that tells external services when something happens — a file imported, a torrent grabbed, a file deleted. resolvarr listens for those messages and runs actions on them: tag the imported file with audio/video info, recover a missing release group, mirror tags to a second instance, rename the qBit torrent for cleaner imports.</p>
               <p>This page is where you set it up. Two steps: <strong>(1)</strong> Configure webhook on each Sonarr/Radarr instance — done once per instance, opens the line so messages can reach resolvarr. <strong>(2)</strong> Add a rule with the actions you want — usually ONE rule per Sonarr/Radarr with all the actions ticked you care about. More than one rule is only needed if you want different settings for different kinds of files on the same Sonarr/Radarr (see below).</p>
+              <p><strong>qBit webhook (separate, optional):</strong> if you also want resolvarr to react to torrents added to qBit that don't go through Sonarr/Radarr (cross-seed and manual adds), there's a separate <strong>qBit webhooks</strong> section further down on this page. Only matters if you have a rule with <strong>qBit S/E tag</strong> turned on — other rules ignore qBit-add events entirely.</p>
             </div>
             <div class="help-section">
               <h4>Configure webhook vs Add rule</h4>
@@ -4946,11 +4946,13 @@
 
           <!-- + Configure webhook lives below the help-toggle so the
                header → desc → help → action ordering is consistent
-               with the rest of the UI. -->
+               with the rest of the UI. Button text + size mirrors the
+               qBit Webhook buttons further down so the Webhooks page
+               reads as one coherent surface. -->
           <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
-            <button class="btn btn-primary" @click="openWebhookWizard()" :disabled="(instances || []).length === 0"
-                    :title="(instances || []).length === 0 ? 'Add an Arr instance first' : 'Walks you through Sonarr/Radarr → instance → enable logging, then shows the URL + setup steps for the Arr side'">
-              + Configure webhook
+            <button class="btn btn-sm btn-primary" @click="openWebhookWizard()" :disabled="(instances || []).length === 0"
+                    :title="(instances || []).length === 0 ? 'Add an Arr instance first' : 'Walks you through ' + (webhookAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' → instance → enable logging, then shows the URL + setup steps for the Arr side'">
+              <span x-text="'+ Configure ' + (webhookAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' webhook'"></span>
             </button>
           </div>
 
@@ -5170,6 +5172,40 @@
                 <template x-if="!webhookConfigs[inst.id] || !webhookConfigs[inst.id].token">
                   <div style="padding:14px;background:var(--bg-page);border:1px dashed var(--border-subtle);border-radius:8px;text-align:center;font-size:13px;color:var(--text-secondary)">
                     No webhook URL configured yet. Click <strong>+ Configure webhook</strong> above to generate the URL for this instance, then come back to add rules.
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+
+          <!-- ===== qBit webhooks =====
+               Catches torrents added to qBit that Sonarr/Radarr don't
+               know about (cross-seed, manual adds). Only matters for
+               rules with qBit S/E tag enabled — those rules also fire
+               on qBit-add events when this is configured. Other rules
+               (Tag Audio, Recover, etc.) are unaffected. -->
+          <div style="margin-top:24px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+              <div>
+                <div class="settings-section-title">qBit webhooks</div>
+                <div class="settings-section-desc">qBit calls resolvarr when a torrent is added — catches cross-seed and any manual qBit additions that don't go through Sonarr/Radarr. Only affects rules that have <strong>qBit S/E tag</strong> enabled and point at the matching qBit instance. Rules without that function never fire on qBit-add events.</div>
+              </div>
+            </div>
+
+            <template x-if="(qbitInstances || []).length === 0">
+              <div style="padding:14px;background:var(--bg-page);border:1px dashed var(--border-subtle);border-radius:8px;text-align:center;font-size:13px;color:var(--text-secondary)">
+                No qBit instances configured. Add one under <strong>Settings → qBittorrent</strong> first.
+              </div>
+            </template>
+
+            <template x-if="(qbitInstances || []).length > 0">
+              <div>
+                <template x-for="qi in (qbitInstances || [])" :key="qi.id">
+                  <div class="inst-row" style="margin-bottom:8px">
+                    <div style="font-size:13px;font-weight:500;min-width:120px" x-text="qi.name"></div>
+                    <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+                      <button class="btn btn-sm btn-primary" @click="openQbitWebhookModal(qi)">Webhook</button>
+                    </div>
                   </div>
                 </template>
               </div>
@@ -5437,9 +5473,18 @@
                 </div>
               </div>
 
-              <!-- Action buttons -->
+              <!-- Action buttons. Configure-in-qBit stays clickable
+                   even when the upfront preferences-read failed —
+                   clicking will attempt the write anyway and surface
+                   the qBit-side error via toast. Originally disabled
+                   on fetchError, but that left users with a dead
+                   button + an orange banner explaining why; making
+                   the click go through gives them concrete feedback
+                   AND lets them try (sometimes the preferences-read
+                   fails due to qui's read-only filtering but the
+                   write still works through a different code path). -->
               <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
-                <button class="btn btn-primary" @click="onQbitConfigureClick()" :disabled="qbitWebhookActionInFlight || (qbitWebhookData.qbitState && qbitWebhookData.qbitState.fetchError)" title="Auto-write our curl into qBit's autorun field">
+                <button class="btn btn-primary" @click="onQbitConfigureClick()" :disabled="qbitWebhookActionInFlight" title="Auto-write our curl into qBit's autorun field">
                   <span x-show="!qbitWebhookActionInFlight">Configure in qBit</span>
                   <span x-show="qbitWebhookActionInFlight">Working…</span>
                 </button>
@@ -6154,7 +6199,7 @@
             <template x-for="(s, idx) in ruleEditorVisibleSteps()" :key="s">
               <div style="display:flex;align-items:center;gap:6px">
                 <span :style="idx === ruleEditor.step ? 'color:var(--accent-blue);font-weight:600' : (idx < ruleEditor.step ? 'color:var(--accent-green)' : '')"
-                      x-text="(idx + 1) + '. ' + (s === 'basics' ? 'Basics' : s === 'rg' ? 'Release Groups' : s === 'filters' ? 'Filters' : s === 'audio' ? 'Audio tags' : s === 'video' ? 'Video tags' : s === 'dvdetail' ? 'DV detail' : s === 'schedule' ? 'Schedule' : 'Review')"></span>
+                      x-text="(idx + 1) + '. ' + ruleEditorStepLabel(s)"></span>
                 <span x-show="idx < ruleEditorVisibleSteps().length - 1" style="opacity:0.4">→</span>
               </div>
             </template>
@@ -8991,6 +9036,28 @@
         <button type="button" class="toast-dismiss" @click="dismissToast(t.id)" title="Dismiss" aria-label="Dismiss">×</button>
       </div>
     </template>
+  </div>
+
+  <!-- ===== Custom confirm dialog =====
+       Replaces window.confirm() everywhere. Driven by confirmModal
+       state + this.confirmDialog({...}) Promise helper. Backdrop
+       click cancels (same as Cancel button); Escape cancels too.
+       For destructive actions, kind='danger' colours the Confirm
+       button red so the user pauses before clicking. -->
+  <div class="modal-overlay" x-show="confirmModal.open" x-cloak
+       @click.self="confirmDialogCancel()"
+       @keydown.escape.window="if (confirmModal.open) confirmDialogCancel()">
+    <div class="modal" style="width:480px;max-width:96vw" x-cloak>
+      <div class="modal-title" x-text="confirmModal.title"></div>
+      <div style="font-size:13px;color:var(--text-body);line-height:1.55;margin:8px 0 18px;white-space:pre-wrap" x-text="confirmModal.message"></div>
+      <div class="modal-actions">
+        <button class="btn" @click="confirmDialogCancel()" x-text="confirmModal.cancelText"></button>
+        <button class="btn"
+                :class="confirmModal.kind === 'danger' ? 'btn-danger' : (confirmModal.kind === 'warning' ? 'btn-warning' : 'btn-primary')"
+                @click="confirmDialogOk()"
+                x-text="confirmModal.confirmText"></button>
+      </div>
+    </div>
   </div>
 
   <!-- ============ Add / Edit notification agent modal ============

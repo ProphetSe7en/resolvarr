@@ -2,6 +2,21 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.4-dev — Webhook setup centralised + UI polish (2026-05-14)
+
+### What you get
+
+- **All webhook setup is now on the Webhooks page.** qBit webhook moved here from Settings → qBittorrent. One page for both Sonarr/Radarr and qBit webhook setup.
+- **Configure button shows which Arr.** Says "+ Configure Sonarr webhook" or "+ Configure Radarr webhook" based on the active app-type pill at the top of the page.
+- **All popups now match the rest of the UI.** The browser-default confirm boxes are gone — replaced with styled modals. Destructive actions get a red Confirm button so you pause before clicking.
+
+### Bug fixes
+
+- **Discover "Add all" no longer aborts when a group is already in your Active list.** It now skips duplicates and continues, with a toast like "Added 5 groups (2 already in Active list — skipped)".
+- **"Configure in qBit" button stays clickable when the upfront preferences-read fails.** Previously the button was greyed out so users couldn't see what was actually wrong — now clicking it surfaces the qBit-side error so you can debug or pick the manual paste fallback.
+- **qBit autorun command is now a single line.** Previously emitted with backslash line continuations which can be parsed inconsistently by some shells. Single-line removes the ambiguity. (Click Configure in qBit again to refresh your existing line.)
+- **Wizard progress strip on Sonarr now shows the real step names.** Grab Rename / qBit S/E tag / qBit category fix used to all show "Review" because the labels were missing.
+
 ## v0.6.3-dev — Per-rule webhook URLs (2026-05-14)
 
 ### What you get
