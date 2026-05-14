@@ -161,6 +161,20 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/qbit-instances/{id}/webhook/reset", s.handleQbitResetWebhook)
 
 	mux.HandleFunc("POST /api/webhooks/{token}", s.handleWebhookReceive)
+	// M-per-rule-webhook — per-rule receive URL. Routes directly to one
+	// rule (no instance-dispatcher loop) so Sonarr/Radarr can have one
+	// Connect-webhook per rule with full control over which rule fires
+	// from which URL.
+	mux.HandleFunc("POST /api/webhooks/rule/{ruleToken}", s.handleWebhookReceivePerRule)
+	// Per-rule webhook config CRUD — UI-side helpers for the rule's
+	// own URL + Secret. Mirrors the instance-level webhook handlers
+	// at webhooks.go:633+ but scoped to a single rule rather than
+	// the instance.
+	mux.HandleFunc("GET /api/webhook-rules/{id}/webhook", s.handleGetPerRuleWebhook)
+	mux.HandleFunc("POST /api/webhook-rules/{id}/webhook/generate", s.handleGeneratePerRuleWebhook)
+	mux.HandleFunc("POST /api/webhook-rules/{id}/webhook/rotate-secret", s.handleRotatePerRuleWebhookSecret)
+	mux.HandleFunc("PUT /api/webhook-rules/{id}/webhook/require-signature", s.handleSetPerRuleWebhookRequireSignature)
+	mux.HandleFunc("DELETE /api/webhook-rules/{id}/webhook", s.handleDeletePerRuleWebhook)
 	mux.HandleFunc("GET /api/instances/{id}/webhook", s.handleWebhookGet)
 	mux.HandleFunc("GET /api/instances/{id}/webhook/events", s.handleWebhookListEvents)
 	mux.HandleFunc("GET /api/instances/{id}/webhook/events/stream", s.handleWebhookEventsStream)

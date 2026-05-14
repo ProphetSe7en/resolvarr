@@ -618,6 +618,21 @@ type WebhookRule struct {
 	QbitSe          *QbitSeRules          `json:"qbitSe,omitempty"`
 	QbitCategoryFix *QbitCategoryFixRules `json:"qbitCategoryFix,omitempty"`
 
+	// Webhook — opt-in per-rule webhook URL. When non-nil with a
+	// Token set, the rule has its own dedicated receive URL at
+	// /api/webhooks/rule/{token} and is EXCLUDED from the instance
+	// URL dispatcher (no double-fire). Sonarr/Radarr Connect points
+	// at the rule URL directly; only this single rule fires from it.
+	//
+	// When nil, the rule fires via the instance-level webhook URL
+	// alongside any sibling rules whose Functions match the event —
+	// the legacy / default behaviour.
+	//
+	// Same WebhookConfig shape as Instance.Webhook (Token + Secret +
+	// RequireSignature) so the auth + rotate flows can be near-
+	// identical. See M-per-rule-webhook design doc.
+	Webhook *WebhookConfig `json:"webhook,omitempty"`
+
 	// History holds the last N fires. Cap matches ScheduledJob (7) for
 	// consistency in the Activity tab. Each entry is one (rule × event)
 	// pair — rule firing on a Grab event with three functions enabled
@@ -677,6 +692,36 @@ func (r *WebhookRule) HasFunction(fn WebhookFunction) bool {
 		}
 	}
 	return false
+}
+
+// HasOwnWebhookURL returns true when the rule has opted in to its
+// own per-rule webhook URL (Webhook config present + Token set). The
+// instance-URL dispatcher uses this to EXCLUDE such rules — they fire
+// only from /api/webhooks/rule/{token}, not from the shared instance
+// receive path. See M-per-rule-webhook.
+func (r *WebhookRule) HasOwnWebhookURL() bool {
+	return r.Webhook != nil && r.Webhook.Token != ""
+}
+
+// FindRuleByToken returns the first rule whose per-rule webhook
+// Token matches. Linear scan — fine for the typical 1-50 rules
+// users have. Returns the index alongside the pointer so callers
+// that need to mutate via ConfigStore.Update can pass the index
+// straight to the update closure.
+//
+// Empty token never matches (defence against a misconfigured rule
+// where Webhook.Token == ""). Caller is responsible for checking
+// the rule is enabled before acting.
+func FindRuleByWebhookToken(rules []WebhookRule, token string) (*WebhookRule, int) {
+	if token == "" {
+		return nil, -1
+	}
+	for i := range rules {
+		if rules[i].Webhook != nil && rules[i].Webhook.Token == token {
+			return &rules[i], i
+		}
+	}
+	return nil, -1
 }
 
 // FiresOn returns true when the rule has at least one enabled function
