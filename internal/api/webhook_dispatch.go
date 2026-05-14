@@ -390,9 +390,19 @@ func buildWebhookRuleRun(env *connectEventEnvelope, body []byte, started time.Ti
 		} else {
 			errCount++
 		}
-		if r.Err != nil {
-			parts = append(parts, fmt.Sprintf("%s: %v", r.Function, r.Err))
-		} else {
+		// Prefix non-OK summaries with "error: " so the frontend's
+		// per-function status classifier (parseRuleRunSummary +
+		// webhookFnResultStatus in app.js) can colour error rows red
+		// regardless of which operation phrase the adapter emitted
+		// ("instance vanished", "qbit GetTorrent", "DV tools not
+		// configured", etc. don't share a "failed/error" keyword on
+		// their own). Single source of truth for the assembly format.
+		switch {
+		case r.Err != nil:
+			parts = append(parts, fmt.Sprintf("%s: error: %v", r.Function, r.Err))
+		case !r.OK:
+			parts = append(parts, fmt.Sprintf("%s: error: %s", r.Function, r.Summary))
+		default:
 			parts = append(parts, fmt.Sprintf("%s: %s", r.Function, r.Summary))
 		}
 	}

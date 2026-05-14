@@ -5052,52 +5052,99 @@
                         <div style="font-size:12px;color:var(--text-secondary);font-style:italic;padding:8px 0">No rules yet. Click <strong>+ Add rule</strong> above to pick which functions fire on Connect events.</div>
                       </template>
                       <template x-if="webhookRulesForInstance(inst.id).length > 0">
-                        <div style="display:flex;flex-direction:column;gap:6px">
+                        <div class="card-grid">
                           <template x-for="rule in webhookRulesForInstance(inst.id)" :key="rule.id">
-                            <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:6px;font-size:12px">
-                              <span :class="rule.enabled ? 'pill green' : 'pill gray'" style="font-size:10px" x-text="rule.enabled ? 'on' : 'off'"></span>
-                              <!-- Last-fire status pill. Quick glance "did
-                                   the most recent fire succeed?" without
-                                   opening the History modal. Status
-                                   semantics match scheduleStatusStyle:
-                                   ok=green, partial=amber, error=red,
-                                   never-run=gray. Tooltip shows the run's
-                                   timestamp formatted in the container's
-                                   locale + TZ (formatDate). -->
-                              <template x-if="lastWebhookRun(rule)">
-                                <span class="pill"
-                                      :class="lastWebhookRun(rule).status === 'ok' ? 'green' : (lastWebhookRun(rule).status === 'partial' ? 'amber' : 'red')"
-                                      style="font-size:10px"
-                                      :title="'Last fire: ' + formatDate(lastWebhookRun(rule).startedAt)"
-                                      x-text="'last: ' + (lastWebhookRun(rule).status || 'unknown')"></span>
-                              </template>
-                              <template x-if="!lastWebhookRun(rule)">
-                                <span class="pill gray" style="font-size:10px" title="Rule has not fired yet">not yet run</span>
-                              </template>
-                              <span style="font-weight:500;color:var(--text-body)" x-text="rule.name"></span>
-                              <span style="color:var(--text-muted-secondary)" x-text="(rule.functions || []).length + ' fn' + ((rule.functions || []).length === 1 ? '' : 's')"></span>
-                              <span style="color:var(--text-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="(rule.functions || []).join(', ')"></span>
-                              <button class="btn btn-sm" @click="openWebhookRuleHistory(rule)" :disabled="(rule.history || []).length === 0" style="font-size:11px;padding:2px 8px" title="View last fires of this rule">History</button>
-                              <!-- Backlog scan — visible only on rules carrying
-                                   the qbitSeTag function. Disabled when the
-                                   rule is paused (no point retroactively
-                                   applying the rule's config when the rule
-                                   itself wouldn't fire on new events) or
-                                   when the rule's qBit instance has been
-                                   removed from config (the apply pass would
-                                   400 out anyway — surface the cause in the
-                                   button's title attribute instead). -->
-                              <template x-if="(rule.functions || []).includes('qbitSeTag')">
-                                <button class="btn btn-sm"
-                                        @click="openQbitSeBacklog(rule)"
-                                        :disabled="!rule.enabled || !qbitInstanceForRule(rule)"
-                                        :title="qbitInstanceForRule(rule)
-                                                  ? 'Scan all qBit torrents and apply Episode / Season / Unmatched tags retroactively'
-                                                  : 'qBit instance for this rule is missing — re-configure under Settings → qBittorrent'"
-                                        style="font-size:11px;padding:2px 8px">Backlog scan</button>
-                              </template>
-                              <button class="btn btn-sm" @click="toggleWebhookRuleEnabled(rule)" style="font-size:11px;padding:2px 8px" x-text="rule.enabled ? 'Pause' : 'Resume'"></button>
-                              <button class="btn btn-sm btn-danger" @click="confirmDeleteWebhookRule(rule)" style="font-size:11px;padding:2px 8px">Delete</button>
+                            <div class="card">
+                              <div :class="'card-edge ' + webhookEdgeClass(rule)"></div>
+                              <div class="card-header">
+                                <div class="card-actions">
+                                  <!-- Backlog scan — only for rules with qbitSeTag function.
+                                       Slot maps to schedule's Run-now (the closest semantic
+                                       parallel — manual trigger of an apply pass). -->
+                                  <template x-if="(rule.functions || []).includes('qbitSeTag')">
+                                    <button class="icon-btn icon-btn-primary"
+                                            @click="openQbitSeBacklog(rule)"
+                                            :disabled="!rule.enabled || !qbitInstanceForRule(rule)"
+                                            :title="qbitInstanceForRule(rule)
+                                                      ? 'Backlog scan — scan all qBit torrents and apply Episode / Season / Unmatched tags retroactively'
+                                                      : 'qBit instance for this rule is missing — re-configure under Settings → qBittorrent'">
+                                      <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M4 2.5v11a.5.5 0 0 0 .76.43l9-5.5a.5.5 0 0 0 0-.86l-9-5.5A.5.5 0 0 0 4 2.5z"/></svg>
+                                    </button>
+                                  </template>
+                                  <!-- Pause/Resume — webhook rules are always event-driven
+                                       (no cron), so the toggle gates whether new Connect
+                                       events trigger the rule. Mirror of schedule's
+                                       toggleScheduleEnabled icon swap. -->
+                                  <button class="icon-btn" @click="toggleWebhookRuleEnabled(rule)" :title="rule.enabled ? 'Pause — stop firing on new Connect events' : 'Resume — start firing on new Connect events'">
+                                    <template x-if="rule.enabled">
+                                      <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M4 2.5h3v11H4zM9 2.5h3v11H9z"/></svg>
+                                    </template>
+                                    <template x-if="!rule.enabled">
+                                      <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M4 2.5v11a.5.5 0 0 0 .76.43l9-5.5a.5.5 0 0 0 0-.86l-9-5.5A.5.5 0 0 0 4 2.5z"/></svg>
+                                    </template>
+                                  </button>
+                                  <button class="icon-btn" @click="openWebhookRuleHistory(rule)" :disabled="(rule.history || []).length === 0" title="History">
+                                    <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M8 3.5v4.6l3 1.9 M2.5 8a5.5 5.5 0 1 0 1.6-3.9 M2.5 4.2v2.5H5"/></svg>
+                                  </button>
+                                  <button class="icon-btn" @click="openEditWebhookRuleModal(rule)" title="Edit">
+                                    <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M11.5 1.5l3 3-9 9H2.5v-3l9-9z M10 3l3 3"/></svg>
+                                  </button>
+                                  <button class="icon-btn icon-btn-danger" @click="confirmDeleteWebhookRule(rule)" title="Delete">
+                                    <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M3 4h10 M5.5 4V2.5h5V4 M4.5 4l1 9.5h5l1-9.5 M6.5 6.5v5 M9.5 6.5v5"/></svg>
+                                  </button>
+                                </div>
+                                <span :class="rule.enabled ? 'pill green' : 'pill gray'" x-text="rule.enabled ? 'enabled' : 'disabled'"></span>
+                              </div>
+                              <div>
+                                <div class="card-title" x-text="rule.name"></div>
+                                <!-- Pill row — same density as schedule card. function-
+                                     count + instance + add-ons. Function NAMES are
+                                     hidden here (would balloon on multi-fn rules); the
+                                     Edit modal shows them. -->
+                                <div class="pill-row" style="margin-top:6px">
+                                  <span class="pill blue" x-text="(rule.functions || []).length + ' function' + ((rule.functions || []).length === 1 ? '' : 's')"></span>
+                                  <span class="pill gray" x-text="(instances.find(i => i.id === rule.instanceId) || {name:'(missing)'}).name"></span>
+                                  <template x-if="(rule.functions || []).includes('syncToSecondary')">
+                                    <span class="pill purple" title="Mirrors primary tag decisions to the secondary instance via TmdbID / TvdbID matching">+ secondary sync</span>
+                                  </template>
+                                  <template x-if="rule.tagSource === 'filter-only'">
+                                    <span class="pill purple" :title="'Filter-only mode — every release passing the filter gets the tag &quot;' + (rule.filterOnlyTag || 'lossless-web') + '&quot;'">+ filter-only</span>
+                                  </template>
+                                  <template x-if="(rule.audioTags && rule.audioTags.stripOnFileDelete) || (rule.videoTags && rule.videoTags.stripOnFileDelete) || (rule.dvDetail && rule.dvDetail.stripOnFileDelete)">
+                                    <span class="pill purple" title="Strips audio / video / DV-detail tags from the item when its file is deleted (per-bucket opt-in)">+ strip on delete</span>
+                                  </template>
+                                </div>
+                              </div>
+                              <!-- Compact card body — Last fire + Triggers. Last is
+                                   clickable when the rule has a history entry; opens
+                                   the rule's history modal. Triggers replaces
+                                   schedule's "Next" timestamp since webhook rules
+                                   are event-driven, not cron-driven — same row
+                                   layout, different right-side semantic. -->
+                              <div class="card-body" style="flex-direction:row;flex-wrap:wrap;gap:6px 14px;align-items:center;font-size:12px;color:var(--text-secondary)">
+                                <span class="kv-label">Last</span>
+                                <template x-if="lastWebhookRun(rule)">
+                                  <button class="schedule-last-btn" @click="openWebhookRuleHistory(rule)">
+                                    <strong x-text="formatDate(lastWebhookRun(rule).startedAt)"></strong>
+                                    <span class="schedule-last-dur" x-text="'(' + formatDuration(lastWebhookRun(rule).durationMs) + ')'"></span>
+                                    <span aria-hidden="true" style="margin-left:2px">→</span>
+                                  </button>
+                                </template>
+                                <template x-if="!lastWebhookRun(rule)">
+                                  <span style="font-style:italic;color:var(--text-muted-secondary)">never</span>
+                                </template>
+                                <span style="color:var(--border-subtle)">·</span>
+                                <span class="kv-label">Triggers on</span>
+                                <template x-if="!rule.enabled">
+                                  <span style="font-style:italic;color:var(--text-muted-secondary)">paused</span>
+                                </template>
+                                <template x-if="rule.enabled && webhookEventsForRule(rule).length > 0">
+                                  <span style="color:var(--text-body)" x-text="webhookEventsForRule(rule).join(' · ')"></span>
+                                </template>
+                                <template x-if="rule.enabled && webhookEventsForRule(rule).length === 0">
+                                  <span style="font-style:italic;color:var(--text-muted-secondary)">no events</span>
+                                </template>
+                              </div>
                             </div>
                           </template>
                         </div>
@@ -8193,9 +8240,24 @@
             <div style="display:flex;flex-direction:column;gap:8px">
               <!-- Newest first per UI convention. Shallow-copy then
                    reverse so we don't mutate the underlying array. -->
+              <!-- Each run is a collapsible card. Default state is
+                   collapsed: only the header row (chevron + event +
+                   title + change-count chip + timestamp) is visible.
+                   Click anywhere on the header to expand and see the
+                   release/file paths + per-function rows. State key
+                   matches the x-for :key so toggle() can flip the
+                   right entry. -->
               <template x-for="(run, idx) in [...(webhookRuleHistoryRule.history || [])].reverse()" :key="run.startedAt + ':' + idx">
-                <div style="border:1px solid var(--border-subtle);border-radius:6px;padding:10px 14px;background:var(--bg-page)">
-                  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+                <div x-data="{ k: run.startedAt || ('idx:' + idx), hover: false }"
+                     style="border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-page);overflow:hidden">
+                  <!-- Header row — always visible, click to toggle -->
+                  <div @click="toggleWebhookRuleRun(k)"
+                       @mouseenter="hover=true" @mouseleave="hover=false"
+                       :title="webhookRuleHistoryExpanded[k] ? 'Click to collapse' : 'Click to expand'"
+                       :style="{ background: hover ? 'var(--bg-muted)' : '' }"
+                       style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;cursor:pointer;user-select:none">
+                    <span style="font-size:10px;color:var(--text-muted-secondary);font-family:monospace;width:10px;display:inline-block"
+                          x-text="webhookRuleHistoryExpanded[k] ? '▾' : '▸'"></span>
                     <span class="pill"
                           :class="run.status === 'ok' ? 'green' : (run.status === 'partial' ? 'amber' : (run.status === 'error' ? 'red' : 'gray'))"
                           style="font-size:10px"
@@ -8204,26 +8266,120 @@
                     <template x-if="run.itemTitle">
                       <span style="font-size:13px;color:var(--text-secondary)" x-text="'· ' + run.itemTitle + (run.itemContext ? ' (' + run.itemContext + ')' : '')"></span>
                     </template>
+                    <span style="font-size:11px;font-weight:500;padding:1px 8px;border-radius:8px;letter-spacing:0.2px;white-space:nowrap"
+                          :style="'background:' + webhookRuleRunHeadlineColors(run).bg + ';color:' + webhookRuleRunHeadlineColors(run).fg"
+                          x-text="webhookRuleRunHeadlineLabel(run)"></span>
                     <span style="flex:1"></span>
                     <span style="font-size:11px;color:var(--text-muted-secondary)" x-text="formatDate(run.startedAt) + ' · ' + formatDuration(run.durationMs)"></span>
                   </div>
-                  <!-- Release-title + file-path rows — populated by
-                       buildWebhookRuleRun via extractReleaseAndFilePath.
-                       Helps the user diagnose grab-name vs import-name
-                       drift without cross-referencing Recent activity. -->
-                  <template x-if="run.releaseTitle">
-                    <div style="font-size:11px;color:var(--text-muted-secondary);margin-bottom:3px;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;word-break:break-word">
-                      <span style="color:var(--text-secondary);font-family:inherit">Release:</span>
-                      <span x-text="run.releaseTitle"></span>
+                  <!-- Expanded body — release/file paths + per-function rows -->
+                  <template x-if="webhookRuleHistoryExpanded[k]">
+                    <div style="padding:0 14px 12px 14px">
+                      <!-- Release-title + file-path rows — populated by
+                           buildWebhookRuleRun via extractReleaseAndFilePath.
+                           Helps the user diagnose grab-name vs import-name
+                           drift without cross-referencing Recent activity. -->
+                      <template x-if="run.releaseTitle">
+                        <div style="font-size:11px;color:var(--text-muted-secondary);margin-bottom:3px;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;word-break:break-word">
+                          <span style="color:var(--text-secondary);font-family:inherit">Release:</span>
+                          <span x-text="run.releaseTitle"></span>
+                        </div>
+                      </template>
+                      <template x-if="run.filePath">
+                        <div style="font-size:11px;color:var(--text-muted-secondary);margin-bottom:6px;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;word-break:break-word">
+                          <span style="color:var(--text-secondary);font-family:inherit">File:</span>
+                          <span x-text="run.filePath"></span>
+                        </div>
+                      </template>
+                      <!-- Per-function rows. The dispatcher emits a single
+                           summary string ("fn1: result1; fn2: result2; ...");
+                           parseRuleRunSummary turns it into structured rows
+                           so the user can scan what each function did
+                           without re-reading a long mono blob. Icon + color
+                           come from the result-status bucket (change /
+                           noop / skipped / error). When the summary fails
+                           to parse (legacy entries / unexpected shape) we
+                           fall back to the raw text. -->
+                      <template x-if="parseRuleRunSummary(run.summary).length > 0">
+                        <div style="display:flex;flex-direction:column;gap:4px;margin-top:6px;padding-top:8px;border-top:1px solid var(--border-subtle)">
+                          <template x-for="(fr, frIdx) in parseRuleRunSummary(run.summary)" :key="frIdx + ':' + fr.fn">
+                            <div style="display:grid;grid-template-columns:18px 150px 1fr;gap:10px;align-items:start;font-size:12px;line-height:1.5">
+                              <span style="font-size:12px;font-weight:600;text-align:center;line-height:1.5"
+                                    :style="'color:' + webhookFnResultColors(fr.status).fg"
+                                    x-text="webhookFnResultIcon(fr.status)"></span>
+                              <span style="color:var(--text-body);font-weight:500" x-text="webhookFnDisplayName(fr.fn)"></span>
+                              <!-- Result column — Grab Rename gets a structured
+                                   layout (compact chip + plain-language triggers
+                                   + token-level from→to diff). Everything else
+                                   uses the generic chip + detail line. The
+                                   precomputation lives in parseRuleRunSummary so
+                                   we don't run regex on every reactivity tick. -->
+                              <template x-if="fr.grabRename">
+                                <div style="display:flex;flex-direction:column;gap:6px;min-width:0">
+                                  <!-- Compact chip + first trigger inline (one
+                                       trigger is the common case; multi-trigger
+                                       wraps below) -->
+                                  <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:baseline">
+                                    <span style="font-size:11px;font-weight:500;padding:1px 8px;border-radius:8px;letter-spacing:0.2px;white-space:nowrap;background:var(--alpha-green);color:var(--accent-green)">renamed</span>
+                                    <template x-if="fr.grabRename.triggers.length === 1">
+                                      <span style="color:var(--text-secondary);word-break:break-word" x-text="fr.grabRename.triggers[0]"></span>
+                                    </template>
+                                  </div>
+                                  <!-- Multi-trigger list (only when >1, to keep
+                                       single-trigger case visually compact) -->
+                                  <template x-if="fr.grabRename.triggers.length > 1">
+                                    <ul style="margin:0;padding-left:18px;color:var(--text-secondary)">
+                                      <template x-for="(tr, trIdx) in fr.grabRename.triggers" :key="trIdx">
+                                        <li style="word-break:break-word" x-text="tr"></li>
+                                      </template>
+                                    </ul>
+                                  </template>
+                                  <!-- Token-level from→to diff. Tokens unique
+                                       to `from` are red + strike-through (what
+                                       the rename removed), tokens unique to
+                                       `to` are green + bold (what it added).
+                                       Common tokens stay neutral so the user
+                                       can scan exactly what changed. -->
+                                  <div style="display:grid;grid-template-columns:36px 1fr;gap:4px 8px;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;line-height:1.5">
+                                    <span style="color:var(--text-muted-secondary);font-family:inherit">From:</span>
+                                    <!-- Flex+gap is the robust way to space
+                                         tokens — margin-right on inline spans
+                                         renders inconsistently when adjacent
+                                         spans have no whitespace text node
+                                         between them. -->
+                                    <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:baseline">
+                                      <template x-for="(tok, tokIdx) in fr.grabRename.diff.from" :key="'f' + tokIdx">
+                                        <span :style="tok.removed ? 'background:var(--alpha-red);color:var(--accent-red);text-decoration:line-through;padding:0 4px;border-radius:3px' : 'color:var(--text-secondary)'" x-text="tok.text"></span>
+                                      </template>
+                                    </div>
+                                    <span style="color:var(--text-muted-secondary);font-family:inherit">To:</span>
+                                    <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:baseline">
+                                      <template x-for="(tok, tokIdx) in fr.grabRename.diff.to" :key="'t' + tokIdx">
+                                        <span :style="tok.added ? 'background:var(--alpha-green);color:var(--accent-green);font-weight:600;padding:0 4px;border-radius:3px' : 'color:var(--text-secondary)'" x-text="tok.text"></span>
+                                      </template>
+                                    </div>
+                                  </div>
+                                </div>
+                              </template>
+                              <template x-if="!fr.grabRename">
+                                <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:baseline;min-width:0">
+                                  <span style="font-size:11px;font-weight:500;padding:1px 8px;border-radius:8px;letter-spacing:0.2px;white-space:nowrap"
+                                        :style="'background:' + webhookFnResultColors(fr.status).bg + ';color:' + webhookFnResultColors(fr.status).fg"
+                                        x-text="fr.result || '(no result)'"></span>
+                                  <template x-if="fr.detail">
+                                    <span style="color:var(--text-muted-secondary);word-break:break-word;min-width:0" x-text="fr.detail"></span>
+                                  </template>
+                                </div>
+                              </template>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+                      <template x-if="parseRuleRunSummary(run.summary).length === 0">
+                        <div style="font-size:12px;color:var(--text-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;line-height:1.6;word-break:break-word;white-space:pre-wrap;margin-top:6px;padding-top:8px;border-top:1px solid var(--border-subtle)" x-text="run.summary || '(no summary)'"></div>
+                      </template>
                     </div>
                   </template>
-                  <template x-if="run.filePath">
-                    <div style="font-size:11px;color:var(--text-muted-secondary);margin-bottom:6px;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;word-break:break-word">
-                      <span style="color:var(--text-secondary);font-family:inherit">File:</span>
-                      <span x-text="run.filePath"></span>
-                    </div>
-                  </template>
-                  <div style="font-size:12px;color:var(--text-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;line-height:1.6;word-break:break-word;white-space:pre-wrap" x-text="run.summary || '(no summary)'"></div>
                 </div>
               </template>
             </div>

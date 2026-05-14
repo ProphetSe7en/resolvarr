@@ -221,7 +221,7 @@ func TestDispatchQbitCategoryFix_SkipNoImportConfirmation(t *testing.T) {
 	body := []byte(`{"downloadId":"DEADBEEF","movie":{"id":42,"title":"X"},"movieFile":{"id":1,"relativePath":"x.mkv"}}`)
 
 	res := s.dispatchQbitCategoryFix(context.Background(), rule, cfg, env, body)
-	if !res.OK || !strings.Contains(res.Summary, "no import-confirmation") {
+	if !res.OK || !strings.Contains(res.Summary, "Arr history-walk didn't confirm") {
 		t.Errorf("want OK skip no-import-confirmation, got %+v", res)
 	}
 	if atomic.LoadInt32(&qbitSrv.setCategoryHits) != 0 {
@@ -276,7 +276,7 @@ func TestDispatchQbitCategoryFix_SkipAlreadyPostCategory(t *testing.T) {
 	body := []byte(`{"downloadId":"DEADBEEF","movie":{"id":42,"title":"X"},"movieFile":{"id":1,"relativePath":"x.mkv"}}`)
 
 	res := s.dispatchQbitCategoryFix(context.Background(), rule, cfg, env, body)
-	if !res.OK || !strings.Contains(res.Summary, "Arr did its job") {
+	if !res.OK || !strings.Contains(res.Summary, "Arr completed the swap") {
 		t.Errorf("want OK skip already-correct, got %+v", res)
 	}
 	if atomic.LoadInt32(&qbitSrv.setCategoryHits) != 0 {
