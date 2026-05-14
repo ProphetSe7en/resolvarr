@@ -140,98 +140,19 @@ func (s *Server) dispatchWebhookRules(
 		if rule.InstanceID != inst.ID || !rule.Enabled {
 			continue
 		}
-		// FiresOn covers user-toggleable functions; FiresAutoStripOnDelete
-		// covers the automatic Tag-RG strip-on-delete invariant (no
-		// user function needed beyond Tag-RG itself); FiresPerBucketStripOnDelete
-		// covers the post-C5 per-bucket opt-in model (Audio / Video /
-		// DV-detail snapshots with StripOnFileDelete=true) without
-		// requiring the legacy WebhookFnFileDeleteClean function. OR-
-		// combine so a rule firing for any reason enters the per-rule
-		// block.
-		firesByFn := rule.FiresOn(event)
-		firesAutoStrip := rule.FiresAutoStripOnDelete(event)
-		firesPerBucketStrip := rule.FiresPerBucketStripOnDelete(event)
-		if !firesByFn && !firesAutoStrip && !firesPerBucketStrip {
+		// Skip rules that opted into a per-rule webhook URL (M-per-
+		// rule-webhook). Those fire exclusively from their dedicated
+		// endpoint at /api/webhooks/rule/{token}. If we still fired
+		// them here too, both URLs would trigger the same rule and
+		// every event would produce duplicate history entries +
+		// duplicate tag-applications. The per-rule receiver is the
+		// authoritative path for these rules.
+		if rule.HasOwnWebhookURL() {
 			continue
 		}
-		// Canonical execution order — iterate canonicalFunctionOrder
-		// and execute only the entries the rule actually has, gated
-		// on event-applicability per function.
 		started := time.Now().UTC()
-		var results []functionResult
-		for _, fn := range canonicalFunctionOrder {
-			if !rule.HasFunction(fn) {
-				continue
-			}
-			matches := false
-			for _, e := range core.EventsForFunction(fn, rule.AppType) {
-				if e == event {
-					matches = true
-					break
-				}
-			}
-			if !matches {
-				continue
-			}
-			// Fetch tag-details on first auto-tag function we see.
-			// Cached per-instance keyed by inst.ID — different webhook
-			// rules on the same Arr share one lookup. Errors are
-			// stored too so a failing fetch doesn't retry per rule.
-			tagDetails, tagErr := s.tagDetailsFor(ctx, inst, tagDetailsByInst, tagDetailsErrs)
-			res := s.dispatchWebhookFunction(ctx, &rule, cfg, tagDetails, tagErr, fn, env, body)
-			results = append(results, res)
-		}
-		// Per-bucket strip-on-delete: triggers dispatchFileDeleteCleanup
-		// for rules opting in via Audio/Video/DV snapshot StripOnFileDelete
-		// flags rather than the legacy WebhookFnFileDeleteClean function
-		// (C6 of the M-webhook delete-semantics refactor). Skipped when
-		// the rule still carries the legacy function — the function-loop
-		// above already routed through the same dispatcher on that path,
-		// and the legacy bridge in buildFileDeleteManagedSet covers
-		// non-flagged buckets. Without this skip, post-C5-migration would
-		// be fine but legacy-shape rules (pre-migration or hand-rolled)
-		// would double-fire the strip.
-		if firesPerBucketStrip && !rule.HasFunction(core.WebhookFnFileDeleteClean) {
-			tagDetails, tagErr := s.tagDetailsFor(ctx, inst, tagDetailsByInst, tagDetailsErrs)
-			var res functionResult
-			if tagErr != nil {
-				res = functionResult{
-					Function: core.WebhookFnFileDeleteClean,
-					OK:       false,
-					Summary:  "list tags",
-					Err:      tagErr,
-				}
-			} else {
-				res = s.dispatchFileDeleteCleanup(ctx, &rule, cfg, tagDetails, env, body)
-			}
-			results = append(results, res)
-		}
-		// Auto-strip-on-delete: enforces the Tag-RG invariant on file-
-		// delete events. Runs AFTER the user-function loop so any
-		// user-ticked FileDeleteClean cleanup of Audio/Video/DV tags
-		// fires first; auto-strip then handles the RG/filter-only
-		// strip in the same dispatch. Mirror to secondary is built
-		// into the dispatcher (gated on rule.HasFunction(SyncToSecondary)).
-		if firesAutoStrip {
-			tagDetails, tagErr := s.tagDetailsFor(ctx, inst, tagDetailsByInst, tagDetailsErrs)
-			var res functionResult
-			if tagErr != nil {
-				res = functionResult{
-					Function: webhookFnAutoStripTagRgOnDelete,
-					OK:       false,
-					Summary:  "list tags",
-					Err:      tagErr,
-				}
-			} else {
-				res = s.dispatchAutoStripTagRgOnDelete(ctx, &rule, cfg, tagDetails, env, body)
-			}
-			results = append(results, res)
-		}
-		if len(results) == 0 {
-			// Rule matched the event-type at the Functions-level (FiresOn
-			// returned true) but no individual function applied to this
-			// specific event. Shouldn't happen with current matrix, but
-			// guards against future asymmetric event mappings.
+		results, qualified := s.executeWebhookRule(ctx, &rule, cfg, inst, event, env, body, tagDetailsByInst, tagDetailsErrs)
+		if !qualified || len(results) == 0 {
 			continue
 		}
 		pending = append(pending, pendingRuleRun{
@@ -243,6 +164,161 @@ func (s *Server) dispatchWebhookRules(
 		s.appendWebhookRuleRunsBatch(pending)
 	}
 	return len(pending)
+}
+
+// executeWebhookRule runs the canonical function-order pipeline against
+// a single rule for one Connect event. Returns:
+//
+//   - results: per-function functionResult entries (canonical order +
+//     auto-strip-on-delete + per-bucket-strip-on-delete contributions)
+//   - qualified: true when at least one of the rule's gates matched the
+//     event (FiresOn / FiresAutoStripOnDelete / FiresPerBucketStripOnDelete).
+//     Callers use this to decide whether to append a history entry —
+//     qualified=false means "rule didn't apply to this event", skip.
+//
+// Extracted from dispatchWebhookRules so the per-rule webhook receiver
+// (M-per-rule-webhook Slice 2) can reuse the exact same execution
+// pipeline for its single-rule path without duplicating the canonical-
+// order loop, auto-strip-on-delete invariant, and per-bucket-strip
+// logic. Pinning cfg + tagDetails caches at the call site keeps both
+// dispatchers reading consistent state across all functions on one event.
+func (s *Server) executeWebhookRule(
+	ctx context.Context,
+	rule *core.WebhookRule,
+	cfg core.Config,
+	inst *core.Instance,
+	event core.WebhookConnectEvent,
+	env *connectEventEnvelope,
+	body []byte,
+	tagDetailsByInst map[string][]arr.TagDetail,
+	tagDetailsErrs map[string]error,
+) (results []functionResult, qualified bool) {
+	// FiresOn covers user-toggleable functions; FiresAutoStripOnDelete
+	// covers the automatic Tag-RG strip-on-delete invariant (no user
+	// function needed beyond Tag-RG itself); FiresPerBucketStripOnDelete
+	// covers the post-C5 per-bucket opt-in model (Audio / Video /
+	// DV-detail snapshots with StripOnFileDelete=true) without
+	// requiring the legacy WebhookFnFileDeleteClean function. OR-
+	// combine so a rule firing for any reason enters the per-rule
+	// block.
+	firesByFn := rule.FiresOn(event)
+	firesAutoStrip := rule.FiresAutoStripOnDelete(event)
+	firesPerBucketStrip := rule.FiresPerBucketStripOnDelete(event)
+	if !firesByFn && !firesAutoStrip && !firesPerBucketStrip {
+		return nil, false
+	}
+	qualified = true
+	// Canonical execution order — iterate canonicalFunctionOrder
+	// and execute only the entries the rule actually has, gated
+	// on event-applicability per function.
+	for _, fn := range canonicalFunctionOrder {
+		if !rule.HasFunction(fn) {
+			continue
+		}
+		matches := false
+		for _, e := range core.EventsForFunction(fn, rule.AppType) {
+			if e == event {
+				matches = true
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		// Fetch tag-details on first auto-tag function we see.
+		// Cached per-instance keyed by inst.ID — different webhook
+		// rules on the same Arr share one lookup. Errors are stored
+		// too so a failing fetch doesn't retry per rule.
+		tagDetails, tagErr := s.tagDetailsFor(ctx, inst, tagDetailsByInst, tagDetailsErrs)
+		res := s.dispatchWebhookFunction(ctx, rule, cfg, tagDetails, tagErr, fn, env, body)
+		results = append(results, res)
+	}
+	// Per-bucket strip-on-delete: triggers dispatchFileDeleteCleanup
+	// for rules opting in via Audio/Video/DV snapshot StripOnFileDelete
+	// flags rather than the legacy WebhookFnFileDeleteClean function
+	// (C6 of the M-webhook delete-semantics refactor). Skipped when
+	// the rule still carries the legacy function — the function-loop
+	// above already routed through the same dispatcher on that path,
+	// and the legacy bridge in buildFileDeleteManagedSet covers
+	// non-flagged buckets. Without this skip, post-C5-migration would
+	// be fine but legacy-shape rules (pre-migration or hand-rolled)
+	// would double-fire the strip.
+	if firesPerBucketStrip && !rule.HasFunction(core.WebhookFnFileDeleteClean) {
+		tagDetails, tagErr := s.tagDetailsFor(ctx, inst, tagDetailsByInst, tagDetailsErrs)
+		var res functionResult
+		if tagErr != nil {
+			res = functionResult{
+				Function: core.WebhookFnFileDeleteClean,
+				OK:       false,
+				Summary:  "list tags",
+				Err:      tagErr,
+			}
+		} else {
+			res = s.dispatchFileDeleteCleanup(ctx, rule, cfg, tagDetails, env, body)
+		}
+		results = append(results, res)
+	}
+	// Auto-strip-on-delete: enforces the Tag-RG invariant on file-
+	// delete events. Runs AFTER the user-function loop so any user-
+	// ticked FileDeleteClean cleanup of Audio/Video/DV tags fires
+	// first; auto-strip then handles the RG/filter-only strip in the
+	// same dispatch. Mirror to secondary is built into the dispatcher
+	// (gated on rule.HasFunction(SyncToSecondary)).
+	if firesAutoStrip {
+		tagDetails, tagErr := s.tagDetailsFor(ctx, inst, tagDetailsByInst, tagDetailsErrs)
+		var res functionResult
+		if tagErr != nil {
+			res = functionResult{
+				Function: webhookFnAutoStripTagRgOnDelete,
+				OK:       false,
+				Summary:  "list tags",
+				Err:      tagErr,
+			}
+		} else {
+			res = s.dispatchAutoStripTagRgOnDelete(ctx, rule, cfg, tagDetails, env, body)
+		}
+		results = append(results, res)
+	}
+	return results, qualified
+}
+
+// dispatchSingleWebhookRule fires one specific rule for one Connect
+// event — the per-rule receive path. Same execution pipeline as the
+// instance dispatcher (canonical function order + auto-strip + per-
+// bucket strip) but constrained to a single rule. Used by the per-
+// rule webhook endpoint at /api/webhooks/rule/{ruleToken}.
+//
+// Returns 0 (rule didn't qualify on this event-type) or 1 (rule
+// fired + history entry appended). Mirrors dispatchWebhookRules's
+// return convention so callers handle both paths the same way.
+func (s *Server) dispatchSingleWebhookRule(
+	ctx context.Context,
+	inst *core.Instance,
+	rule *core.WebhookRule,
+	env *connectEventEnvelope,
+	body []byte,
+) int {
+	if env == nil || env.EventType == "" || rule == nil || !rule.Enabled {
+		return 0
+	}
+	event := core.WebhookConnectEvent(env.EventType)
+	cfg := s.App.Config.Get()
+	// Single-rule path doesn't need a per-instance tag-details cache
+	// — there's only one rule firing — but we use the same map shape
+	// so executeWebhookRule's signature stays identical across paths.
+	tagDetailsByInst := map[string][]arr.TagDetail{}
+	tagDetailsErrs := map[string]error{}
+
+	started := time.Now().UTC()
+	results, qualified := s.executeWebhookRule(ctx, rule, cfg, inst, event, env, body, tagDetailsByInst, tagDetailsErrs)
+	if !qualified || len(results) == 0 {
+		return 0
+	}
+	s.appendWebhookRuleRunsBatch([]pendingRuleRun{{
+		ruleID: rule.ID,
+		run:    buildWebhookRuleRun(env, body, started, results),
+	}})
+	return 1
 }
 
 // dispatchWebhookFunction is the per-function adapter dispatcher. Each
