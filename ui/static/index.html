@@ -5202,9 +5202,17 @@
               <div>
                 <template x-for="qi in (qbitInstances || [])" :key="qi.id">
                   <div class="inst-row" style="margin-bottom:8px">
-                    <div style="font-size:13px;font-weight:500;min-width:120px" x-text="qi.name"></div>
+                    <div style="font-size:13px;font-weight:500;min-width:120px;display:flex;align-items:center;gap:8px">
+                      <span x-text="qi.name"></span>
+                      <template x-if="qi.webhookConfiguredInQbit">
+                        <span title="Webhook is configured in qBit. We last wrote our curl to its autorun field; manual edits in qBit may have changed this since." style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--accent-green);font-weight:500">
+                          <span style="width:7px;height:7px;border-radius:50%;background:var(--accent-green);display:inline-block"></span>
+                          configured
+                        </span>
+                      </template>
+                    </div>
                     <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
-                      <button class="btn btn-sm btn-primary" @click="openQbitWebhookModal(qi)">Webhook</button>
+                      <button class="btn btn-sm btn-primary" @click="openQbitWebhookModal(qi)" x-text="qi.webhookConfiguredInQbit ? 'Edit webhook' : 'Set up webhook'"></button>
                     </div>
                   </div>
                 </template>
@@ -5463,6 +5471,27 @@
                 </div>
               </template>
 
+              <!-- Resolvarr URL override — what qBit calls back on.
+                   Empty = use whichever hostname your browser reached
+                   resolvarr at. Set to e.g. http://resolvarr:6075 if
+                   qBit reaches resolvarr by container name on the same
+                   Docker network. Live-updates the curl preview below;
+                   persisted on Configure. -->
+              <div style="margin-bottom:14px">
+                <label class="label" style="font-size:12px;color:var(--text-secondary)">Resolvarr URL (where qBit will reach back)</label>
+                <input class="input" type="text"
+                       x-model="qbitWebhookOverrideInput"
+                       :placeholder="qbitWebhookData.defaultWebhookUrl ? qbitWebhookData.defaultWebhookUrl.replace(/\/api\/qbit\/.*$/, '') : 'http://resolvarr:6075'"
+                       :class="qbitWebhookOverrideInvalid() ? 'input-invalid' : ''"
+                       style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;width:100%">
+                <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:4px;line-height:1.5">
+                  Common values: <code>http://resolvarr:6075</code> (container name on the same Docker network), or your LAN IP. Leave blank to use the browser URL (<code x-text="qbitWebhookData.defaultWebhookUrl ? qbitWebhookData.defaultWebhookUrl.replace(/\/api\/qbit\/.*$/, '') : ''"></code>).
+                  <template x-if="qbitWebhookOverrideInvalid()">
+                    <span style="color:var(--accent-red)"><br>⚠ Must be <code>http://</code> or <code>https://</code> with a host, no path or query.</span>
+                  </template>
+                </div>
+              </div>
+
               <!-- Generated secret + rotate -->
               <div style="margin-bottom:14px">
                 <label class="label" style="font-size:12px;color:var(--text-secondary)">Webhook secret (X-API-Key) — qBit needs this to authenticate to resolvarr</label>
@@ -5512,9 +5541,9 @@
                     <span>Curl command for manual paste into qBit Settings → Downloads → "Run external program on torrent added":</span>
                     <button class="btn btn-sm" @click="copyQbitWebhookCurl()" style="margin-left:8px;white-space:nowrap">Copy curl</button>
                   </label>
-                  <pre style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:4px;padding:10px;word-break:break-all;white-space:pre-wrap;color:var(--text-body);max-height:200px;overflow-y:auto;margin:0" x-text="qbitWebhookData.curlCommand"></pre>
+                  <pre style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:4px;padding:10px;word-break:break-all;white-space:pre-wrap;color:var(--text-body);max-height:200px;overflow-y:auto;margin:0" x-text="qbitWebhookCurlPreview()"></pre>
                   <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:6px;line-height:1.5">
-                    The URL uses your browser's resolvarr hostname (<span x-text="qbitWebhookData.webhookUrl"></span>). If qBit is on a different network and reaches resolvarr at a different address, edit the URL portion before pasting. The qBit container needs to be able to reach resolvarr's port (default 6075).
+                    Reflects the Resolvarr URL above. qBit needs network access to that hostname + port.
                   </div>
                 </div>
               </template>
@@ -6369,6 +6398,24 @@
             </div>
           </template>
 
+          <!-- Notifications kill-switch (M-Webhook). Master per-rule
+               toggle; agent-side Functions whitelist decides what
+               each agent renders. Empty agent list / no enabled agent
+               → toggle has no observable effect. Hidden behind a help
+               line so the wizard stays clean for users who don't care
+               about notifications. -->
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+              <input type="checkbox" x-model="editingRule.options.notifyOnFire" style="accent-color:var(--accent-blue)">
+              <span><strong>Notify on fire</strong> <span style="color:var(--text-secondary)">— send a Discord/Gotify/NTFY/Pushover/Apprise message every time this rule actually changes something.</span></span>
+            </label>
+            <div style="font-size:11px;color:var(--text-secondary);margin:6px 0 0 26px;line-height:1.5">
+              What gets sent is decided by each notification agent's <em>Events</em> + <em>Which actions</em> picks under
+              <a href="#" @click.prevent="currentPage='settings'; section='notifications'" style="color:var(--accent-blue)">Settings → Notifications</a>.
+              Leave this off if you want the rule silent; turn it on and the agents take over from there.
+            </div>
+          </div>
+
           <div class="form-group">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
               <input type="checkbox" x-model="editingRule.enabled" style="accent-color:var(--accent-blue)">
@@ -7115,6 +7162,45 @@
                   </template>
                 </div>
               </div>
+
+              <!-- Customise labels (collapsible) — per-value override of
+                   the tag's value portion. Empty = use engine default.
+                   Cleanup follows the configured vocabulary; existing
+                   tags with the OLD label stay in Radarr until the user
+                   removes them in Tag inventory. -->
+              <div x-data="{ open: false }" style="margin-top:14px;border-top:1px dashed var(--border-subtle);padding-top:10px">
+                <button type="button" @click="open = !open" class="icon-btn" style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+                  <span x-show="!open">▸</span>
+                  <span x-show="open">▾</span>
+                  <span>Customise labels</span>
+                  <template x-if="bucketLabelCount(editingRule.audioTags.audio) > 0">
+                    <span style="color:var(--accent-blue);font-weight:500" x-text="'(' + bucketLabelCount(editingRule.audioTags.audio) + ' customised)'"></span>
+                  </template>
+                  <template x-if="bucketHasLabelCollision(editingRule.audioTags.audio)">
+                    <span style="color:var(--accent-red);font-weight:500">⚠ collision</span>
+                  </template>
+                </button>
+                <div x-show="open" x-transition x-cloak style="margin-top:10px">
+                  <div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px">
+                    Rename any tag value (e.g. <code>truehd</code> → <code>premium</code>). The bucket prefix still applies on top. Leave blank to use the default. Allowed characters: <code>a-z</code> <code>0-9</code> <code>-</code>. Existing tags with the old name stay in Radarr — remove them in Tag inventory if you don't need them anymore.
+                  </div>
+                  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px 14px;font-size:13px">
+                    <template x-for="value in audioFullVocab()" :key="'rule-alabel-' + value">
+                      <label style="display:flex;align-items:center;gap:6px">
+                        <code style="min-width:84px;color:var(--text-muted-secondary);font-size:12px" x-text="value"></code>
+                        <span style="color:var(--text-muted-secondary)">→</span>
+                        <input class="input" type="text"
+                               :placeholder="value"
+                               :value="bucketLabelValue(editingRule.audioTags.audio, value)"
+                               @input="setBucketLabel(editingRule.audioTags.audio, value, $event.target.value)"
+                               :class="!bucketLabelValid(editingRule.audioTags.audio, value) ? 'input-invalid' : ''"
+                               maxlength="40"
+                               style="flex:1;min-width:0;font-size:12px;padding:4px 8px">
+                      </label>
+                    </template>
+                  </div>
+                </div>
+              </div>
             </div>
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-secondary);margin-top:10px">
               <input type="checkbox" x-model="editingRule.audioTags.removeOrphanedTags" style="accent-color:var(--accent-blue)">
@@ -7241,6 +7327,41 @@
                   </label>
                 </template>
               </div>
+
+              <!-- Customise labels (collapsible) — per-bucket overrides. -->
+              <div x-data="{ open: false }" style="margin-top:10px;border-top:1px dashed var(--border-subtle);padding-top:8px">
+                <button type="button" @click="open = !open" class="icon-btn" style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+                  <span x-show="!open">▸</span>
+                  <span x-show="open">▾</span>
+                  <span>Customise labels</span>
+                  <template x-if="bucketLabelCount(editingRule.videoTags[bucketKey]) > 0">
+                    <span style="color:var(--accent-blue);font-weight:500" x-text="'(' + bucketLabelCount(editingRule.videoTags[bucketKey]) + ' customised)'"></span>
+                  </template>
+                  <template x-if="bucketHasLabelCollision(editingRule.videoTags[bucketKey])">
+                    <span style="color:var(--accent-red);font-weight:500">⚠ collision</span>
+                  </template>
+                </button>
+                <div x-show="open" x-transition x-cloak style="margin-top:8px">
+                  <div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px">
+                    Rename any value (e.g. <code>2160p</code> → <code>uhd</code>). The bucket prefix still applies on top. Leave blank for the default. Allowed: <code>a-z</code> <code>0-9</code> <code>-</code>. Tags with the OLD name stay in Radarr — remove them in Tag inventory.
+                  </div>
+                  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px 14px;font-size:13px">
+                    <template x-for="value in videoVocab[bucketKey]" :key="'rule-vlabel-' + bucketKey + '-' + value">
+                      <label style="display:flex;align-items:center;gap:6px">
+                        <code style="min-width:84px;color:var(--text-muted-secondary);font-size:12px" x-text="value"></code>
+                        <span style="color:var(--text-muted-secondary)">→</span>
+                        <input class="input" type="text"
+                               :placeholder="value"
+                               :value="bucketLabelValue(editingRule.videoTags[bucketKey], value)"
+                               @input="setBucketLabel(editingRule.videoTags[bucketKey], value, $event.target.value)"
+                               :class="!bucketLabelValid(editingRule.videoTags[bucketKey], value) ? 'input-invalid' : ''"
+                               maxlength="40"
+                               style="flex:1;min-width:0;font-size:12px;padding:4px 8px">
+                      </label>
+                    </template>
+                  </div>
+                </div>
+              </div>
             </div>
           </template>
 
@@ -7349,6 +7470,41 @@
                   <span x-text="value"></span>
                 </label>
               </template>
+            </div>
+
+            <!-- Customise labels (collapsible) — DV-detail overrides. -->
+            <div x-data="{ open: false }" style="margin-top:10px;border-top:1px dashed var(--border-subtle);padding-top:8px">
+              <button type="button" @click="open = !open" class="icon-btn" style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+                <span x-show="!open">▸</span>
+                <span x-show="open">▾</span>
+                <span>Customise labels</span>
+                <template x-if="bucketLabelCount(editingRule.dvDetail) > 0">
+                  <span style="color:var(--accent-blue);font-weight:500" x-text="'(' + bucketLabelCount(editingRule.dvDetail) + ' customised)'"></span>
+                </template>
+                <template x-if="bucketHasLabelCollision(editingRule.dvDetail)">
+                  <span style="color:var(--accent-red);font-weight:500">⚠ collision</span>
+                </template>
+              </button>
+              <div x-show="open" x-transition x-cloak style="margin-top:8px">
+                <div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px">
+                  Rename any value (e.g. <code>dvprofile8</code> → <code>profile8</code>). The bucket prefix still applies on top. Leave blank for the default. Allowed: <code>a-z</code> <code>0-9</code> <code>-</code>. Tags with the OLD name stay in Radarr — remove them in Tag inventory.
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px 14px;font-size:13px">
+                  <template x-for="value in dvDetailVocab" :key="'rule-dvlabel-' + value">
+                    <label style="display:flex;align-items:center;gap:6px">
+                      <code style="min-width:84px;color:var(--text-muted-secondary);font-size:12px" x-text="value"></code>
+                      <span style="color:var(--text-muted-secondary)">→</span>
+                      <input class="input" type="text"
+                             :placeholder="value"
+                             :value="bucketLabelValue(editingRule.dvDetail, value)"
+                             @input="setBucketLabel(editingRule.dvDetail, value, $event.target.value)"
+                             :class="!bucketLabelValid(editingRule.dvDetail, value) ? 'input-invalid' : ''"
+                             maxlength="40"
+                             style="flex:1;min-width:0;font-size:12px;padding:4px 8px">
+                    </label>
+                  </template>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -9197,7 +9353,7 @@
 
       <!-- ===== Events ===== -->
       <div class="form-group">
-        <label class="form-label">Trigger this agent on</label>
+        <label class="form-label">Notify on which kinds of events</label>
         <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
           <label style="display:flex;align-items:center;gap:8px">
             <input type="checkbox" x-model="agentModal.events.onScheduleSuccess">
@@ -9207,8 +9363,43 @@
             <input type="checkbox" x-model="agentModal.events.onScheduleFailure">
             Scheduled run errored
           </label>
+          <label style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" x-model="agentModal.events.onImport">
+            File import from Sonarr/Radarr (Download events)
+          </label>
+          <label style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" x-model="agentModal.events.onGrab">
+            Indexer grab (release sent to download client)
+          </label>
+          <label style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" x-model="agentModal.events.onFileDelete">
+            File deleted (cleanup + manual delete)
+          </label>
         </div>
-        <div class="form-hint">Live UI scans (Run mode, Quick fix-all) don't fire notifications — only scheduled runs do. Webhook events from Radarr Connect arrive in a future release.</div>
+        <div class="form-hint">Each row gates a class of events. Pick exactly the ones you want this agent to receive; webhook rules with <code>NotifyOnFire=true</code> respect this list.</div>
+      </div>
+
+      <!-- ===== Functions ===== -->
+      <div class="form-group" x-data="{ open: false }">
+        <label class="form-label" style="display:flex;align-items:center;justify-content:space-between">
+          <span>Which actions show in the embed</span>
+          <button type="button" class="icon-btn" @click="open = !open" :title="open ? 'Collapse' : 'Expand'" style="font-size:11px;color:var(--text-muted)">
+            <span x-show="!open">▸ Show options</span>
+            <span x-show="open">▾ Hide options</span>
+          </button>
+        </label>
+        <div class="form-hint" style="margin-bottom:8px">
+          Leave all unchecked (default) to get every action this agent's event-class fires.
+          Tick specific ones to filter — e.g. one Discord channel for tag changes, another for torrent renames.
+        </div>
+        <div x-show="open" x-transition style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px 14px;font-size:13px;padding-top:4px">
+          <template x-for="fn in agentFunctionOptions" :key="fn.id">
+            <label style="display:flex;align-items:center;gap:8px">
+              <input type="checkbox" :value="fn.id" :checked="agentModal.functions.includes(fn.id)" @change="toggleAgentFunction(fn.id, $event.target.checked)">
+              <span x-text="fn.label"></span>
+            </label>
+          </template>
+        </div>
       </div>
 
       <!-- ===== Enabled ===== -->

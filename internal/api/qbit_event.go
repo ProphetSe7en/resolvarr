@@ -61,6 +61,7 @@ func (s *Server) QbitEventBuffer() *qbitEventBuffer {
 func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) {
 	instanceID := strings.TrimSpace(r.PathValue("instanceId"))
 	if instanceID == "" {
+		fmt.Fprintf(os.Stderr, "resolvarr: qbit-add 400 — missing instanceId in URL path\n")
 		writeError(w, 400, "missing instanceId in URL path")
 		return
 	}
@@ -80,12 +81,26 @@ func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) 
 	}
 	if storedKey == "" || suppliedKey == "" ||
 		subtle.ConstantTimeCompare([]byte(suppliedKey), []byte(storedKey)) != 1 {
+		// Reason breakdown helps diagnose silently-failing setups
+		// without leaking which-of-three actually failed to a probe
+		// (the response is still a generic 401).
+		reason := "wrong key"
+		switch {
+		case qbitInst == nil:
+			reason = "unknown instance id"
+		case storedKey == "":
+			reason = "instance has no stored secret"
+		case suppliedKey == "":
+			reason = "missing X-API-Key header"
+		}
+		fmt.Fprintf(os.Stderr, "resolvarr: qbit-add 401 unauthorized for instance %q — %s\n", instanceID, reason)
 		writeError(w, 401, "unauthorized")
 		return
 	}
 
 	// Body parse — qBit sends form-encoded body via curl --data-urlencode.
 	if err := r.ParseForm(); err != nil {
+		fmt.Fprintf(os.Stderr, "resolvarr: qbit-add 400 for instance %q — invalid form body: %v\n", instanceID, err)
 		writeError(w, 400, "invalid form body")
 		return
 	}
@@ -93,10 +108,12 @@ func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) 
 	name := strings.TrimSpace(r.Form.Get("name"))
 	category := strings.TrimSpace(r.Form.Get("category"))
 	if infoHash == "" {
+		fmt.Fprintf(os.Stderr, "resolvarr: qbit-add 400 for instance %q — missing infoHash\n", instanceID)
 		writeError(w, 400, "missing infoHash")
 		return
 	}
 	if name == "" {
+		fmt.Fprintf(os.Stderr, "resolvarr: qbit-add 400 for instance %q — missing name (hash=%s)\n", instanceID, shortInfoHash(infoHash))
 		writeError(w, 400, "missing name")
 		return
 	}
@@ -105,16 +122,34 @@ func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) 
 	// QbitSe.QbitInstanceID matches our path.
 	matchingRules := matchQbitSeRulesForInstance(cfg, instanceID)
 
-	ev := qbitAddEvent{
-		InfoHash: infoHash,
-		Name:     name,
-		Category: category,
-		Received: time.Now().UTC(),
-	}
+	// Apply tags EAGERLY — qBit gets the tag within the request, not
+	// after the aggregation window. The buffer is now purely for
+	// history-row + notification batching; tag-latency is independent
+	// of the configured window. AddTags is idempotent so multiple
+	// concurrent fires for the same hash converge to the same final
+	// state. Errors are recorded on the event and surfaced in the
+	// summary at flush; we never fail the receive response because
+	// qBit doesn't reattempt on autorun-curl failure anyway.
+	receivedAt := time.Now().UTC()
 
 	buf := s.QbitEventBuffer()
 	enqueued := 0
+	matchedAny := false
 	for _, rule := range matchingRules {
+		// Per-rule event so eager-apply results (Matched / AppliedTag /
+		// ApplyErrMsg) stay scoped to the rule that produced them.
+		// Otherwise two rules sharing an event would clobber each
+		// other's results at the aggregation summary.
+		ev := qbitAddEvent{
+			InfoHash: infoHash,
+			Name:     name,
+			Category: category,
+			Received: receivedAt,
+		}
+		s.eagerApplyQbitSeTag(r.Context(), qbitInst, &rule, &ev)
+		if ev.Matched {
+			matchedAny = true
+		}
 		windowSec := 0
 		if rule.QbitSe != nil {
 			windowSec = rule.QbitSe.AggregationWindowSeconds
@@ -123,10 +158,124 @@ func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) 
 		enqueued++
 	}
 
+	// One-line receipt log per torrent. Truncated name + short hash
+	// keeps the line scannable; rule-count surfaces the most-common
+	// "no rule matched" silent-skip case without needing the History
+	// modal. category is included since cross-seed setups use it as
+	// the routing signal. matched=true when at least one rule's
+	// classifier produced a tag (whether AddTags succeeded or not —
+	// per-event ApplyErrMsg captures the failure side).
+	fmt.Fprintf(os.Stderr,
+		"resolvarr: qbit-add 202 instance=%q hash=%s category=%q name=%q queued=%d matched=%v\n",
+		instanceID, shortInfoHash(infoHash), category, truncateForLog(name, 80), enqueued, matchedAny)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusAccepted)
 	fmt.Fprintf(w, `{"queued":%d}`, enqueued)
+}
+
+// eagerApplyQbitSeTag classifies the event against ONE rule's QbitSe
+// view + calls AddTags on qBit synchronously, recording the result on
+// the event. Called inline from handleQbitTorrentAdded so tags land
+// in qBit before the request returns — independent of the aggregation
+// window, which now only controls history/notification batching.
+//
+// On classifier no-match: leaves Matched=false, AppliedTag="" — the
+// summary at flush will skip this event. On AddTags failure: records
+// ApplyErrMsg + still marks Matched=true so the summary surfaces the
+// attempt + error. Errors don't propagate to the receive response —
+// qBit autorun-curl doesn't retry on failure, so blocking the receive
+// would just lose the chance to write a history entry.
+func (s *Server) eagerApplyQbitSeTag(
+	ctx context.Context,
+	qbitInst *core.QbitInstance,
+	rule *core.WebhookRule,
+	ev *qbitAddEvent,
+) {
+	if rule == nil || rule.QbitSe == nil || qbitInst == nil {
+		return
+	}
+	view := engine.QbitSeRulesView{
+		EpisodeEnabled:   rule.QbitSe.EpisodeEnabled,
+		EpisodeTag:       rule.QbitSe.EpisodeTag,
+		SeasonEnabled:    rule.QbitSe.SeasonEnabled,
+		SeasonTag:        rule.QbitSe.SeasonTag,
+		UnmatchedEnabled: rule.QbitSe.UnmatchedEnabled,
+		UnmatchedTag:     rule.QbitSe.UnmatchedTag,
+	}
+	tag := engine.DetermineQbitTag(ev.Name, view)
+	if tag == "" {
+		return
+	}
+	ev.AppliedTag = tag
+	ev.Matched = true
+
+	client, err := qbit.New(qbit.Config{
+		URL:          qbitInst.URL,
+		Username:     qbitInst.Username,
+		Password:     qbitInst.Password,
+		TrustedCerts: qbitInst.TrustedCerts,
+	})
+	if err != nil {
+		ev.ApplyErrMsg = "qbit client init: " + err.Error()
+		return
+	}
+	// Cap the qBit roundtrip so a slow tracker-side qBit can't hold
+	// the autorun-curl response open. 10s is generous — local qBit
+	// AddTags is usually <100ms.
+	applyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := client.AddTags(applyCtx, []string{ev.InfoHash}, []string{tag}); err != nil {
+		ev.ApplyErrMsg = err.Error()
+	}
+}
+
+// qbitEventItemTitle builds the History-modal display name for a
+// flushed batch. See the call site for the design rationale.
+func qbitEventItemTitle(events []qbitAddEvent) string {
+	if len(events) == 0 {
+		return "(empty window)"
+	}
+	if len(events) == 1 {
+		return events[0].Name + " · " + shortInfoHash(events[0].InfoHash)
+	}
+	// Multi-event window — detect "all same torrent" so cross-seed
+	// duplicate-burst becomes obvious. Same-name + same-hash → one
+	// torrent, fired N times. Anything else → mixed window.
+	first := events[0]
+	allSame := true
+	for _, e := range events[1:] {
+		if e.Name != first.Name || e.InfoHash != first.InfoHash {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		return fmt.Sprintf("%s · %s (×%d)", first.Name, shortInfoHash(first.InfoHash), len(events))
+	}
+	return fmt.Sprintf("%d torrent(s) in window: %s + others", len(events), first.Name)
+}
+
+// shortInfoHash returns the first 8 chars of an infoHash — enough to
+// correlate with qBit's logs without bloating every line with the
+// full 40-char hash.
+func shortInfoHash(h string) string {
+	if len(h) <= 8 {
+		return h
+	}
+	return h[:8]
+}
+
+// truncateForLog clips a string to maxLen runes + a trailing "…" so
+// long torrent names don't overflow log lines. ASCII-only inputs in
+// practice (torrent names rarely have multibyte chars), so byte-slice
+// is safe + cheap.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
 }
 
 // matchQbitSeRulesForInstance returns enabled webhook rules that have
@@ -170,108 +319,68 @@ type qbitTagResult struct {
 // flushQbitAggregated is the buffer's drain callback. Runs in a
 // goroutine spawned by time.AfterFunc when a rule's window expires.
 //
-// For each event in the batch:
-//  1. Classify torrent name via engine.DetermineQbitTag
-//  2. Group by classified tag → one AddTags call per (tag, batch)
-//  3. Apply tags to qBit (idempotent — qBit no-ops on already-set tags)
-//  4. Build ONE WebhookRuleRun history entry summarising counts
-//  5. Append via appendWebhookRuleRunsBatch
+// After the eager-apply refactor: tags are already in qBit before the
+// window closes. This function ONLY summarises the per-event results
+// already recorded on each qbitAddEvent and writes ONE WebhookRuleRun
+// history row. No classification or AddTags happens here.
 //
-// Errors from qBit are tolerated per-batch — a failed AddTags for one
-// tag doesn't abort the others. The rolled-up summary surfaces the
-// failure count + first error message; user can drill in via the
-// History modal to debug.
+// Per-event states:
+//   - Matched=false      → classifier produced no tag; skipped silently
+//   - Matched=true, no ApplyErrMsg → tag was applied successfully
+//   - Matched=true, ApplyErrMsg    → apply attempt failed at receive
 //
-// Re-reads config snapshot at flush time (not capture from enqueue) —
-// rule may have been edited or disabled between enqueue and fire;
-// always act on current state.
-//
-// Mid-window edit semantics: if the user changes
-// AggregationWindowSeconds while a window is open, the change applies
-// only to the NEXT window. The currently-open window keeps its
-// original duration (the AfterFunc timer was scheduled at Enqueue
-// time). Other rule edits (tag names, enabled flags, target qBit
-// instance) DO take effect at flush time because we re-read config
-// here. This split is intentional — re-arming the timer on every
-// edit would risk premature flush AND defeats the user's expectation
-// that "the running window completes as scheduled".
+// The buffer is now purely a UX aggregator: it batches per-event noise
+// into one history row + (when wired) one notification. Tag latency is
+// independent — already applied within the receive request.
 func (s *Server) flushQbitAggregated(ctx context.Context, ruleID string, events []qbitAddEvent) {
+	_ = ctx // no longer used for qBit roundtrip; retained for callback signature
 	if len(events) == 0 {
 		return
 	}
 	startedAt := time.Now().UTC()
 
-	cfg := s.App.Config.Get()
-
-	// Re-resolve the rule + qBit instance — both may have changed
-	// between enqueue and now. Defensive skip-with-empty-summary if
-	// either is gone (rare but possible during config edits).
-	var rule *core.WebhookRule
-	for i := range cfg.WebhookRules {
-		if cfg.WebhookRules[i].ID == ruleID {
-			rule = &cfg.WebhookRules[i]
-			break
-		}
+	// Roll up per-tag counts from the eager-apply results.
+	type aggRow struct {
+		tag      string
+		applied  int
+		failed   int
+		firstErr string
+		examples []string
 	}
-	if rule == nil || !rule.Enabled || !rule.HasFunction(core.WebhookFnQbitSeTag) || rule.QbitSe == nil {
-		// Rule deleted/disabled/restructured mid-window. Drop events
-		// silently; a history entry would be confusing ("8 events for
-		// a rule that doesn't exist anymore"). Logged for post-mortem.
-		fmt.Fprintf(os.Stderr, "resolvarr: qbit-add window for rule %q dropped — rule no longer matches at flush time (events=%d)\n", ruleID, len(events))
-		return
-	}
-	qbitInst := findQbitInstanceByID(cfg, rule.QbitSe.QbitInstanceID)
-	if qbitInst == nil {
-		s.appendQbitAggregatedHistory(ruleID, startedAt, events, nil,
-			fmt.Sprintf("qbit instance %q not found in config", rule.QbitSe.QbitInstanceID), "error")
-		return
-	}
-
-	// Classify each event. Group by tag for AddTags batching.
-	view := engine.QbitSeRulesView{
-		EpisodeEnabled:   rule.QbitSe.EpisodeEnabled,
-		EpisodeTag:       rule.QbitSe.EpisodeTag,
-		SeasonEnabled:    rule.QbitSe.SeasonEnabled,
-		SeasonTag:        rule.QbitSe.SeasonTag,
-		UnmatchedEnabled: rule.QbitSe.UnmatchedEnabled,
-		UnmatchedTag:     rule.QbitSe.UnmatchedTag,
-	}
-	byTag := map[string]*qbitTagBatch{}
+	byTag := map[string]*aggRow{}
 	tagOrder := make([]string, 0, 3)
+	matchedCount := 0
 	for _, ev := range events {
-		tag := engine.DetermineQbitTag(ev.Name, view)
-		if tag == "" {
+		if !ev.Matched {
 			continue
 		}
-		batch, ok := byTag[tag]
+		matchedCount++
+		row, ok := byTag[ev.AppliedTag]
 		if !ok {
-			batch = &qbitTagBatch{tag: tag}
-			byTag[tag] = batch
-			tagOrder = append(tagOrder, tag)
+			row = &aggRow{tag: ev.AppliedTag}
+			byTag[ev.AppliedTag] = row
+			tagOrder = append(tagOrder, ev.AppliedTag)
 		}
-		batch.hashes = append(batch.hashes, ev.InfoHash)
-		batch.names = append(batch.names, ev.Name)
+		if ev.ApplyErrMsg != "" {
+			row.failed++
+			if row.firstErr == "" {
+				row.firstErr = ev.ApplyErrMsg
+			}
+		} else {
+			row.applied++
+		}
+		if len(row.examples) < 5 {
+			row.examples = append(row.examples, ev.Name)
+		}
 	}
 
-	if len(byTag) == 0 {
-		// Every event landed on a disabled rule branch (Episode/Season/
-		// Unmatched all off, or no patterns matched). Still emit a
+	if matchedCount == 0 {
+		// No event in the window matched any rule branch. Still emit a
 		// history entry so the user sees the rule fired but produced
-		// no tags.
+		// no tags (helps distinguish "rule never triggered" from
+		// "rule triggered but classifier rejected everything").
 		s.appendQbitAggregatedHistory(ruleID, startedAt, events, nil,
 			fmt.Sprintf("no rule matched on %d torrent(s)", len(events)), "ok")
-		return
-	}
-
-	client, err := qbit.New(qbit.Config{
-		URL:          qbitInst.URL,
-		Username:     qbitInst.Username,
-		Password:     qbitInst.Password,
-		TrustedCerts: qbitInst.TrustedCerts,
-	})
-	if err != nil {
-		s.appendQbitAggregatedHistory(ruleID, startedAt, events, nil,
-			fmt.Sprintf("qbit client init: %v", err), "error")
 		return
 	}
 
@@ -279,21 +388,18 @@ func (s *Server) flushQbitAggregated(ctx context.Context, ruleID string, events 
 	hadError := false
 	hadSuccess := false
 	for _, tag := range tagOrder {
-		batch := byTag[tag]
-		// Cap example list to keep history detail readable (full list
-		// would be ugly for 50-torrent cross-seed bursts).
-		examples := batch.names
-		if len(examples) > 5 {
-			examples = examples[:5]
-		}
-		err := client.AddTags(ctx, batch.hashes, []string{tag})
-		if err != nil {
+		row := byTag[tag]
+		r := qbitTagResult{tag: tag, examples: row.examples}
+		if row.failed > 0 {
 			hadError = true
-			results = append(results, qbitTagResult{tag: tag, failed: true, errMsg: err.Error(), examples: examples})
-			continue
+			r.failed = true
+			r.errMsg = row.firstErr
 		}
-		hadSuccess = true
-		results = append(results, qbitTagResult{tag: tag, applied: len(batch.hashes), examples: examples})
+		if row.applied > 0 {
+			hadSuccess = true
+			r.applied = row.applied
+		}
+		results = append(results, r)
 	}
 
 	status := "ok"
@@ -369,10 +475,19 @@ func (s *Server) appendQbitAggregatedHistory(
 		}
 	}
 
-	itemTitle := fmt.Sprintf("%d torrent(s) in window", len(events))
-	if len(events) == 1 {
-		itemTitle = events[0].Name
-	}
+	// itemTitle renders in the History modal as the row's display
+	// name. Two refinements over plain torrent name:
+	//
+	//  - Single event: append the short infoHash so multiple history
+	//    entries for the SAME torrent (cross-seed duplicate fires,
+	//    pause/resume re-adds) stay visually distinct. Same-name +
+	//    same-hash rows were indistinguishable before.
+	//
+	//  - Multi-event window: if all events share the same name + hash
+	//    (the common cross-seed-burst case), collapse to
+	//    "<name> · <hash> (×N)" so the duplicate-count is obvious.
+	//    Mixed names/hashes keep the per-count summary + first name.
+	itemTitle := qbitEventItemTitle(events)
 
 	run := core.WebhookRuleRun{
 		StartedAt:   startedAt,
@@ -384,4 +499,21 @@ func (s *Server) appendQbitAggregatedHistory(
 		Summary:     summary,
 	}
 	s.appendWebhookRuleRunsBatch([]pendingRuleRun{{ruleID: ruleID, run: run}})
+	// M-Webhook notifications are NOT wired here even when the rule
+	// has NotifyOnFire=true. Reasons:
+	//   - EventType "qbit:torrentAdded" isn't a core.WebhookConnectEvent
+	//     constant — agentSubscribesToEvent unconditionally returns
+	//     false for non-Connect events, so the fallback path fires no
+	//     agents at all. Whitelist mode would technically work but
+	//     leaves only opt-in users with notifications — inconsistent
+	//     UX vs Sonarr/Radarr Connect events.
+	//   - There's no Connect-shaped body here (qBit POSTs a different
+	//     payload), so extractPosterURL produces no thumbnail.
+	//   - The "instance" context is a QbitInstance, not an Arr Instance,
+	//     so the buildInstanceList "primary Arr" framing is wrong.
+	// If demand surfaces (user explicitly asks for cross-seed catch-up
+	// notifications), extend the framework with a qBit-event class +
+	// agent flag (e.g. OnQbitAdd) + qBit-specific Detail payloads.
+	// Until then: History records the fire so the user can audit; the
+	// notification surface stays Connect-only.
 }

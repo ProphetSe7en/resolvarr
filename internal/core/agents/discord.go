@@ -91,7 +91,7 @@ func (d discordProvider) Test(ctx context.Context, runtime Runtime, agent Agent)
 	results := make([]TestResult, 0, 2)
 
 	res := TestResult{Label: "Sync webhook", Status: statusOK}
-	if err := d.sendWebhook(ctx, runtime, mainWebhook, testTitle, testMessage("Discord"), testColor, nil); err != nil {
+	if err := d.sendWebhook(ctx, runtime, mainWebhook, testTitle, testMessage("Discord"), testColor, nil, "", ""); err != nil {
 		res.Status = statusError
 		res.Error = err.Error()
 	}
@@ -99,7 +99,7 @@ func (d discordProvider) Test(ctx context.Context, runtime Runtime, agent Agent)
 
 	if updatesWebhook != "" && updatesWebhook != mainWebhook {
 		res := TestResult{Label: "Updates webhook", Status: statusOK}
-		if err := d.sendWebhook(ctx, runtime, updatesWebhook, testTitle, testMessage("Discord"), testColor, nil); err != nil {
+		if err := d.sendWebhook(ctx, runtime, updatesWebhook, testTitle, testMessage("Discord"), testColor, nil, "", ""); err != nil {
 			res.Status = statusError
 			res.Error = err.Error()
 		}
@@ -122,7 +122,7 @@ func (d discordProvider) Notify(ctx context.Context, runtime Runtime, agent Agen
 	// Discord embed-fields-grid (Primary/Secondary as inline columns).
 	// Falls back to Message-as-description for callers that haven't
 	// adopted Fields yet (Gotify/NTFY/etc keep using Message).
-	if err := d.sendWebhook(ctx, runtime, webhook, payload.Title, payload.messageFor("discord"), payload.Color, payload.Fields); err != nil {
+	if err := d.sendWebhook(ctx, runtime, webhook, payload.Title, payload.messageFor("discord"), payload.Color, payload.Fields, payload.ThumbnailURL, payload.FooterSuffix); err != nil {
 		return err
 	}
 	if strings.TrimSpace(payload.Detail) != "" {
@@ -220,10 +220,15 @@ func (discordProvider) resolveWebhook(agent Agent, route Route) string {
 
 // sendWebhook posts one Discord embed to the given webhook URL.
 // The embed includes a title, optional description, optional fields-grid
-// (when caller populated Payload.Fields), colored sidebar, and a version
-// footer. Returns an error if the HTTP client is missing, the URL fails
-// validation, or Discord responds with a 4xx/5xx status.
-func (discordProvider) sendWebhook(ctx context.Context, runtime Runtime, webhook, title, description string, color int, fields []PayloadField) error {
+// (when caller populated Payload.Fields), colored sidebar, optional
+// thumbnail (top-right poster image), and a footer. The footer always
+// starts with "Resolvarr {version} by ProphetSe7en"; when footerSuffix
+// is non-empty it is appended with " · " as separator (used by
+// webhook-fire notifications to add the rule name without forcing
+// callers to know the version string). Returns an error if the HTTP
+// client is missing, the URL fails validation, or Discord responds
+// with a 4xx/5xx status.
+func (discordProvider) sendWebhook(ctx context.Context, runtime Runtime, webhook, title, description string, color int, fields []PayloadField, thumbnailURL, footerSuffix string) error {
 	if runtime.SafeClient == nil {
 		return fmt.Errorf("discord client not configured")
 	}
@@ -236,10 +241,17 @@ func (discordProvider) sendWebhook(ctx context.Context, runtime Runtime, webhook
 		return fmt.Errorf("discord webhook must start with https://discord.com/api/webhooks/ or https://discordapp.com/api/webhooks/")
 	}
 
+	footerText := "Resolvarr " + runtime.Version + " by ProphetSe7en"
+	if suffix := strings.TrimSpace(footerSuffix); suffix != "" {
+		footerText = footerText + " · " + suffix
+	}
 	embed := map[string]any{
 		"title":  title,
 		"color":  color,
-		"footer": map[string]string{"text": "Resolvarr " + runtime.Version + " by ProphetSe7en"},
+		"footer": map[string]string{"text": footerText},
+	}
+	if thumb := strings.TrimSpace(thumbnailURL); thumb != "" {
+		embed["thumbnail"] = map[string]string{"url": thumb}
 	}
 	// Fields takes precedence over description: when the caller built a
 	// rich fields-grid, the description (which is just the same data

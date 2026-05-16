@@ -8,15 +8,19 @@ import (
 )
 
 // mockPoster is a configurable HTTP client stub for provider tests.
-// It records the last request URL and returns canned responses.
+// It records the last request URL + body and returns canned responses.
 type mockPoster struct {
 	statusCode int    // HTTP status to return
 	err        error  // if non-nil, Post returns this error
 	lastURL    string // captures the URL of the most recent Post call
+	lastBody   []byte // captures the body of the most recent Post/Do call
 }
 
 func (m *mockPoster) Post(url, contentType string, body io.Reader) (*http.Response, error) {
 	m.lastURL = url
+	if body != nil {
+		m.lastBody, _ = io.ReadAll(body)
+	}
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -28,6 +32,9 @@ func (m *mockPoster) Post(url, contentType string, body io.Reader) (*http.Respon
 
 func (m *mockPoster) Do(req *http.Request) (*http.Response, error) {
 	m.lastURL = req.URL.String()
+	if req.Body != nil {
+		m.lastBody, _ = io.ReadAll(req.Body)
+	}
 	if m.err != nil {
 		return nil, m.err
 	}

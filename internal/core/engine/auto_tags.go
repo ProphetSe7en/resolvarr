@@ -75,6 +75,32 @@ type BucketConfig struct {
 	// outright (the prior workaround) — empty + select-mode is a valid
 	// "tag nothing yet, but bucket stays on" state.
 	SelectMode string
+	// Labels is a sparse override map from canonical engine value to the
+	// user-chosen replacement value. Keys must be in the bucket's
+	// canonical vocabulary (vocabAudioCodecs / vocabResolution / etc).
+	// A missing or empty value means "use the engine default".
+	//
+	// Override scope is the value portion only — the bucket Prefix still
+	// applies on top. So Prefix="dv-" + Labels["dvprofile8"]="profile8"
+	// emits "dv-profile8". A user who wants no prefix at all leaves
+	// Prefix empty (it's a separate per-bucket setting).
+	//
+	// Cleanup safety: AllPossible / Emittable + emit all resolve through
+	// label(), so the configured vocabulary IS the cleanup scope. After
+	// a rename, the OLD label is no longer "ours" — orphans from before
+	// the rename stay on the items untouched. Documented in CHANGELOG
+	// and the bucket-config UI hint.
+	Labels map[string]string
+}
+
+// label returns the emit value for a canonical bucket value. If the user
+// supplied an override in Labels, that override is returned (caller still
+// applies Prefix). Empty / missing override → engine default.
+func (b BucketConfig) label(value string) string {
+	if v, ok := b.Labels[value]; ok && v != "" {
+		return v
+	}
+	return value
 }
 
 // allowed returns true when value passes the bucket's per-value filter.

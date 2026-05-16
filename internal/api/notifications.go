@@ -11,6 +11,9 @@
 //	DELETE /api/notifications/agents/{id}      → handleDeleteNotificationAgent
 //	POST   /api/notifications/agents/test      → handleTestNotificationAgentInline
 //	POST   /api/notifications/agents/{id}/test → handleTestNotificationAgent
+//
+// (NotificationDefaults routes retired in 7.4e — agents own their
+// filter via Events + Functions, no per-rule-type preset needed.)
 
 package api
 
@@ -148,3 +151,10 @@ func (s *Server) runNotificationAgentTest(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, map[string]any{"results": results})
 }
+
+// (NotificationDefaults handlers + validateAgentIDList +
+// canonicaliseAgentIDList + agentIDListMaxLen were retired in 7.4e.
+// The defaults struct was a per-rule-type preset for the now-retired
+// NotifyAgents whitelist; under option A (power-to-the-agent model)
+// agents own their filter via Events + Functions config and pre-
+// fills are meaningless.)

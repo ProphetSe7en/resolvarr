@@ -34,9 +34,21 @@ import (
 const (
 	// defaultAggregationWindow applies when a rule's
 	// QbitSeRules.AggregationWindowSeconds is 0 (unset / migration
-	// safety). Cross-seed bursts typically complete within 30s; 60s
-	// gives headroom while keeping latency tolerable.
-	defaultAggregationWindow = 60 * time.Second
+	// safety).
+	//
+	// Set to 2s — feels "instant" for humans (well under the ~250ms
+	// noticeable-delay threshold a user perceives between qBit-add
+	// and tag-applied — actually we exceed it slightly but cross-seed
+	// bursts complete in 100-500ms so this catches them in one fire)
+	// while still batching genuine bursts into one AddTags call + one
+	// history entry. Was 60s historically (M-qBit-add Slice 3) but
+	// that's intolerable latency between add and tag-visible-in-qBit.
+	//
+	// Users with intentionally-spaced multi-tracker re-adds (>2s apart)
+	// will get one history row per event, which is correct: each is a
+	// distinct user-visible action. The previous 60s default lumped
+	// them across long timelines, making the History modal misleading.
+	defaultAggregationWindow = 2 * time.Second
 
 	// minAggregationWindow caps the lower bound. 1s is "near instant"
 	// for users who want minimal aggregation but still want bursts
@@ -53,11 +65,21 @@ const (
 // qbitAddEvent is one entry in the per-rule debounce buffer. Captured
 // from the qBit "Run external program on torrent added" hook payload
 // at receive time; replayed at window-close through the flush callback.
+//
+// Tag application happens at RECEIVE time (eager-apply), not at flush.
+// The buffer batches events for one consolidated history row + one
+// notification per window; the tag itself is already in qBit before
+// the window closes. AppliedTag + ApplyErrMsg + Matched capture the
+// receive-time outcome so the flush callback can build its summary
+// without re-classifying or re-calling qBit.
 type qbitAddEvent struct {
-	InfoHash string    // qBit torrent hash (lowercased at receive)
-	Name     string    // torrent name — what engine.DetermineQbitTag classifies
-	Category string    // qBit category at add-time (may be empty)
-	Received time.Time // for ordering inside the window
+	InfoHash    string    // qBit torrent hash (lowercased at receive)
+	Name        string    // torrent name — what engine.DetermineQbitTag classifies
+	Category    string    // qBit category at add-time (may be empty)
+	Received    time.Time // for ordering inside the window
+	AppliedTag  string    // classified tag, empty when no rule branch matched
+	ApplyErrMsg string    // populated when AddTags failed at receive time
+	Matched     bool      // true when AppliedTag != "" — the rule had a tag to apply
 }
 
 // qbitFlushFn is invoked when a window expires. The buffer hands the

@@ -2,6 +2,36 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.5-dev — Notifications + custom tag labels + qBit URL override (2026-05-16)
+
+### What you get
+
+- **Discord / Gotify / NTFY / Pushover / Apprise notifications when a rule fires.** Add a notification agent under **Settings → Notifications**, pick which event-classes it cares about (On Grab / On Import / On File Delete + schedule events) and which actions show up in the embed (Tag release group, Auto-tag audio, qBit S/E tag, etc.) — each agent only renders what you ticked. Then turn on **Notify on fire** on the rule itself. You can have one Discord channel for tag changes, another for torrent renames, etc.
+
+- **Custom tag labels per bucket.** Don't like `dvprofile8`? Click "Customise labels" on the Audio / Video / DV step in any rule and rename it to `profile8`, or rename `2160p` → `uhd`, or `truehd` → `premium`. Cleanup follows your current labels — tags with the old name stay in Radarr until you remove them manually in Tag inventory.
+
+- **qBit webhook URL override.** When qBit and resolvarr aren't on the same Docker network (typical with VPN-gateway setups), qBit's curl back to resolvarr fails silently. The qBit webhook modal now has a **Resolvarr URL** input — set it to your LAN IP or the proxynet container IP (e.g. `http://172.19.0.35:6075`) and Configure writes that into qBit's autorun. Curl preview updates live so you see exactly what gets written.
+
+- **qBit webhook list-row state badge.** The Webhooks page now shows a green **configured** badge next to qBit instances where the webhook is already set up, and the button reads **Edit webhook** instead of generic "Webhook". Instances without setup show **Set up webhook**.
+
+- **Tags now land in qBit within ~300ms of the add, not after the aggregation window.** Previously the per-rule aggregation window gated both tag-apply AND history-write, so users with the default 60s window saw a long lag before their tag appeared. Tags now apply immediately on receive; the window only batches history-rows + notifications.
+
+### Bug fixes
+
+- **qBit autorun calls were rejected with HTTP 403.** Cross-seed catch-up never worked because resolvarr's CSRF + auth middlewares didn't exempt `/api/qbit/torrent-added/` (Sonarr/Radarr Connect's path was already exempt). qBit's curl, despite a valid per-instance secret, got 403 every time. Now exempt — same server-to-server auth model as the Sonarr/Radarr Connect path. If you saw cross-seed adds in qBit's log but no tags applied, this was it.
+
+- **Schedule and rule overlays now validate auto-tag snapshots.** Previously a buggy UI or hand-crafted payload could persist invalid auto-tag config via the per-schedule / per-rule path, bypassing the validators used by the global PUT handlers. The new custom-labels feature made this freshly exploitable, so both overlay paths now run the same checks.
+
+- **File-delete mirror-only case no longer goes silent.** When a rule with Strip-on-delete had nothing to strip on the primary instance but the secondary mirror did, the delete event produced no history embed. Now it correctly surfaces the mirror cleanup.
+
+### Quality-of-life
+
+- **qBit-add receive is logged.** Every webhook call from qBit to resolvarr writes one line to the container log: `qbit-add 202 instance=… hash=… category=… name=… queued=N matched=true/false` — makes it trivial to confirm whether qBit's call reached resolvarr and what the rule did with it.
+
+- **Default aggregation window dropped from 60s to 2s.** Cross-seed bursts still batch (they complete in <1s), but users with the default no longer wait a minute for the history row.
+
+- **Distinct History entries for repeat-fires.** When qBit fires its autorun multiple times for the same torrent (pause/resume, etc.), each row now appends the short hash so they don't look identical. Multi-event windows where every event shares name + hash collapse to `<name> · <hash> (×N)` instead of N copies.
+
 ## v0.6.4-dev — Webhook setup centralised + UI polish (2026-05-14)
 
 ### What you get

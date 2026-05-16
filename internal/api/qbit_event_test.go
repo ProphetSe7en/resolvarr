@@ -404,17 +404,123 @@ func TestEndToEnd_BurstAggregation(t *testing.T) {
 	}
 }
 
+// TestEagerApplyQbitSeTag_Classifies — eager-apply helper sets
+// Matched + AppliedTag when the classifier produces a tag, leaves
+// them zero when the rule's branches don't match the name. qBit
+// unreachable populates ApplyErrMsg but still marks Matched.
+func TestEagerApplyQbitSeTag_Classifies(t *testing.T) {
+	s, _, instID, _ := newQbitEventTestServer(t)
+	cfg := s.App.Config.Get()
+	qi := findQbitInstanceByID(cfg, instID)
+	if qi == nil {
+		t.Fatal("instance not found in seeded config")
+	}
+	// Unreachable URL so AddTags fails — verifies the error-recording
+	// path. Classification still works (it's a pure function).
+	qi.URL = "http://127.0.0.1:1"
+
+	rule := &core.WebhookRule{
+		ID: "r", Enabled: true,
+		Functions: []core.WebhookFunction{core.WebhookFnQbitSeTag},
+		QbitSe: &core.QbitSeRules{
+			QbitInstanceID: instID,
+			SeasonEnabled:  true, SeasonTag: "Season",
+		},
+	}
+
+	ev := qbitAddEvent{InfoHash: "abc", Name: "Charmed.S07.WEB-DL"}
+	s.eagerApplyQbitSeTag(context.Background(), qi, rule, &ev)
+	if !ev.Matched {
+		t.Errorf("Matched = false, want true for S07 with SeasonEnabled")
+	}
+	if ev.AppliedTag != "Season" {
+		t.Errorf("AppliedTag = %q, want Season", ev.AppliedTag)
+	}
+	if ev.ApplyErrMsg == "" {
+		t.Errorf("ApplyErrMsg should be populated when qBit unreachable, got empty")
+	}
+}
+
+// TestEagerApplyQbitSeTag_NoBranchMatch — when DetermineQbitTag
+// returns "" (no Episode/Season/Unmatched branch enabled or no
+// pattern hit), the event stays Matched=false and AppliedTag empty,
+// AND we don't attempt AddTags (no ApplyErrMsg even if qBit
+// unreachable).
+func TestEagerApplyQbitSeTag_NoBranchMatch(t *testing.T) {
+	s, _, instID, _ := newQbitEventTestServer(t)
+	cfg := s.App.Config.Get()
+	qi := findQbitInstanceByID(cfg, instID)
+	qi.URL = "http://127.0.0.1:1" // would fail if we tried
+
+	rule := &core.WebhookRule{
+		ID: "r", Enabled: true,
+		Functions: []core.WebhookFunction{core.WebhookFnQbitSeTag},
+		QbitSe: &core.QbitSeRules{
+			QbitInstanceID: instID,
+			// All branches disabled — classifier returns ""
+		},
+	}
+
+	ev := qbitAddEvent{InfoHash: "abc", Name: "Charmed.S07.WEB-DL"}
+	s.eagerApplyQbitSeTag(context.Background(), qi, rule, &ev)
+	if ev.Matched {
+		t.Errorf("Matched = true, want false when no branch enabled")
+	}
+	if ev.AppliedTag != "" {
+		t.Errorf("AppliedTag = %q, want empty", ev.AppliedTag)
+	}
+	if ev.ApplyErrMsg != "" {
+		t.Errorf("ApplyErrMsg = %q, want empty when no apply attempt", ev.ApplyErrMsg)
+	}
+}
+
+// TestFlushQbitAggregated_PreAppliedSuccess — events with successful
+// eager-apply (no ApplyErrMsg) produce a clean "tagged N" summary
+// without re-classifying or making qBit calls. The qBit instance URL
+// is unreachable to prove flush doesn't reach qBit anymore.
+func TestFlushQbitAggregated_PreAppliedSuccess(t *testing.T) {
+	s, store, instID, _ := newQbitEventTestServer(t)
+	if err := store.Update(func(c *core.Config) {
+		c.QbitInstances[0].URL = "http://127.0.0.1:1" // unreachable; flush should not care
+		c.WebhookRules = append(c.WebhookRules, core.WebhookRule{
+			ID: "rule-pre", Enabled: true,
+			Functions: []core.WebhookFunction{core.WebhookFnQbitSeTag},
+			QbitSe: &core.QbitSeRules{
+				QbitInstanceID: instID,
+				SeasonEnabled:  true, SeasonTag: "Season",
+			},
+		})
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	s.flushQbitAggregated(context.Background(), "rule-pre", []qbitAddEvent{
+		{InfoHash: "h1", Name: "Show.S01", Matched: true, AppliedTag: "Season"},
+		{InfoHash: "h2", Name: "Show.S02", Matched: true, AppliedTag: "Season"},
+	})
+
+	hist := store.Get().WebhookRules[0].History
+	if len(hist) != 1 {
+		t.Fatalf("history len = %d, want 1", len(hist))
+	}
+	if hist[0].Status != "ok" {
+		t.Errorf("Status = %q, want ok", hist[0].Status)
+	}
+	if !strings.Contains(hist[0].Summary, "Season: 2") {
+		t.Errorf("Summary = %q, should mention 'Season: 2'", hist[0].Summary)
+	}
+}
+
 // TestFlushQbitAggregated_MultipleTagsBatchedSeparately — Episode +
-// Season events in the same window get grouped by classified tag and
-// produce ONE history entry whose breakdown shows both buckets. The
-// engine.DetermineQbitTag classifier returns "Episode" for S01E05
-// names + "Season" for bare S01 names; the flush groups + emits one
-// AddTags call per (tag, batch). This test validates the byTag
-// iteration that 20+ other tests don't reach.
+// Season events in the same window produce ONE history entry whose
+// breakdown shows both buckets. Post-eager-apply refactor: the events
+// carry pre-applied results (Matched + AppliedTag + optionally
+// ApplyErrMsg) and the flush rolls them up into per-tag aggregate
+// rows. This test validates the byTag iteration that 20+ other tests
+// don't reach.
 func TestFlushQbitAggregated_MultipleTagsBatchedSeparately(t *testing.T) {
 	s, store, instID, _ := newQbitEventTestServer(t)
 	if err := store.Update(func(c *core.Config) {
-		c.QbitInstances[0].URL = "http://127.0.0.1:1" // unreachable → AddTags fails
 		c.WebhookRules = append(c.WebhookRules, core.WebhookRule{
 			ID: "rule-multi", Enabled: true,
 			Functions: []core.WebhookFunction{core.WebhookFnQbitSeTag},
@@ -429,12 +535,15 @@ func TestFlushQbitAggregated_MultipleTagsBatchedSeparately(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Two episodes + one season in the same window — must classify
-	// to two distinct tags.
+	// Two episodes + one season in the same window — eager-apply
+	// already populated AppliedTag. Simulating an unreachable qBit
+	// at receive time by setting ApplyErrMsg on every event; the
+	// flush should aggregate per-tag failure rows + emit error
+	// status because no event succeeded.
 	s.flushQbitAggregated(context.Background(), "rule-multi", []qbitAddEvent{
-		{InfoHash: "h1", Name: "Show.S01E05.WEB-DL"},
-		{InfoHash: "h2", Name: "Show.S01E06.WEB-DL"},
-		{InfoHash: "h3", Name: "Show.S03.Complete"},
+		{InfoHash: "h1", Name: "Show.S01E05.WEB-DL", Matched: true, AppliedTag: "Episode", ApplyErrMsg: "qbit unreachable"},
+		{InfoHash: "h2", Name: "Show.S01E06.WEB-DL", Matched: true, AppliedTag: "Episode", ApplyErrMsg: "qbit unreachable"},
+		{InfoHash: "h3", Name: "Show.S03.Complete", Matched: true, AppliedTag: "Season", ApplyErrMsg: "qbit unreachable"},
 	})
 
 	hist := store.Get().WebhookRules[0].History
@@ -442,12 +551,10 @@ func TestFlushQbitAggregated_MultipleTagsBatchedSeparately(t *testing.T) {
 		t.Fatalf("history len = %d, want 1", len(hist))
 	}
 	summary := hist[0].Summary
-	// AddTags fails (unreachable qBit) so both groups land as failed —
-	// status="error", breakdown shows both Episode + Season buckets.
 	if !strings.Contains(summary, "Episode") || !strings.Contains(summary, "Season") {
 		t.Errorf("Summary = %q, should mention both Episode + Season groups", summary)
 	}
 	if hist[0].Status != "error" {
-		t.Errorf("Status = %q, want error (qBit unreachable)", hist[0].Status)
+		t.Errorf("Status = %q, want error (all attempts failed)", hist[0].Status)
 	}
 }

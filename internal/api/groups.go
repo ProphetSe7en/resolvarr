@@ -295,6 +295,45 @@ func validateBucket(name string, b core.TagBucket, knownValues map[string]bool) 
 			return fmt.Errorf("%s allowedValues contains unknown value: %s", name, v)
 		}
 	}
+	if err := validateLabelsMap(name, b.Labels, knownValues); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateLabelsMap checks a per-bucket Labels override map. Rules:
+//   - Each key must be in the bucket's canonical vocabulary
+//     (caller passes the same knownValues map used for AllowedValues).
+//   - Each value must be non-empty and match Radarr's
+//     ^[a-z0-9-]+$ tag-label regex (ExtraTagPrefixValid allows empty,
+//     so we reject empty separately — empty means "no override" and
+//     should be persisted as a missing key, not an empty value).
+//   - No two keys may map to the same override value within the
+//     bucket (collision would over-strip on cleanup or double-tag at
+//     emit — same-label intent is a user error worth surfacing).
+//
+// Shared by validateBucket + validateDvDetailConfig so Audio / Video /
+// DV all enforce identical override semantics.
+func validateLabelsMap(name string, labels map[string]string, knownValues map[string]bool) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	seen := make(map[string]string, len(labels))
+	for k, v := range labels {
+		if !knownValues[k] {
+			return fmt.Errorf("%s labels: %q is not a recognised value for this bucket", name, k)
+		}
+		if v == "" {
+			return fmt.Errorf("%s labels: %q maps to an empty override — remove the entry to use the engine default", name, k)
+		}
+		if !core.ExtraTagPrefixValid.MatchString(v) {
+			return fmt.Errorf("%s labels: override %q for %q has invalid characters — Radarr only allows a-z, 0-9, and `-`", name, v, k)
+		}
+		if dup, exists := seen[v]; exists {
+			return fmt.Errorf("%s labels: %q and %q both map to %q — pick distinct override labels", name, dup, k, v)
+		}
+		seen[v] = k
+	}
 	return nil
 }
 

@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"resolvarr/internal/core/agents"
 	"resolvarr/internal/utils"
@@ -69,8 +71,42 @@ func PreserveNotificationAgentConfig(agentType string, incoming, existing Notifi
 }
 
 // ValidateNotificationAgent validates common and provider-specific settings.
+// Wraps the agents-package validator with the cross-package
+// function-constant check — agents/ intentionally doesn't know the
+// webhook function vocabulary (constants live in core), so the
+// validation chain stitches the two together here.
 func ValidateNotificationAgent(agent NotificationAgent) error {
-	return agents.ValidateAgent(agent)
+	if err := agents.ValidateAgent(agent); err != nil {
+		return err
+	}
+	return validateAgentFunctions(agent.Functions)
+}
+
+// validateAgentFunctions enforces the per-agent Functions whitelist
+// contract: every entry must be a known webhook-function constant,
+// no duplicates, no empty/whitespace strings. Empty slice is valid
+// (= "all functions"). Mirrors the validator shape used by
+// per-rule NotifyAgents — same error-message phrasing so existing
+// tests/UX stay consistent.
+func validateAgentFunctions(funcs []string) error {
+	if len(funcs) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, fn := range funcs {
+		v := strings.TrimSpace(fn)
+		if v == "" {
+			return fmt.Errorf("agent functions contains empty entry")
+		}
+		if seen[v] {
+			return fmt.Errorf("agent functions contains duplicate entry: %s", v)
+		}
+		seen[v] = true
+		if !ValidWebhookFunction(WebhookFunction(v)) {
+			return fmt.Errorf("agent functions references unknown function: %s", v)
+		}
+	}
+	return nil
 }
 
 // TestNotificationAgent probes an inline or persisted agent configuration.

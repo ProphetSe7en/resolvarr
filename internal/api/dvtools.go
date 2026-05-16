@@ -108,6 +108,9 @@ func validateDvDetailConfig(cfg core.DvDetailConfig) error {
 			return fmt.Errorf("allowedValues contains unknown value: %q (must be one of: mel, fel, dvprofile8, cm2, cm4, no-dv)", v)
 		}
 	}
+	if err := validateLabelsMap("dvDetail", cfg.Labels, dvDetailKnownValues); err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -737,6 +737,12 @@ var publicPrefixes = []string{
 	// (events list, rotate-token) are admin-side and stay behind
 	// the auth middleware.
 	"/api/webhooks/",
+	// CONTAINER-LOCAL — qBit autorun curls hit this path with
+	// X-API-Key=<QbitInstance.WebhookSecret>, no session cookie.
+	// Handler does constant-time secret-compare; bad/missing key
+	// returns generic 401. Admin endpoints under /api/qbit-instances/
+	// stay behind auth.
+	"/api/qbit/torrent-added/",
 }
 
 // IsPublic returns true if the request path should bypass auth. Exact-match

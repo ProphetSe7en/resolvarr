@@ -262,6 +262,21 @@ func TestDispatchDiscover_AddsNewGroup(t *testing.T) {
 	if !strings.Contains(res.Summary, "commented") {
 		t.Errorf("Summary = %q, want 'commented' (DiscoverAutoEnable=false → bash AUTO_TAG_DISCOVERED=false → commented entry)", res.Summary)
 	}
+	// M-Webhook notifications contract: Changed=true + Detail
+	// populated for the embed builder.
+	if !res.Changed {
+		t.Error("Changed = false, want true (discovery actually added a group)")
+	}
+	if d, ok := res.Detail.(DiscoverDetail); !ok {
+		t.Errorf("Detail type = %T, want DiscoverDetail", res.Detail)
+	} else {
+		if d.NewGroup != "NEWGROUP" {
+			t.Errorf("Detail.NewGroup = %q, want NEWGROUP", d.NewGroup)
+		}
+		if d.AutoEnabled {
+			t.Error("Detail.AutoEnabled = true, want false (DiscoverAutoEnable=false on this rule)")
+		}
+	}
 	cfgAfter := store.Get()
 	if len(cfgAfter.ReleaseGroups) != 1 {
 		t.Fatalf("ReleaseGroups len = %d, want 1", len(cfgAfter.ReleaseGroups))
