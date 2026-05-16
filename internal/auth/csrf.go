@@ -103,6 +103,19 @@ func (s *Store) CSRFMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// qBit autorun callbacks (cross-seed catch-up) also arrive
+		// server-to-server — qBit shells out to curl with the per-
+		// instance WebhookSecret in X-API-Key, no browser session.
+		// The handler does its own constant-time secret-compare before
+		// touching state; CSRF on top would block legitimate qBit
+		// callers since the per-instance secret isn't VerifyAPIKey's
+		// admin API key. Admin endpoints under /api/qbit-instances/
+		// keep CSRF — only the public receive path is exempt.
+		if strings.HasPrefix(r.URL.Path, "/api/qbit/torrent-added/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// VALID API-key requests bypass CSRF. Key must actually verify —
 		// an attacker setting a bogus X-Api-Key header to bypass the
 		// CSRF check doesn't work: they don't hold the real key.

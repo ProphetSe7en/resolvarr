@@ -429,6 +429,13 @@ function app() {
     qbitWebhookTestResult: null,
     qbitWebhookConflictOpen: false,
     qbitWebhookConflictMode: 'append',
+    // Editable override for the URL qBit calls back on. Hydrated from
+    // qbitWebhookData.webhookCallbackUrl when the modal opens; empty
+    // string means "use r.Host detection" (the default qbitWebhookData
+    // .defaultWebhookUrl). Sent to backend on Configure with
+    // hasOverride=true so a cleared field genuinely clears the
+    // persisted override.
+    qbitWebhookOverrideInput: '',
     deleteQbitBusy: false,
     // (legacy single-Discord state was here — replaced by multi-agent)
     // Notification agents (multi-provider). Each entry is one Discord/
@@ -452,6 +459,11 @@ function app() {
       type: 'discord',
       enabled: true,
       events: { onScheduleSuccess: true, onScheduleFailure: true },
+      // Functions whitelist — see agents.Agent.Functions backend
+      // contract. Empty array = "all functions" (default; matches
+      // pre-pivot behaviour). Non-empty = whitelist; THIS agent only
+      // renders embed sections for these function constants.
+      functions: [],
       config: {},
       busy: false,
       testing: false,
@@ -459,6 +471,25 @@ function app() {
       testResult: '',
       error: '',
     },
+    // Display catalog for the agent-edit Functions section. IDs match
+    // the WebhookFunction constants in internal/core/webhook_rules.go
+    // (`tagReleaseGroups`, `tagAudio`, etc.) — the backend validator
+    // rejects anything else. Labels are plain-language; order matches
+    // the user-scan path on a Download event (Tag-Q-R headline →
+    // Auto-tags → auxiliary actions → qBit-side).
+    agentFunctionOptions: [
+      { id: 'tagReleaseGroups', label: 'Tag release groups (quality tag)' },
+      { id: 'tagAudio',         label: 'Auto-tag: audio (mediaInfo)' },
+      { id: 'tagVideo',         label: 'Auto-tag: video (resolution/codec/HDR)' },
+      { id: 'tagDvDetail',      label: 'Auto-tag: Dolby Vision detail' },
+      { id: 'discover',         label: 'Discover new release groups' },
+      { id: 'recover',          label: 'Recover missing release group' },
+      { id: 'syncToSecondary',  label: 'Mirror to secondary instance' },
+      { id: 'fileDeleteClean',  label: 'Strip managed tags on file delete' },
+      { id: 'grabRename',       label: 'Rename torrent in qBittorrent' },
+      { id: 'qbitSeTag',        label: 'Tag Episode/Season in qBittorrent (Sonarr)' },
+      { id: 'qbitCategoryFix',  label: 'Fix qBittorrent category after import' },
+    ],
     deleteAgentTarget: null,
     deleteAgentBusy: false,
     uiScale: '1.1',
@@ -521,7 +552,7 @@ function app() {
     // "everything you'd say about the audio stream". Per-section
     // RemoveOrphanedTags applies only to audio labels.
     audioTags: {
-      audio: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '' },
+      audio: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '', labels: {} },
       removeOrphanedTags: false,
     },
     // Audio vocab — three sub-categories. UI renders separate checkbox
@@ -544,9 +575,9 @@ function app() {
     // category. Base "dv" tag emits from HDR bucket here; DV detail
     // (mel/fel/etc) lives separately in cfg.dvDetail.
     videoTags: {
-      resolution: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '' },
-      codec:      { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '' },
-      hdr:        { enabled: false, prefix: '', sonarrAggregation: 'strict',        allowedValues: [], selectMode: '' },
+      resolution: { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '', labels: {} },
+      codec:      { enabled: false, prefix: '', sonarrAggregation: 'all-occurring', allowedValues: [], selectMode: '', labels: {} },
+      hdr:        { enabled: false, prefix: '', sonarrAggregation: 'strict',        allowedValues: [], selectMode: '', labels: {} },
       removeOrphanedTags: false,
     },
     videoVocab: {
@@ -564,7 +595,7 @@ function app() {
     // + run-mode + state. The base "dv" tag still belongs to Extra
     // tags' HDR bucket — this only adds the detail layer
     // (mel/fel/dvprofile8/cm2/cm4).
-    dvDetail: { enabled: false, prefix: '', allowedValues: [], selectMode: '', removeOrphanedTags: false },
+    dvDetail: { enabled: false, prefix: '', allowedValues: [], selectMode: '', labels: {}, removeOrphanedTags: false },
     // Vocabulary fetched from /api/dv-detail (engine.DvDetailVocabulary
     // is the source of truth — frontend doesn't hardcode the list so
     // a future engine vocab change ships to the UI on the next config
@@ -1632,6 +1663,7 @@ function app() {
       this.qbitWebhookTestResult = null;
       this.qbitWebhookConflictMode = 'append';
       this.qbitWebhookConflictOpen = false;
+      this.qbitWebhookOverrideInput = '';
       this.qbitWebhookOpen = true;
       this.loadQbitWebhookConfig();
     },
@@ -1644,6 +1676,7 @@ function app() {
       this.qbitWebhookShowCurl = false;
       this.qbitWebhookTestResult = null;
       this.qbitWebhookConflictOpen = false;
+      this.qbitWebhookOverrideInput = '';
     },
 
     async loadQbitWebhookConfig() {
@@ -1654,12 +1687,63 @@ function app() {
         const d = await r.json();
         if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
         this.qbitWebhookData = d;
+        // Hydrate the editable override from the persisted value.
+        // Empty = use the browser-detected default.
+        this.qbitWebhookOverrideInput = d.webhookCallbackUrl || '';
       } catch (e) {
         this.showToast('Load webhook config failed: ' + e.message, 'error');
         this.qbitWebhookData = null;
       } finally {
         this.qbitWebhookLoading = false;
       }
+    },
+
+    // qbitWebhookOverrideInvalid — client-side mirror of the backend
+    // validateQbitWebhookCallbackURL contract. Empty is valid (clears
+    // override). Non-empty must parse, be http(s), have a host, and
+    // carry no path/query/fragment.
+    qbitWebhookOverrideInvalid() {
+      const v = (this.qbitWebhookOverrideInput || '').trim();
+      if (v === '') return false;
+      try {
+        const u = new URL(v);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return true;
+        if (!u.host) return true;
+        if (u.pathname !== '/' && u.pathname !== '') return true;
+        if (u.search || u.hash) return true;
+      } catch (_) {
+        return true;
+      }
+      return false;
+    },
+
+    // qbitWebhookResolvedURL returns the URL qBit will actually call
+    // back on given the current override input + the backend-supplied
+    // default. Used by the curl-preview + the hint text.
+    qbitWebhookResolvedURL() {
+      const d = this.qbitWebhookData;
+      if (!d) return '';
+      const v = (this.qbitWebhookOverrideInput || '').trim().replace(/\/+$/, '');
+      if (v === '' || this.qbitWebhookOverrideInvalid()) {
+        return d.defaultWebhookUrl || d.webhookUrl || '';
+      }
+      const id = (this.qbitWebhookInstance || {}).id || '';
+      return v + '/api/qbit/torrent-added/' + id;
+    },
+
+    // qbitWebhookCurlPreview rebuilds the curl client-side from the
+    // current override + the secret loaded from the backend. Mirrors
+    // buildQbitCurlCommand format so what the user sees is exactly
+    // what gets written into qBit's autorun.
+    qbitWebhookCurlPreview() {
+      const d = this.qbitWebhookData;
+      if (!d) return '';
+      const url = this.qbitWebhookResolvedURL();
+      const secret = d.secret || '';
+      // Quoting matches Go's %q semantics (the backend's renderer).
+      const q = (s) => '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+      return 'curl -fsS -X POST ' + q(url) + ' -H ' + q('X-API-Key: ' + secret) +
+             ' --data-urlencode "infoHash=%I" --data-urlencode "name=%N" --data-urlencode "category=%L"';
     },
 
     // qbitWebhookStateLabel derives a human-friendly status string +
@@ -1697,12 +1781,22 @@ function app() {
 
     async doConfigureQbitWebhook(mode) {
       if (!this.qbitWebhookInstance) return;
+      if (this.qbitWebhookOverrideInvalid()) {
+        this.showToast('Fix the Resolvarr URL — must be http:// or https:// with a host, no path', 'error');
+        return;
+      }
       this.qbitWebhookActionInFlight = true;
       try {
         const r = await this.apiFetch('/api/qbit-instances/' + this.qbitWebhookInstance.id + '/webhook/configure', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode }),
+          body: JSON.stringify({
+            mode,
+            // Always send hasOverride=true so a blank field genuinely
+            // clears the persisted value (vs "field not sent").
+            callbackUrlOverride: (this.qbitWebhookOverrideInput || '').trim(),
+            hasOverride: true,
+          }),
         });
         const d = await r.json();
         if (!r.ok) {
@@ -1795,7 +1889,11 @@ function app() {
       const d = this.qbitWebhookData;
       if (!d || !d.qbitState) return '';
       const current = d.qbitState.currentProgram || '';
-      const ours = d.curlCommand || '';
+      // Use the live-computed preview so the conflict view reflects
+      // the user's current Resolvarr URL override — not the stale
+      // backend-rendered curl from page-load. Falls back to the
+      // backend value if for any reason the preview returns empty.
+      const ours = this.qbitWebhookCurlPreview() || d.curlCommand || '';
       if (this.qbitWebhookConflictMode === 'replace') return ours;
       // append (default)
       if (!current) return ours;
@@ -1812,7 +1910,11 @@ function app() {
     async copyQbitWebhookCurl() {
       const d = this.qbitWebhookData;
       if (!d) return;
-      const ok = await this.copyToClipboard(d.curlCommand || '');
+      // Use the live-computed preview so the copied curl reflects the
+      // user's current override input — not the value persisted at
+      // last load.
+      const curl = this.qbitWebhookCurlPreview() || d.curlCommand || '';
+      const ok = await this.copyToClipboard(curl);
       this.showToast(ok ? 'Curl command copied' : 'Copy failed — select and copy manually', ok ? 'success' : 'error');
     },
 
@@ -5277,6 +5379,7 @@ function app() {
           this.dvDetail.prefix = data.config.prefix || '';
           this.dvDetail.allowedValues = Array.isArray(data.config.allowedValues) ? data.config.allowedValues : [];
           this.dvDetail.selectMode = data.config.selectMode || '';
+          this.dvDetail.labels = (data.config.labels && typeof data.config.labels === 'object') ? { ...data.config.labels } : {};
           this.dvDetail.removeOrphanedTags = !!data.config.removeOrphanedTags;
         }
         if (Array.isArray(data && data.vocabulary)) {
@@ -5303,6 +5406,7 @@ function app() {
             prefix: this.dvDetail.prefix || '',
             allowedValues: this.dvDetail.allowedValues,
             selectMode: this.dvDetail.selectMode || '',
+            labels: this.dvDetail.labels || {},
             removeOrphanedTags: !!this.dvDetail.removeOrphanedTags,
           }),
         });
@@ -6042,6 +6146,87 @@ function app() {
     // fresh with all-allowed.
 
     autoTagPrefixRule: /^[a-z0-9-]*$/,
+    // bucketLabelRule mirrors Radarr's strict tag-label regex used by
+    // the backend's validateLabelsMap. NON-empty + a-z 0-9 hyphen only.
+    bucketLabelRule: /^[a-z0-9-]+$/,
+
+    // Bucket label override helpers ------------------------------------
+    // Sparse map on the bucket — keyed by canonical engine value
+    // (e.g. "dvprofile8", "truehd", "2160p"), valued by user-chosen
+    // replacement. Empty/missing entry means "use engine default".
+    //
+    // The bucket Prefix still applies on top — override replaces the
+    // value portion only. To drop the prefix for an override, leave
+    // the bucket Prefix empty (separate per-bucket setting).
+    bucketLabelValue(bucket, value) {
+      if (!bucket || !bucket.labels) return '';
+      const v = bucket.labels[value];
+      return (typeof v === 'string') ? v : '';
+    },
+    setBucketLabel(bucket, value, label, save) {
+      if (!bucket) return;
+      if (!bucket.labels || typeof bucket.labels !== 'object') bucket.labels = {};
+      const trimmed = (label || '').trim();
+      if (trimmed === '') {
+        delete bucket.labels[value];
+      } else {
+        bucket.labels[value] = trimmed;
+      }
+      if (typeof save === 'function') save();
+    },
+    bucketLabelValid(bucket, value) {
+      const v = this.bucketLabelValue(bucket, value);
+      if (v === '') return true; // empty = use default, valid
+      return this.bucketLabelRule.test(v);
+    },
+    // Returns true when any label in the bucket collides with another
+    // (two keys → same override value). Used to flag the customise-
+    // labels section header so users see the error before save.
+    bucketHasLabelCollision(bucket) {
+      if (!bucket || !bucket.labels) return false;
+      const seen = {};
+      for (const [k, v] of Object.entries(bucket.labels)) {
+        if (!v) continue;
+        if (seen[v]) return true;
+        seen[v] = k;
+      }
+      return false;
+    },
+    // Returns the number of currently-configured overrides — drives
+    // the "(N customised)" badge on the section header.
+    bucketLabelCount(bucket) {
+      if (!bucket || !bucket.labels) return 0;
+      return Object.values(bucket.labels).filter(v => v && v.trim() !== '').length;
+    },
+    // ruleEditorLabelError scans every bucket on the currently-edited
+    // rule snapshot for invalid override characters or intra-bucket
+    // label collisions. Returns the first user-facing error string or
+    // empty when everything's clean. Called from the schedule + webhook
+    // save handlers so users see "Fix … on the Audio step" inline
+    // instead of round-tripping to a backend 400 toast.
+    ruleEditorLabelError() {
+      const r = this.editingRule;
+      if (!r) return '';
+      const buckets = [];
+      if (r.audioTags && r.audioTags.audio) buckets.push({ b: r.audioTags.audio, vocab: this.audioFullVocab(),       step: 'Audio' });
+      if (r.videoTags) {
+        if (r.videoTags.resolution) buckets.push({ b: r.videoTags.resolution, vocab: this.videoVocab.resolution, step: 'Video → Resolution' });
+        if (r.videoTags.codec)      buckets.push({ b: r.videoTags.codec,      vocab: this.videoVocab.codec,      step: 'Video → Codec' });
+        if (r.videoTags.hdr)        buckets.push({ b: r.videoTags.hdr,        vocab: this.videoVocab.hdr,        step: 'Video → HDR' });
+      }
+      if (r.dvDetail) buckets.push({ b: r.dvDetail, vocab: this.dvDetailVocab || [], step: 'DV detail' });
+      for (const { b, vocab, step } of buckets) {
+        for (const v of vocab) {
+          if (!this.bucketLabelValid(b, v)) {
+            return 'Fix invalid label override on the ' + step + ' step (allowed: a-z, 0-9, hyphen)';
+          }
+        }
+        if (this.bucketHasLabelCollision(b)) {
+          return 'Two label overrides on the ' + step + ' step map to the same value — pick distinct labels';
+        }
+      }
+      return '';
+    },
 
     // Audio --------------------------------------------------------
     anyAudioTagsBucketEnabled() {
@@ -6119,6 +6304,7 @@ function app() {
           dst.sonarrAggregation = src.sonarrAggregation || 'all-occurring';
           dst.allowedValues = Array.isArray(src.allowedValues) ? src.allowedValues : [];
           dst.selectMode = src.selectMode || '';
+          dst.labels = (src.labels && typeof src.labels === 'object') ? { ...src.labels } : {};
           this.audioTags.removeOrphanedTags = !!data.config.removeOrphanedTags;
         }
         if (Array.isArray(data && data.audioCodecs))   this.audioVocab.codecs   = data.audioCodecs;
@@ -6450,6 +6636,7 @@ function app() {
             dst.sonarrAggregation = src.sonarrAggregation || dst.sonarrAggregation;
             dst.allowedValues = Array.isArray(src.allowedValues) ? src.allowedValues : [];
             dst.selectMode = src.selectMode || '';
+            dst.labels = (src.labels && typeof src.labels === 'object') ? { ...src.labels } : {};
           };
           merge(this.videoTags.resolution, data.config.resolution);
           merge(this.videoTags.codec,      data.config.codec);
@@ -7214,13 +7401,22 @@ function app() {
     // toggle) save without re-testing; touching any credential input
     // resets it to false via the @input handler.
     openAgentModal(a) {
+      // Event defaults: schedule events on (legacy default), webhook
+      // events off. Existing agent's Events object is round-tripped
+      // wholesale via Object.assign so future flag additions don't
+      // get silently zeroed on save.
+      const eventDefaults = {
+        onScheduleSuccess: true, onScheduleFailure: true,
+        onImport: false, onGrab: false, onFileDelete: false,
+      };
       if (a) {
         this.agentModal = {
           id: a.id,
           name: a.name || '',
           type: a.type,
           enabled: !!a.enabled,
-          events: Object.assign({ onScheduleSuccess: true, onScheduleFailure: true }, a.events || {}),
+          events: Object.assign({}, eventDefaults, a.events || {}),
+          functions: Array.isArray(a.functions) ? a.functions.slice() : [],
           config: Object.assign({}, a.config || {}),
           busy: false,
           testing: false,
@@ -7234,7 +7430,8 @@ function app() {
           name: '',
           type: 'discord',
           enabled: true,
-          events: { onScheduleSuccess: true, onScheduleFailure: true },
+          events: Object.assign({}, eventDefaults),
+          functions: [],
           config: {},
           busy: false,
           testing: false,
@@ -7244,6 +7441,19 @@ function app() {
         };
       }
       this.showAgentModal = true;
+    },
+
+    // Functions checkbox handler — adds/removes the function ID from
+    // the agentModal.functions array. Empty array (= no filter) is
+    // the default; non-empty acts as a whitelist.
+    toggleAgentFunction(id, checked) {
+      if (checked) {
+        if (!this.agentModal.functions.includes(id)) {
+          this.agentModal.functions.push(id);
+        }
+      } else {
+        this.agentModal.functions = this.agentModal.functions.filter(f => f !== id);
+      }
     },
 
     closeAgentModal() {
@@ -7295,12 +7505,13 @@ function app() {
     // trip doesn't wipe webhook flags set by future UI surfaces.
     agentRequestBody() {
       return {
-        id:      this.agentModal.id,
-        name:    (this.agentModal.name || '').trim(),
-        type:    this.agentModal.type,
-        enabled: !!this.agentModal.enabled,
-        events:  Object.assign({}, this.agentModal.events),
-        config:  Object.assign({}, this.agentModal.config),
+        id:        this.agentModal.id,
+        name:      (this.agentModal.name || '').trim(),
+        type:      this.agentModal.type,
+        enabled:   !!this.agentModal.enabled,
+        events:    Object.assign({}, this.agentModal.events),
+        functions: (this.agentModal.functions || []).slice(),
+        config:    Object.assign({}, this.agentModal.config),
       };
     },
 
@@ -10818,6 +11029,11 @@ function app() {
           videoTagsTarget: 'primary',
           dvDetailTarget:  'primary',
           recoverTarget:   'primary',
+          // M-Webhook notification kill-switch — default off so new
+          // rules stay silent until the user opts in. Eligible agents
+          // + their Functions filter handle the rest (Settings →
+          // Notifications).
+          notifyOnFire: false,
         },
         filters:         this.snapshotGlobalFilters(),
         audioTags:       this.snapshotGlobalAudioTags(),
@@ -10936,6 +11152,7 @@ function app() {
         videoTagsTarget: 'primary',
         dvDetailTarget:  'primary',
         recoverTarget:   'primary',
+        notifyOnFire:    false,
       }, copy.options || {});
       // Unpack functions[] → fn* flags. Server-side stores the
       // canonical function-name strings; wizard binds checkboxes to
@@ -10973,6 +11190,7 @@ function app() {
         copy.options.discoverWriteBack = true;
       }
       if (typeof copy.syncSkipOrphanCleanup === 'boolean') copy.options.syncSkipOrphanCleanup = copy.syncSkipOrphanCleanup;
+      if (typeof copy.notifyOnFire === 'boolean') copy.options.notifyOnFire = copy.notifyOnFire;
 
       this.editingRule = copy;
       this.ruleEditor = {
@@ -11669,6 +11887,8 @@ function app() {
         this.ruleEditor.error = 'Pick at least one Release Group for this rule, or enable Discover with "Add to config + enable" so it seeds them at runtime';
         return;
       }
+      const labelErr = this.ruleEditorLabelError();
+      if (labelErr) { this.ruleEditor.error = labelErr; return; }
       // Remember the picked instance per Arr-type so the next
       // Create-rule wizard open pre-fills with the same instance.
       // ruleEditor.appType holds the wizard's locked Arr-type.
@@ -11744,6 +11964,8 @@ function app() {
         this.ruleEditor.error = 'Pick at least one function on the Basics step';
         return;
       }
+      const labelErr = this.ruleEditorLabelError();
+      if (labelErr) { this.ruleEditor.error = labelErr; return; }
       // Build canonical-ordered functions array — matches dispatcher
       // execution order so saved Functions[] reads naturally in the
       // rule list + audit logs.
@@ -11765,6 +11987,11 @@ function app() {
         instanceId: r.instanceId,
         appType: inst.type,
         functions: fnList,
+        // M-Webhook notification kill-switch. When true, the rule's
+        // fires reach every enabled agent whose Events.OnX flag
+        // matches the event class. Each agent's Functions whitelist
+        // (Settings → Notifications) decides what actually renders.
+        notifyOnFire: !!(r.options && r.options.notifyOnFire),
       };
       // Per-rule snapshots — only sent when the corresponding step
       // is relevant. Webhook rules use the same gates (ruleAffectsTag

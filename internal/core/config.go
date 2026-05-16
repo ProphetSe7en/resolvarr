@@ -192,6 +192,20 @@ type TagBucket struct {
 	SonarrAggregation string   `json:"sonarrAggregation,omitempty"` // "all-occurring" | "strict" | "highest"
 	AllowedValues     []string `json:"allowedValues,omitempty"`     // nil/empty = all (when SelectMode != "select")
 	SelectMode        string   `json:"selectMode,omitempty"`        // "" or "all" (default — empty=all-allowed) | "select" (exact list, empty=tag nothing)
+	// Labels is a sparse per-value override. Keys are canonical engine
+	// values from the bucket vocabulary; values are user-chosen
+	// replacement labels (subject to Radarr's ^[a-z0-9-]+$ validator
+	// at save-time). Missing/empty value = use engine default.
+	//
+	// Prefix still applies on top of the override — Prefix="dv-" +
+	// Labels["dvprofile8"]="profile8" emits "dv-profile8". To drop
+	// the prefix for an override, set the bucket Prefix to empty.
+	//
+	// Cleanup follows the CURRENT label vocabulary. After a rename,
+	// tags with the old label become orphans we no longer touch —
+	// users clean those up manually in Tag inventory. Documented in
+	// the UI hint next to the per-value label inputs.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // AudioTagsConfig governs informative auto-tagging from the
@@ -274,12 +288,13 @@ type VideoTagsConfig struct {
 // types. A fresh-install config will therefore show
 // `"dvDetail":{"enabled":false}` on disk; that's expected.
 type DvDetailConfig struct {
-	Enabled            bool     `json:"enabled"`
-	Prefix             string   `json:"prefix,omitempty"`
-	AllowedValues      []string `json:"allowedValues,omitempty"`      // nil/empty = all 5 values allowed (when SelectMode != "select")
-	SelectMode         string   `json:"selectMode,omitempty"`         // "" or "all" (default) | "select" (exact list)
-	RemoveOrphanedTags bool     `json:"removeOrphanedTags,omitempty"` // off by default — opt-in destructive cleanup
-	StripOnFileDelete  bool     `json:"stripOnFileDelete,omitempty"`  // strip DV-detail tags from the item on file-delete events; same scope rules as AudioTagsConfig.StripOnFileDelete
+	Enabled            bool              `json:"enabled"`
+	Prefix             string            `json:"prefix,omitempty"`
+	AllowedValues      []string          `json:"allowedValues,omitempty"`      // nil/empty = all 5 values allowed (when SelectMode != "select")
+	SelectMode         string            `json:"selectMode,omitempty"`         // "" or "all" (default) | "select" (exact list)
+	RemoveOrphanedTags bool              `json:"removeOrphanedTags,omitempty"` // off by default — opt-in destructive cleanup
+	StripOnFileDelete  bool              `json:"stripOnFileDelete,omitempty"`  // strip DV-detail tags from the item on file-delete events; same scope rules as AudioTagsConfig.StripOnFileDelete
+	Labels             map[string]string `json:"labels,omitempty"`             // per-value override (canonical → user label); see TagBucket.Labels for full semantics
 }
 
 // Config is the top-level persisted config.
@@ -309,6 +324,11 @@ type Config struct {
 	// first Load() of an older config; subsequent loads see this slice
 	// populated and skip the migration.
 	NotificationAgents []NotificationAgent `json:"notificationAgents,omitempty"`
+
+	// (NotificationDefaults retired in 7.4e — agents own their filter
+	// via agents.Agent.Events + .Functions; no per-rule-type preset
+	// is needed. Legacy on-disk configs decode cleanly: unknown JSON
+	// fields are ignored by encoding/json, and re-saves drop the key.)
 
 	// Logging controls the run-log file under /config/logs/. Audit lines
 	// are always written; debug lines (per Arr API call) only when enabled.
@@ -387,6 +407,23 @@ type QbitInstance struct {
 	// button) AND tells the rotate-secret flow it needs to also
 	// update qBit's autorun field with the new key.
 	WebhookConfiguredInQbit bool `json:"webhookConfiguredInQbit,omitempty"`
+
+	// WebhookCallbackURL is the override URL qBit uses to reach
+	// resolvarr. Empty (default) means "use the URL the user's browser
+	// reached resolvarr at" — built from r.Host on each Configure/Show
+	// command/curl-build call. Set when qBit is on a different network
+	// than the browser and needs a different address (e.g.
+	// http://resolvarr:6075 when qBit and resolvarr share a Docker
+	// network and the user accesses resolvarr via the host's LAN IP).
+	//
+	// Persisted on Configure-success so rotate-secret keeps using the
+	// same URL and the next modal-open hydrates the override. User can
+	// clear it via the modal to fall back to r.Host detection.
+	//
+	// Format constraint: must be a valid http:// or https:// URL with
+	// host. No trailing path — the endpoint path is appended by the
+	// builder. Validated at save-time in the configure handler.
+	WebhookCallbackURL string `json:"webhookCallbackUrl,omitempty"`
 }
 
 // RecoverExclusion is the per-instance skip list. Movies (Radarr) is
@@ -551,6 +588,11 @@ type AgentEvents = agents.Events
 // Type alias for agents.Config; each provider uses only its own fields.
 type NotificationConfig = agents.Config
 
+// (NotificationDefaults type retired in 7.4e along with the per-rule
+// NotifyAgents whitelist it pre-filled. Under option A — power-to-
+// the-agent model — agents own their filter via Events + Functions
+// config; no per-rule-type preset is meaningful.)
+
 // ConfigStore loads and saves Config to disk with a mutex.
 type ConfigStore struct {
 	mu   sync.RWMutex
@@ -669,6 +711,7 @@ func DvDetailToEngine(c DvDetailConfig) engine.DvDetailConfig {
 		Prefix:        c.Prefix,
 		AllowedValues: append([]string(nil), c.AllowedValues...),
 		SelectMode:    c.SelectMode,
+		Labels:        copyLabels(c.Labels),
 	}
 }
 
@@ -684,7 +727,22 @@ func bucketToEngine(b TagBucket) engine.BucketConfig {
 		SonarrAggregation: parseAggregation(b.SonarrAggregation),
 		AllowedValues:     append([]string(nil), b.AllowedValues...),
 		SelectMode:        b.SelectMode,
+		Labels:            copyLabels(b.Labels),
 	}
+}
+
+// copyLabels deep-copies a Labels map so a downstream engine helper
+// can't reach back into the persisted bucket. Returns nil for a nil
+// or empty input (preserves the "no overrides" sentinel).
+func copyLabels(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // AudioTagsToEngine converts the persisted AudioTagsConfig into the
@@ -972,20 +1030,25 @@ func (s *ConfigStore) migrateSchedulesToRules() bool {
 		if sched.AudioTags == nil {
 			at := s.cfg.AudioTags
 			at.Audio.AllowedValues = append([]string(nil), s.cfg.AudioTags.Audio.AllowedValues...)
+			at.Audio.Labels = copyLabels(s.cfg.AudioTags.Audio.Labels)
 			sched.AudioTags = &at
 			migrated = true
 		}
 		if sched.VideoTags == nil {
 			vt := s.cfg.VideoTags
 			vt.Resolution.AllowedValues = append([]string(nil), s.cfg.VideoTags.Resolution.AllowedValues...)
+			vt.Resolution.Labels = copyLabels(s.cfg.VideoTags.Resolution.Labels)
 			vt.Codec.AllowedValues = append([]string(nil), s.cfg.VideoTags.Codec.AllowedValues...)
+			vt.Codec.Labels = copyLabels(s.cfg.VideoTags.Codec.Labels)
 			vt.HDR.AllowedValues = append([]string(nil), s.cfg.VideoTags.HDR.AllowedValues...)
+			vt.HDR.Labels = copyLabels(s.cfg.VideoTags.HDR.Labels)
 			sched.VideoTags = &vt
 			migrated = true
 		}
 		if sched.DvDetail == nil {
 			dd := s.cfg.DvDetail
 			dd.AllowedValues = append([]string(nil), s.cfg.DvDetail.AllowedValues...)
+			dd.Labels = copyLabels(s.cfg.DvDetail.Labels)
 			sched.DvDetail = &dd
 			migrated = true
 		}
@@ -1088,6 +1151,7 @@ func (s *ConfigStore) migrateLegacyFileDeleteClean() bool {
 		if r.AudioTags == nil {
 			at := s.cfg.AudioTags
 			at.Audio.AllowedValues = append([]string(nil), s.cfg.AudioTags.Audio.AllowedValues...)
+			at.Audio.Labels = copyLabels(s.cfg.AudioTags.Audio.Labels)
 			r.AudioTags = &at
 		}
 		r.AudioTags.StripOnFileDelete = true
@@ -1095,8 +1159,11 @@ func (s *ConfigStore) migrateLegacyFileDeleteClean() bool {
 		if r.VideoTags == nil {
 			vt := s.cfg.VideoTags
 			vt.Resolution.AllowedValues = append([]string(nil), s.cfg.VideoTags.Resolution.AllowedValues...)
+			vt.Resolution.Labels = copyLabels(s.cfg.VideoTags.Resolution.Labels)
 			vt.Codec.AllowedValues = append([]string(nil), s.cfg.VideoTags.Codec.AllowedValues...)
+			vt.Codec.Labels = copyLabels(s.cfg.VideoTags.Codec.Labels)
 			vt.HDR.AllowedValues = append([]string(nil), s.cfg.VideoTags.HDR.AllowedValues...)
+			vt.HDR.Labels = copyLabels(s.cfg.VideoTags.HDR.Labels)
 			r.VideoTags = &vt
 		}
 		r.VideoTags.StripOnFileDelete = true
@@ -1104,6 +1171,7 @@ func (s *ConfigStore) migrateLegacyFileDeleteClean() bool {
 		if r.DvDetail == nil {
 			dd := s.cfg.DvDetail
 			dd.AllowedValues = append([]string(nil), s.cfg.DvDetail.AllowedValues...)
+			dd.Labels = copyLabels(s.cfg.DvDetail.Labels)
 			r.DvDetail = &dd
 		}
 		r.DvDetail.StripOnFileDelete = true
@@ -1209,18 +1277,23 @@ func (s *ConfigStore) Get() Config {
 			if j.AudioTags != nil {
 				at := *j.AudioTags
 				at.Audio.AllowedValues = append([]string(nil), j.AudioTags.Audio.AllowedValues...)
+				at.Audio.Labels = copyLabels(j.AudioTags.Audio.Labels)
 				out.Schedules[i].AudioTags = &at
 			}
 			if j.VideoTags != nil {
 				vt := *j.VideoTags
 				vt.Resolution.AllowedValues = append([]string(nil), j.VideoTags.Resolution.AllowedValues...)
+				vt.Resolution.Labels = copyLabels(j.VideoTags.Resolution.Labels)
 				vt.Codec.AllowedValues = append([]string(nil), j.VideoTags.Codec.AllowedValues...)
+				vt.Codec.Labels = copyLabels(j.VideoTags.Codec.Labels)
 				vt.HDR.AllowedValues = append([]string(nil), j.VideoTags.HDR.AllowedValues...)
+				vt.HDR.Labels = copyLabels(j.VideoTags.HDR.Labels)
 				out.Schedules[i].VideoTags = &vt
 			}
 			if j.DvDetail != nil {
 				dd := *j.DvDetail
 				dd.AllowedValues = append([]string(nil), j.DvDetail.AllowedValues...)
+				dd.Labels = copyLabels(j.DvDetail.Labels)
 				out.Schedules[i].DvDetail = &dd
 			}
 			if j.ReleaseGroupIDs != nil {
@@ -1247,18 +1320,23 @@ func (s *ConfigStore) Get() Config {
 			if r.AudioTags != nil {
 				at := *r.AudioTags
 				at.Audio.AllowedValues = append([]string(nil), r.AudioTags.Audio.AllowedValues...)
+				at.Audio.Labels = copyLabels(r.AudioTags.Audio.Labels)
 				out.WebhookRules[i].AudioTags = &at
 			}
 			if r.VideoTags != nil {
 				vt := *r.VideoTags
 				vt.Resolution.AllowedValues = append([]string(nil), r.VideoTags.Resolution.AllowedValues...)
+				vt.Resolution.Labels = copyLabels(r.VideoTags.Resolution.Labels)
 				vt.Codec.AllowedValues = append([]string(nil), r.VideoTags.Codec.AllowedValues...)
+				vt.Codec.Labels = copyLabels(r.VideoTags.Codec.Labels)
 				vt.HDR.AllowedValues = append([]string(nil), r.VideoTags.HDR.AllowedValues...)
+				vt.HDR.Labels = copyLabels(r.VideoTags.HDR.Labels)
 				out.WebhookRules[i].VideoTags = &vt
 			}
 			if r.DvDetail != nil {
 				dd := *r.DvDetail
 				dd.AllowedValues = append([]string(nil), r.DvDetail.AllowedValues...)
+				dd.Labels = copyLabels(r.DvDetail.Labels)
 				out.WebhookRules[i].DvDetail = &dd
 			}
 			if r.ReleaseGroupIDs != nil {
@@ -1301,6 +1379,8 @@ func (s *ConfigStore) Get() Config {
 			}
 		}
 	}
+	// (NotificationDefaults deep-copy retired in 7.4e along with the
+	// struct itself.)
 	// Deep-copy QbitInstances. Each entry's struct holds only string +
 	// bool fields (no nested slices), so a slice-of-struct copy is
 	// enough — callers (qbit_se_backlog, webhook_grab_rename, etc.)
@@ -1318,10 +1398,15 @@ func (s *ConfigStore) Get() Config {
 	// header-aliasing class as NotificationAgents.AppriseURLs above.
 	// A caller mutating the returned slice must not corrupt the store.
 	out.AudioTags.Audio.AllowedValues = append([]string(nil), s.cfg.AudioTags.Audio.AllowedValues...)
+	out.AudioTags.Audio.Labels = copyLabels(s.cfg.AudioTags.Audio.Labels)
 	out.VideoTags.Resolution.AllowedValues = append([]string(nil), s.cfg.VideoTags.Resolution.AllowedValues...)
+	out.VideoTags.Resolution.Labels = copyLabels(s.cfg.VideoTags.Resolution.Labels)
 	out.VideoTags.Codec.AllowedValues = append([]string(nil), s.cfg.VideoTags.Codec.AllowedValues...)
+	out.VideoTags.Codec.Labels = copyLabels(s.cfg.VideoTags.Codec.Labels)
 	out.VideoTags.HDR.AllowedValues = append([]string(nil), s.cfg.VideoTags.HDR.AllowedValues...)
+	out.VideoTags.HDR.Labels = copyLabels(s.cfg.VideoTags.HDR.Labels)
 	out.DvDetail.AllowedValues = append([]string(nil), s.cfg.DvDetail.AllowedValues...)
+	out.DvDetail.Labels = copyLabels(s.cfg.DvDetail.Labels)
 	// Deep-copy RecoverExclusions — outer map AND every per-instance
 	// Movies + Series-by-id slice. The Recover scan caches `excl :=
 	// cfg.RecoverExclusions[inst.ID]` for the entire scan duration

@@ -15,8 +15,30 @@ type Agent struct {
 	Name    string `json:"name"`    // user-defined label, e.g. "Discord #alerts"
 	Type    string `json:"type"`    // registered provider type, e.g. "discord" | "gotify" | "pushover"
 	Enabled bool   `json:"enabled"` // false keeps config saved but skips delivery
-	Events  Events `json:"events"`  // event subscription flags
+	Events  Events `json:"events"`  // event-class subscription flags (OnImport / OnGrab / OnFileDelete / OnScheduleSuccess / OnScheduleFailure)
 	Config  Config `json:"config"`  // provider-specific credentials and options
+
+	// Functions is the per-agent subscription whitelist for the
+	// M-Webhook notification framework. Each entry is a
+	// core.WebhookFunction constant string ("tagReleaseGroups",
+	// "tagAudio", "grabRename", etc.). Empty list means "all
+	// functions" (the simplest opt-in path: just enable the agent,
+	// no further config needed). Non-empty list = whitelist; the
+	// notification dispatcher filters per-rule fire results to
+	// functions in this list before building the embed for THIS
+	// agent — each agent sees only its subscribed functions.
+	//
+	// Layered with Events: Events gates on event-class (Import vs
+	// Grab vs Delete), Functions gates on which specific function
+	// inside that event class produces the embed. An agent with
+	// `OnImport=true, Functions=["tagAudio"]` only renders Tag-Audio
+	// changes on Import events, ignoring everything else.
+	//
+	// Validation of constant values lives in
+	// core.ValidateNotificationAgent — the agents package
+	// intentionally doesn't know the webhook function vocabulary
+	// (would create a layering cycle since constants live in core).
+	Functions []string `json:"functions,omitempty"`
 }
 
 // Events controls which application events trigger notifications for an agent.
@@ -131,6 +153,11 @@ const (
 // and dispatched to every matching agent. Providers may use TypeMessages for
 // per-platform formatting overrides (e.g. Gotify needs markdown bullets while
 // Discord uses embed descriptions).
+//
+// Payload is an internal Go contract — NEVER JSON-serialised to disk or
+// transmitted over the API. Fields therefore intentionally have no JSON
+// tags. Adding `json:"…"` tags here would suggest persistence semantics
+// that don't exist.
 type Payload struct {
 	Title        string            // short title, e.g. "Clonarr: Auto-Sync Applied"
 	Message      string            // default provider message body (markdown)
@@ -157,6 +184,26 @@ type Payload struct {
 	// message (Discord's 2000-char content limit minus markdown overhead).
 	// Pre-formatted with markdown (callers wrap in code blocks etc).
 	Detail string
+
+	// ThumbnailURL is rendered as the small top-right poster image in
+	// the Discord embed (Discord's `thumbnail.url` slot). Used by the
+	// webhook-fire notifications to surface the movie/series poster
+	// from the Connect payload's `images[].remoteUrl`. Empty string
+	// renders no thumbnail. Providers without thumbnail support ignore
+	// this field.
+	ThumbnailURL string
+
+	// FooterSuffix appends to the default provider footer text with
+	// " · " as separator. The default footer is
+	// "Resolvarr {version} by ProphetSe7en"; setting FooterSuffix to
+	// "rule: Tag 4K imports" yields
+	// "Resolvarr v0.6.4 by ProphetSe7en · rule: Tag 4K imports".
+	//
+	// Append (rather than replace) so the caller never has to know
+	// the version string — version + by-line stay automatic, the
+	// suffix is purely the per-payload context (rule name, scheduler
+	// job name, …). Empty string keeps the plain default footer.
+	FooterSuffix string
 }
 
 // PayloadField is one cell in a Discord embed's fields-grid. Inline

@@ -184,15 +184,20 @@ func (s *Server) dispatchTagAudio(
 	}
 	client := s.arrClientFor(inst)
 
-	res := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
+	res, added, removed := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
 	res.Function = core.WebhookFnTagAudio
+	if res.Changed {
+		res.Detail = AudioDetail{
+			Added:        added,
+			Removed:      removed,
+			PlainSummary: formatAutoTagPlainSummary(added, "audio-"),
+		}
+	}
 	return res
 }
 
 // applyAutoTagDiff is the shared diff + lazy-create + apply logic for
-// auto-tag adapters (Tag Audio + Tag Video + DV detail). Pulled out so
-// task #7 can land Tag Video and Tag DV Details by calling this with
-// their own desired/managed sets.
+// auto-tag adapters (Tag Audio + Tag Video + DV detail + Tag-RG + Sync).
 //
 // Contract:
 //   - desired: stable-ordered slice of labels the engine wants applied
@@ -202,8 +207,19 @@ func (s *Server) dispatchTagAudio(
 //   - tagDetails: label↔ID map fetched once per fire by the dispatcher
 //     and shared across functions on the same rule
 //
-// Returns a functionResult with Function unset (caller fills it in)
-// and either OK=true with a summary OR OK=false with an error.
+// Returns:
+//   - functionResult with Function unset (caller fills it in) and
+//     either OK=true with a summary OR OK=false with an error. The
+//     result's Changed flag is set when toAdd or toRemove is non-empty.
+//   - added: tags actually applied this fire (drives notification
+//     Detail's Added field).
+//   - removed: tags actually stripped this fire (drives notification
+//     Detail's Removed field).
+//
+// The two extra return values let the M-Webhook notification
+// section builders render plain-language Detail fields without re-
+// running the engine diff. Callers wrap them in the bucket-specific
+// Detail struct (AudioDetail / VideoDetail / DvDetail / TagDetail).
 //
 // "Item not found" (ErrItemNotFound) is treated as a clean skip rather
 // than an error — covers the race where the user deleted the item in
@@ -216,7 +232,7 @@ func applyAutoTagDiff(
 	desired []string,
 	managed map[string]string,
 	tagDetails []arr.TagDetail,
-) functionResult {
+) (functionResult, []string, []string) {
 	labelToID := make(map[string]int, len(tagDetails))
 	idToLabel := make(map[int]string, len(tagDetails))
 	for _, t := range tagDetails {
@@ -227,9 +243,9 @@ func applyAutoTagDiff(
 	currentTagIDs, err := client.GetItemTags(ctx, appType, itemID)
 	if err != nil {
 		if errors.Is(err, arr.ErrItemNotFound) {
-			return functionResult{OK: true, Summary: "skipped (item no longer in library)"}
+			return functionResult{OK: true, Summary: "skipped (item no longer in library)"}, nil, nil
 		}
-		return functionResult{OK: false, Summary: "fetch current tags", Err: err}
+		return functionResult{OK: false, Summary: "fetch current tags", Err: err}, nil, nil
 	}
 
 	desiredSet := make(map[string]struct{}, len(desired))
@@ -272,7 +288,7 @@ func applyAutoTagDiff(
 		return functionResult{
 			OK:      true,
 			Summary: fmt.Sprintf("no change (%d kept)", len(desiredSet)),
-		}
+		}, nil, nil
 	}
 
 	// Lazy tag-create: webhook fires single-item, so creating one tag
@@ -284,7 +300,7 @@ func applyAutoTagDiff(
 		}
 		created, cerr := client.CreateTag(ctx, label)
 		if cerr != nil {
-			return functionResult{OK: false, Summary: fmt.Sprintf("create tag %q", label), Err: cerr}
+			return functionResult{OK: false, Summary: fmt.Sprintf("create tag %q", label), Err: cerr}, nil, nil
 		}
 		labelToID[label] = created.ID
 	}
@@ -302,17 +318,21 @@ func applyAutoTagDiff(
 
 	if len(addIDs) > 0 {
 		if err := client.EditorApplyTags(ctx, appType, []int{itemID}, addIDs, "add"); err != nil {
-			return functionResult{OK: false, Summary: "apply add", Err: err}
+			return functionResult{OK: false, Summary: "apply add", Err: err}, nil, nil
 		}
 	}
 	if len(removeIDs) > 0 {
 		if err := client.EditorApplyTags(ctx, appType, []int{itemID}, removeIDs, "remove"); err != nil {
-			return functionResult{OK: false, Summary: "apply remove", Err: err}
+			return functionResult{OK: false, Summary: "apply remove", Err: err}, nil, nil
 		}
 	}
 
 	kept := len(desiredSet) - len(toAdd)
-	return functionResult{OK: true, Summary: formatAutoTagSummary(toAdd, toRemove, kept)}
+	return functionResult{
+		OK:      true,
+		Changed: true,
+		Summary: formatAutoTagSummary(toAdd, toRemove, kept),
+	}, toAdd, toRemove
 }
 
 // formatAutoTagSummary builds the user-visible "+N (...) -N (...) =N"
@@ -414,8 +434,15 @@ func (s *Server) dispatchTagDvDetail(
 	// 80%+ of imports that are SDR or non-DV HDR.
 	if !engine.HdrTypeIndicatesDv(ed.MediaInfo.VideoDynamicRangeType) {
 		desired := engine.EmitNoDvTag(engineCfg)
-		res := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
+		res, added, removed := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
 		res.Function = core.WebhookFnTagDvDetail
+		if res.Changed {
+			res.Detail = DvDetail{
+				Added:        added,
+				Removed:      removed,
+				PlainSummary: formatAutoTagPlainSummary(added, "dv-"),
+			}
+		}
 		return res
 	}
 
@@ -513,8 +540,15 @@ func (s *Server) dispatchTagDvDetail(
 		desired = engine.EmitNoDvTag(engineCfg)
 	}
 
-	res := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
+	res, added, removed := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
 	res.Function = core.WebhookFnTagDvDetail
+	if res.Changed {
+		res.Detail = DvDetail{
+			Added:        added,
+			Removed:      removed,
+			PlainSummary: formatAutoTagPlainSummary(added, "dv-"),
+		}
+	}
 	return res
 }
 
@@ -683,9 +717,14 @@ func (s *Server) dispatchDiscover(
 	if rule.DiscoverAutoEnable {
 		inst := findInstanceByID(cfg, rule.InstanceID)
 		if inst == nil {
+			// Config write DID land (group added to ReleaseGroups);
+			// only the auto-apply step was skipped. Set Changed=true
+			// so the embed surfaces the discovery — otherwise the
+			// notification silently drops a real state change.
 			return functionResult{
-				Function: core.WebhookFnDiscover, OK: true,
+				Function: core.WebhookFnDiscover, OK: true, Changed: true,
 				Summary: fmt.Sprintf("discovered %s — added as %s (auto-apply skipped: instance vanished)", rg, state),
+				Detail:  DiscoverDetail{NewGroup: rg, AutoEnabled: true},
 			}
 		}
 		client := s.arrClientFor(inst)
@@ -723,14 +762,16 @@ func (s *Server) dispatchDiscover(
 			}
 		}
 		return functionResult{
-			Function: core.WebhookFnDiscover, OK: true,
+			Function: core.WebhookFnDiscover, OK: true, Changed: true,
 			Summary: fmt.Sprintf("discovered %s — added as active + applied tag to current movie", rg),
+			Detail:  DiscoverDetail{NewGroup: rg, AutoEnabled: true},
 		}
 	}
 
 	return functionResult{
-		Function: core.WebhookFnDiscover, OK: true,
+		Function: core.WebhookFnDiscover, OK: true, Changed: true,
 		Summary: fmt.Sprintf("discovered %s — added as %s", rg, state),
+		Detail:  DiscoverDetail{NewGroup: rg, AutoEnabled: rule.DiscoverAutoEnable},
 	}
 }
 
@@ -888,14 +929,16 @@ func (s *Server) dispatchRecover(
 		// partial. Status="ok" because the load-bearing work landed;
 		// the rename is cosmetic.
 		return functionResult{
-			Function: core.WebhookFnRecover, OK: true,
+			Function: core.WebhookFnRecover, OK: true, Changed: true,
 			Summary: fmt.Sprintf("recovered releaseGroup=%s (rename command failed: %v)", grabRG, renameErr),
+			Detail:  RecoverDetail{RecoveredGroup: grabRG, Source: "grab history"},
 		}
 	}
 
 	return functionResult{
-		Function: core.WebhookFnRecover, OK: true,
+		Function: core.WebhookFnRecover, OK: true, Changed: true,
 		Summary: fmt.Sprintf("recovered releaseGroup=%s + triggered rename", grabRG),
+		Detail:  RecoverDetail{RecoveredGroup: grabRG, Source: "grab history"},
 	}
 }
 
@@ -1168,8 +1211,15 @@ func (s *Server) dispatchSyncToSecondary(
 		return functionResult{Function: core.WebhookFnSyncToSecondary, OK: false, Summary: "list secondary tags", Err: err}
 	}
 
-	res := applyAutoTagDiff(ctx, secClient, secondary.Type, secMovie.ID, desired, syncManaged, secTagDetails)
+	res, _, _ := applyAutoTagDiff(ctx, secClient, secondary.Type, secMovie.ID, desired, syncManaged, secTagDetails)
 	res.Function = core.WebhookFnSyncToSecondary
+	if res.Changed {
+		// Sync doesn't get its own embed section — composeFields
+		// post-processes this and folds the SecondaryName into the
+		// sibling TagDetail's Mirrored + SecondaryName fields so the
+		// "Tagged in: primary · secondary" line renders correctly.
+		res.Detail = SyncDetail{SecondaryName: secondary.Name}
+	}
 	// Prefix the secondary's name on EVERY return path (success AND
 	// error) so Activity-tab History rows always show which instance
 	// the operation targeted — debugging "apply add: <error>" without
@@ -1284,8 +1334,18 @@ func (s *Server) dispatchTagReleaseGroups(
 		// qualifies — e.g. an upgrade event lands a release that
 		// stops passing the audio filter).
 		managed := map[string]string{tag: "filterOnly"}
-		res := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
+		res, added, removed := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
 		res.Function = core.WebhookFnTagReleaseGroups
+		if res.Changed {
+			res.Detail = TagDetail{
+				Tag:     tag,
+				Added:   added,
+				Removed: removed,
+				Primary: inst.Name,
+				// Mirrored / SecondaryName populated by composeFields
+				// when Sync also fires.
+			}
+		}
 		return res
 	}
 
@@ -1318,8 +1378,23 @@ func (s *Server) dispatchTagReleaseGroups(
 		}
 	}
 
-	res := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
+	res, added, removed := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
 	res.Function = core.WebhookFnTagReleaseGroups
+	if res.Changed {
+		// Tag field is the FIRST applied tag (typical case: one tag
+		// per fire). On the rare upgrade-event multi-tag case the
+		// section builder renders the full list via Detail.Added.
+		var primaryTag string
+		if len(added) > 0 {
+			primaryTag = added[0]
+		}
+		res.Detail = TagDetail{
+			Tag:     primaryTag,
+			Added:   added,
+			Removed: removed,
+			Primary: inst.Name,
+		}
+	}
 	return res
 }
 
@@ -1503,8 +1578,27 @@ func (s *Server) dispatchFileDeleteCleanup(
 	// managed tag that's currently on the item". applyAutoTagDiff
 	// already does exactly this — pass desired=nil and it computes
 	// toRemove = currentManaged - desired = currentManaged.
-	res := applyAutoTagDiff(ctx, client, rule.AppType, itemID, nil, managed, tagDetails)
+	res, _, removed := applyAutoTagDiff(ctx, client, rule.AppType, itemID, nil, managed, tagDetails)
 	res.Function = core.WebhookFnFileDeleteClean
+	if res.Changed {
+		// Group the stripped tags by their display-bucket so the
+		// embed reads "Audio · Video · DV" rather than the engine's
+		// internal "audio · resolution · codec · hdr · dvdetail" sub-
+		// buckets. Engine populates managed[tag]=bucket; the helper
+		// remaps bucket names to the three display ones.
+		perBucket := map[string][]string{}
+		for _, tag := range removed {
+			bucket := displayBucketForEngine(managed[tag])
+			if bucket == "" {
+				continue
+			}
+			perBucket[bucket] = append(perBucket[bucket], tag)
+		}
+		res.Detail = FileDeleteDetail{
+			PerBucket: perBucket,
+			Primary:   inst.Name,
+		}
+	}
 
 	// No secondary-mirror here. Audio/Video/DV tags are per-instance
 	// file-derived: secondary holds its own file with its own mediaInfo
@@ -1659,8 +1753,15 @@ func (s *Server) dispatchTagVideo(
 	}
 	client := s.arrClientFor(inst)
 
-	res := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
+	res, added, removed := applyAutoTagDiff(ctx, client, rule.AppType, ed.ItemID, desired, managed, tagDetails)
 	res.Function = core.WebhookFnTagVideo
+	if res.Changed {
+		res.Detail = VideoDetail{
+			Added:        added,
+			Removed:      removed,
+			PlainSummary: formatAutoTagPlainSummary(added, "video-"),
+		}
+	}
 	return res
 }
 
@@ -1891,8 +1992,25 @@ func (s *Server) dispatchAutoStripTagRgOnDelete(
 		return functionResult{Function: webhookFnAutoStripTagRgOnDelete, OK: false, Summary: "instance vanished between event receive and dispatch"}
 	}
 	client := s.arrClientFor(inst)
-	res := applyAutoTagDiff(ctx, client, rule.AppType, primaryItemID, nil, managed, tagDetails)
+	res, _, removed := applyAutoTagDiff(ctx, client, rule.AppType, primaryItemID, nil, managed, tagDetails)
 	res.Function = webhookFnAutoStripTagRgOnDelete
+	// Build FileDeleteDetail on primary strip. composeFields will
+	// merge this with dispatchFileDeleteCleanup's PerBucket data if
+	// both dispatchers fire on the same delete event.
+	if res.Changed {
+		var stripped string
+		if len(removed) > 0 {
+			// First-stripped tag wins as the headline. In practice a
+			// Tag-RG item carries at most one rule-managed tag per
+			// fire, but defensive: render the first when multiple
+			// strip in the same call.
+			stripped = removed[0]
+		}
+		res.Detail = FileDeleteDetail{
+			TagRgRemoved: stripped,
+			Primary:      inst.Name,
+		}
+	}
 
 	// Mirror to secondary if Sync-to-Secondary is on the rule. Without
 	// the user opting in to mirror, primary strip is enough — the user
@@ -1930,7 +2048,38 @@ func (s *Server) dispatchAutoStripTagRgOnDelete(
 		res.Summary = res.Summary + fmt.Sprintf("; secondary mirror failed: list tags on %s: %v", secondary.Name, err)
 		return res
 	}
-	mirror := applyAutoTagDiff(ctx, secClient, secondary.Type, secMovie.ID, nil, managed, secTagDetails)
+	mirror, _, mirrorRemoved := applyAutoTagDiff(ctx, secClient, secondary.Type, secMovie.ID, nil, managed, secTagDetails)
+	if mirror.Changed {
+		if d, ok := res.Detail.(FileDeleteDetail); ok {
+			// Primary stripped too — annotate the existing Detail
+			// with mirror info so "Cleaned in: primary · secondary"
+			// renders correctly.
+			d.MirroredSecondary = true
+			d.SecondaryName = secondary.Name
+			res.Detail = d
+		} else {
+			// Primary had nothing to strip but the secondary still
+			// carried a stale managed tag — bash tagarr_import.sh
+			// would silently drop this fire from notifications
+			// because the primary side never flipped Changed. We
+			// promote it: the mirror's cleanup IS an actual change
+			// from the rule's perspective, just on the secondary
+			// side. Without this promotion, composeFields filters
+			// the result out at the `!r.Changed` gate and the user
+			// never sees the cleanup in Discord.
+			var stripped string
+			if len(mirrorRemoved) > 0 {
+				stripped = mirrorRemoved[0]
+			}
+			res.Detail = FileDeleteDetail{
+				TagRgRemoved:      stripped,
+				Primary:           inst.Name,
+				MirroredSecondary: true,
+				SecondaryName:     secondary.Name,
+			}
+			res.Changed = true
+		}
+	}
 	mirrorPrefix := "; → " + secondary.Name + ": "
 	if mirror.OK {
 		res.Summary = res.Summary + mirrorPrefix + mirror.Summary

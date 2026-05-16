@@ -618,6 +618,21 @@ type WebhookRule struct {
 	QbitSe          *QbitSeRules          `json:"qbitSe,omitempty"`
 	QbitCategoryFix *QbitCategoryFixRules `json:"qbitCategoryFix,omitempty"`
 
+	// NotifyOnFire — master toggle for sending notifications when this
+	// rule fires. When false, no notification is sent regardless of how
+	// many agents are configured globally. Per-rule kill-switch because
+	// not every rule should ping notifications (e.g. quiet rules that
+	// fire on every Download event would flood downstream channels).
+	//
+	// Which AGENTS receive the notification + which FUNCTIONS each
+	// agent renders is decided by per-agent config (agents.Agent.Events
+	// for event-class subscription + agents.Agent.Functions for
+	// function-level subscription) — NOT per-rule. This is the
+	// "power-to-the-agent" model locked 2026-05-16; the old per-rule
+	// NotifyAgents whitelist + NotifyOnEveryEvent debug flag were
+	// retired in commit 7.4d.
+	NotifyOnFire bool `json:"notifyOnFire,omitempty"`
+
 	// Webhook — opt-in per-rule webhook URL. When non-nil with a
 	// Token set, the rule has its own dedicated receive URL at
 	// /api/webhooks/rule/{token} and is EXCLUDED from the instance

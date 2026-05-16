@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"time"
 
@@ -38,11 +39,19 @@ import (
 // of the payload still works (manual paste still viable when qBit's
 // API is unreachable / qui blocks reads).
 type qbitWebhookConfigResponse struct {
-	InstanceID  string             `json:"instanceId"`
-	Secret      string             `json:"secret"`      // PLAINTEXT — only via this endpoint
-	WebhookURL  string             `json:"webhookUrl"`  // POST target qBit will hit
-	CurlCommand string             `json:"curlCommand"` // ready to paste into qBit
-	QbitState   *qbitAutorunState  `json:"qbitState,omitempty"`
+	InstanceID  string            `json:"instanceId"`
+	Secret      string            `json:"secret"`      // PLAINTEXT — only via this endpoint
+	WebhookURL  string            `json:"webhookUrl"`  // POST target qBit will hit (override-aware)
+	CurlCommand string            `json:"curlCommand"` // ready to paste into qBit
+	QbitState   *qbitAutorunState `json:"qbitState,omitempty"`
+	// WebhookCallbackURL echoes the persisted per-instance override
+	// (empty when none). UI hydrates the editable input from here.
+	WebhookCallbackURL string `json:"webhookCallbackUrl,omitempty"`
+	// DefaultWebhookURL is what the resolver WOULD build from r.Host
+	// detection if the override is cleared. Used by the UI as the
+	// placeholder/preview and as the "reset to default" target value.
+	// Always populated (independent of override state).
+	DefaultWebhookURL string `json:"defaultWebhookUrl"`
 }
 
 // qbitAutorunState is the snapshot of qBit's current "Run external
@@ -106,15 +115,17 @@ func (s *Server) handleQbitWebhookConfig(w http.ResponseWriter, r *http.Request)
 		inst.WebhookSecret = secret
 	}
 
-	webhookURL := buildResolvarrWebhookURL(r, id)
+	webhookURL := resolveQbitWebhookURL(r, inst)
 	curl := buildQbitCurlCommand(webhookURL, inst.WebhookSecret)
 
 	resp := qbitWebhookConfigResponse{
-		InstanceID:  id,
-		Secret:      inst.WebhookSecret,
-		WebhookURL:  webhookURL,
-		CurlCommand: curl,
-		QbitState:   s.fetchQbitAutorunState(r.Context(), inst),
+		InstanceID:         id,
+		Secret:             inst.WebhookSecret,
+		WebhookURL:         webhookURL,
+		CurlCommand:        curl,
+		QbitState:          s.fetchQbitAutorunState(r.Context(), inst),
+		WebhookCallbackURL: inst.WebhookCallbackURL,
+		DefaultWebhookURL:  buildResolvarrWebhookURL(r, id),
 	}
 	writeJSON(w, resp)
 }
@@ -162,6 +173,18 @@ func (s *Server) fetchQbitAutorunState(ctx context.Context, inst *core.QbitInsta
 // qbitConfigureRequest is the POST /configure body.
 type qbitConfigureRequest struct {
 	Mode string `json:"mode"` // "append" | "replace" (ignored when current is empty / ours)
+	// CallbackURLOverride is the user-edited "Resolvarr URL" base from
+	// the modal. Empty means "no override / use r.Host detection".
+	// Field is always processed (even when blank) so submitting blank
+	// CLEARS a previously-persisted override — gives the user a clean
+	// "revert to default" path without a separate Clear button.
+	CallbackURLOverride string `json:"callbackUrlOverride"`
+	// HasOverride distinguishes "no override field sent at all" from
+	// "override sent as empty string". Older UI clients omit this key
+	// entirely; we then leave the persisted override untouched. New UI
+	// always sends true with the (possibly empty) string so blank
+	// genuinely clears the field.
+	HasOverride bool `json:"hasOverride,omitempty"`
 }
 
 // handleQbitConfigureWebhook auto-configures qBit's autorun field via
@@ -197,11 +220,30 @@ func (s *Server) handleQbitConfigureWebhook(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Override validation runs BEFORE qBit roundtrip — bad URL should
+	// never reach the persistence layer, and surfacing 400 with a
+	// clear reason early saves the user a confusing qBit-side error.
+	var normalisedOverride string
+	if req.HasOverride {
+		v, err := validateQbitWebhookCallbackURL(req.CallbackURLOverride)
+		if err != nil {
+			writeError(w, 400, "callbackUrlOverride: "+err.Error())
+			return
+		}
+		normalisedOverride = v
+	}
+
 	cfg := s.App.Config.Get()
 	inst := findQbitInstanceByID(cfg, id)
 	if inst == nil {
 		writeError(w, 404, "qBit instance not found")
 		return
+	}
+	// Apply override to the in-memory copy BEFORE building the URL so
+	// the curl we write to qBit (and the response payload) reflects
+	// the user's choice — even before Update persists below.
+	if req.HasOverride {
+		inst.WebhookCallbackURL = normalisedOverride
 	}
 	if inst.WebhookSecret == "" {
 		// Defensive — Slice 1 backfill should have stamped one. If
@@ -236,7 +278,7 @@ func (s *Server) handleQbitConfigureWebhook(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	webhookURL := buildResolvarrWebhookURL(r, id)
+	webhookURL := resolveQbitWebhookURL(r, inst)
 	ourCommand := buildQbitCurlCommand(webhookURL, inst.WebhookSecret)
 
 	var newProgram string
@@ -291,6 +333,9 @@ func (s *Server) handleQbitConfigureWebhook(w http.ResponseWriter, r *http.Reque
 				c.QbitInstances[i].WebhookConfiguredInQbit = true
 				if backup != "" {
 					c.QbitInstances[i].PreviousAutorunBackup = backup
+				}
+				if req.HasOverride {
+					c.QbitInstances[i].WebhookCallbackURL = normalisedOverride
 				}
 				return
 			}
@@ -386,7 +431,7 @@ func (s *Server) handleQbitRotateWebhookSecret(w http.ResponseWriter, r *http.Re
 		writeJSON(w, resp)
 		return
 	}
-	webhookURL := buildResolvarrWebhookURL(r, id)
+	webhookURL := resolveQbitWebhookURL(r, inst)
 	newCurl := buildQbitCurlCommand(webhookURL, newSecret)
 	newProgram := replaceResolvarrLine(currentProgram, newCurl)
 	if err := client.SetAutorunOnAdded(ctx, newProgram, true); err != nil {
@@ -493,6 +538,12 @@ func (s *Server) handleQbitResetWebhook(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Clear our state regardless — the rollback in qBit succeeded.
+	// WebhookCallbackURL is deliberately preserved across Reset: it's
+	// a per-instance hostname preference (e.g. "qBit reaches us at
+	// http://resolvarr:6075"), not part of the configured-in-qBit
+	// state. Clearing it would force the user to re-type the override
+	// on every re-Configure, which is the opposite of helpful. User
+	// can clear it explicitly via the modal input + Configure.
 	if err := s.App.Config.Update(func(c *core.Config) {
 		for i := range c.QbitInstances {
 			if c.QbitInstances[i].ID == id {
@@ -529,6 +580,57 @@ func buildResolvarrWebhookURL(r *http.Request, instanceID string) string {
 		scheme = "https"
 	}
 	return fmt.Sprintf("%s://%s/api/qbit/torrent-added/%s", scheme, r.Host, instanceID)
+}
+
+// resolveQbitWebhookURL returns the URL qBit should call back on. If
+// the instance has a persisted WebhookCallbackURL override, that base
+// is used (path appended). Otherwise falls back to the request-host
+// detection in buildResolvarrWebhookURL. Override base is trimmed of
+// trailing slashes so we don't emit double-slashed paths.
+func resolveQbitWebhookURL(r *http.Request, inst *core.QbitInstance) string {
+	if inst == nil {
+		// All current callers 404 on nil-instance upstream, so this
+		// path is defensive — the fallback path below would otherwise
+		// panic on inst.ID. Return an empty string so any caller that
+		// reaches here surfaces "missing URL" visibly rather than
+		// panicking the request.
+		return ""
+	}
+	if inst.WebhookCallbackURL != "" {
+		base := strings.TrimRight(inst.WebhookCallbackURL, "/")
+		return fmt.Sprintf("%s/api/qbit/torrent-added/%s", base, inst.ID)
+	}
+	return buildResolvarrWebhookURL(r, inst.ID)
+}
+
+// validateQbitWebhookCallbackURL parses a user-supplied override base
+// and accepts only http(s) URLs with a non-empty host and no path
+// (path comes from the resolver). Empty input is accepted — means
+// "clear override". Returns the normalised string the caller persists.
+func validateQbitWebhookCallbackURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("not a valid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("URL must start with http:// or https://")
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("URL must include a host (e.g. http://resolvarr:6075)")
+	}
+	// Strip any path/query/fragment — the endpoint path is appended
+	// by the resolver. Allow only the bare base.
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("URL must be base-only, no path — e.g. http://resolvarr:6075 not http://resolvarr:6075/api/...")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("URL must not contain query or fragment")
+	}
+	return strings.TrimRight(u.Scheme+"://"+u.Host, "/"), nil
 }
 
 // buildQbitCurlCommand renders the curl command users paste into

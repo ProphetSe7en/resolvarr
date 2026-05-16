@@ -55,13 +55,13 @@ func AudioTagsForFile(mi MediaInfo, cfg AudioTagsConfig) []string {
 	}
 	var out []string
 	if tag := audioCodecBucket(mi.AudioCodec); tag != "" && cfg.Audio.allowed(tag) {
-		out = append(out, cfg.Audio.Prefix+tag)
+		out = append(out, cfg.Audio.Prefix+cfg.Audio.label(tag))
 	}
 	if tag := audioChannelsBucket(mi.AudioChannels); tag != "" && cfg.Audio.allowed(tag) {
-		out = append(out, cfg.Audio.Prefix+tag)
+		out = append(out, cfg.Audio.Prefix+cfg.Audio.label(tag))
 	}
 	if hasAtmos(mi.AudioAdditionalFeatures, mi.RelativePath, mi.SceneName) && cfg.Audio.allowed("atmos") {
-		out = append(out, cfg.Audio.Prefix+"atmos")
+		out = append(out, cfg.Audio.Prefix+cfg.Audio.label("atmos"))
 	}
 	return out
 }
@@ -76,7 +76,7 @@ func AllPossibleAudioTags(cfg AudioTagsConfig) map[string]string {
 	out := make(map[string]string)
 	emit := func(values []string) {
 		for _, v := range values {
-			out[cfg.Audio.Prefix+v] = "audio"
+			out[cfg.Audio.Prefix+cfg.Audio.label(v)] = "audio"
 		}
 	}
 	emit(vocabAudioCodecs)
@@ -99,7 +99,7 @@ func EmittableAudioTags(cfg AudioTagsConfig) map[string]string {
 			if !cfg.Audio.allowed(v) {
 				continue
 			}
-			out[cfg.Audio.Prefix+v] = "audio"
+			out[cfg.Audio.Prefix+cfg.Audio.label(v)] = "audio"
 		}
 	}
 	emit(vocabAudioCodecs)

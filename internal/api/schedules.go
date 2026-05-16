@@ -137,6 +137,29 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 			return newAPIError(400, "missingEpisodes is Sonarr-only — pick a Sonarr instance")
 		}
 	}
+
+	// Per-schedule auto-tag snapshots — validate identically to the
+	// global PUT handlers. Without this, an overlay can persist a
+	// snapshot the global handlers would have rejected (bad prefix,
+	// unknown allowed-value, malformed Labels override). The Labels
+	// feature added 2026-05-16 surfaces this gap by letting users
+	// configure per-value renames — the overlay path must enforce the
+	// same closed-vocab + collision + regex rules as the global.
+	if req.AudioTags != nil {
+		if err := validateAudioTagsConfig(*req.AudioTags); err != nil {
+			return newAPIError(400, "audioTags: "+err.Error())
+		}
+	}
+	if req.VideoTags != nil {
+		if err := validateVideoTagsConfig(*req.VideoTags); err != nil {
+			return newAPIError(400, "videoTags: "+err.Error())
+		}
+	}
+	if req.DvDetail != nil {
+		if err := validateDvDetailConfig(*req.DvDetail); err != nil {
+			return newAPIError(400, "dvDetail: "+err.Error())
+		}
+	}
 	return nil
 }
 

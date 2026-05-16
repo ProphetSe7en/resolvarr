@@ -60,23 +60,23 @@ func VideoTagsForFile(mi MediaInfo, qualityResolution int, cfg VideoTagsConfig) 
 
 	if cfg.Resolution.Enabled {
 		if tag := resolutionBucket(mi.Height, qualityResolution); tag != "" && cfg.Resolution.allowed(tag) {
-			out = append(out, cfg.Resolution.Prefix+tag)
+			out = append(out, cfg.Resolution.Prefix+cfg.Resolution.label(tag))
 		}
 	}
 
 	if cfg.Codec.Enabled {
 		if tag := codecBucket(mi.VideoCodec); tag != "" && cfg.Codec.allowed(tag) {
-			out = append(out, cfg.Codec.Prefix+tag)
+			out = append(out, cfg.Codec.Prefix+cfg.Codec.label(tag))
 		}
 		if mi.VideoBitDepth == 10 && cfg.Codec.allowed("10bit") {
-			out = append(out, cfg.Codec.Prefix+"10bit")
+			out = append(out, cfg.Codec.Prefix+cfg.Codec.label("10bit"))
 		}
 	}
 
 	if cfg.HDR.Enabled {
 		for _, tag := range hdrBuckets(mi.VideoDynamicRangeType) {
 			if cfg.HDR.allowed(tag) {
-				out = append(out, cfg.HDR.Prefix+tag)
+				out = append(out, cfg.HDR.Prefix+cfg.HDR.label(tag))
 			}
 		}
 	}
@@ -89,14 +89,14 @@ func VideoTagsForFile(mi MediaInfo, qualityResolution int, cfg VideoTagsConfig) 
 // AllowedValues. Cleanup safety-bound.
 func AllPossibleVideoTags(cfg VideoTagsConfig) map[string]string {
 	out := make(map[string]string)
-	emit := func(prefix, bucket string, values []string) {
+	emit := func(b BucketConfig, bucket string, values []string) {
 		for _, v := range values {
-			out[prefix+v] = bucket
+			out[b.Prefix+b.label(v)] = bucket
 		}
 	}
-	emit(cfg.Resolution.Prefix, "resolution", vocabResolution)
-	emit(cfg.Codec.Prefix, "codec", vocabCodec)
-	emit(cfg.HDR.Prefix, "hdr", vocabHDR)
+	emit(cfg.Resolution, "resolution", vocabResolution)
+	emit(cfg.Codec, "codec", vocabCodec)
+	emit(cfg.HDR, "hdr", vocabHDR)
 	return out
 }
 
@@ -113,7 +113,7 @@ func EmittableVideoTags(cfg VideoTagsConfig) map[string]string {
 			if !b.allowed(v) {
 				continue
 			}
-			out[b.Prefix+v] = bucket
+			out[b.Prefix+b.label(v)] = bucket
 		}
 	}
 	emitIf(cfg.Resolution, "resolution", vocabResolution)

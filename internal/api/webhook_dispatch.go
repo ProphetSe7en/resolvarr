@@ -78,11 +78,42 @@ var canonicalFunctionOrder = []core.WebhookFunction{
 
 // functionResult is one (rule × function) outcome. Aggregated into the
 // rule's WebhookRuleRun summary.
+//
+// OK means "the function ran without erroring" — it is true for both
+// successful changes AND successful no-ops. The History modal renders
+// based on OK; notifications do NOT (see Changed).
+//
+// Changed means "the function actually altered state" — a tag was
+// added/removed, a torrent was renamed, a category was swapped.
+// Notifications consume Changed: bash tagarr_import.sh's "Nothing to
+// report — skipping Discord notification" pattern (line 1457) is
+// implemented as "skip the function from the embed when Changed is
+// false". This is the user-locked rule "notifications contain only
+// actual changes" — no "ran and did nothing" lines pollute the embed.
+// History-side tracking still uses OK so the user can debug why a
+// rule fired but produced no change.
+//
+// Summary is the free-form one-liner the History modal renders verbatim
+// (e.g. "tagAudio: 2 added; 0 removed"). It is intentionally
+// human-readable, not machine-parseable.
+//
+// Detail is the typed payload consumed by the M-Webhook notification
+// embed builders (task #5). Each adapter populates Detail with the
+// per-function struct that matches its Function (TagDetail for
+// WebhookFnTagReleaseGroups, AudioDetail for WebhookFnTagAudio, etc.).
+// The embed builder type-asserts on Function to extract the right
+// struct and render plain-language sections like "Sound: TrueHD Atmos
+// 7.1" — never re-running engine helpers (project's
+// "handler-never-decides-tags" architecture rule). Nil Detail is
+// allowed for legacy / unwired call paths; notification builders
+// degrade to "no section" rather than crash on a missing payload.
 type functionResult struct {
 	Function core.WebhookFunction
 	OK       bool
+	Changed  bool
 	Summary  string
 	Err      error
+	Detail   any
 }
 
 // pendingRuleRun pairs a fired rule with its run summary for the batched
@@ -155,10 +186,18 @@ func (s *Server) dispatchWebhookRules(
 		if !qualified || len(results) == 0 {
 			continue
 		}
+		run := buildWebhookRuleRun(env, body, started, results)
 		pending = append(pending, pendingRuleRun{
 			ruleID: rule.ID,
-			run:    buildWebhookRuleRun(env, body, started, results),
+			run:    run,
 		})
+		// Fire M-Webhook notifications after the run is built but
+		// before the batched history-persist; the hook reads from
+		// a fresh ConfigStore.Get snapshot so it's independent of
+		// the in-flight pending slice. Skipped silently when the
+		// rule has NotifyOnFire=false (master toggle) — keeping
+		// the per-rule loop tight.
+		s.fireWebhookNotifications(&rule, inst, env, body, results, run)
 	}
 	if len(pending) > 0 {
 		s.appendWebhookRuleRunsBatch(pending)
@@ -314,9 +353,15 @@ func (s *Server) dispatchSingleWebhookRule(
 	if !qualified || len(results) == 0 {
 		return 0
 	}
+	run := buildWebhookRuleRun(env, body, started, results)
+	// Fire notifications BEFORE the history-persist write so async-
+	// capable providers (Discord/Gotify/NTFY) aren't gated by the
+	// disk I/O of appendWebhookRuleRunsBatch's atomic Config.Update.
+	// Mirrors the ordering in dispatchWebhookRules.
+	s.fireWebhookNotifications(rule, inst, env, body, results, run)
 	s.appendWebhookRuleRunsBatch([]pendingRuleRun{{
 		ruleID: rule.ID,
-		run:    buildWebhookRuleRun(env, body, started, results),
+		run:    run,
 	}})
 	return 1
 }

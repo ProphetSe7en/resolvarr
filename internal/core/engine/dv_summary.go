@@ -194,6 +194,20 @@ type DvDetailConfig struct {
 	Prefix        string
 	AllowedValues []string // nil/empty = all 5 vocab values allowed (when SelectMode != "select")
 	SelectMode    string   // "" or "all" (default — empty=all-allowed) | "select" (exact list, empty=tag nothing)
+	// Labels is a sparse override map — canonical engine value
+	// ("dvprofile8", "cm2", "mel", etc.) → user-chosen replacement.
+	// Missing/empty value means use the engine default. Same scope
+	// + cleanup semantics as BucketConfig.Labels for Audio/Video.
+	Labels map[string]string
+}
+
+// label returns the emit value for a canonical DV-detail value, applying
+// the user override when present.
+func (c DvDetailConfig) label(value string) string {
+	if v, ok := c.Labels[value]; ok && v != "" {
+		return v
+	}
+	return value
 }
 
 // allowedValuesSet builds a lookup set with two-mode semantics:
@@ -237,7 +251,7 @@ func dvDetailAllowedValuesSet(allowed []string, selectMode string) map[string]bo
 func AllPossibleDvDetailTags(cfg DvDetailConfig) map[string]string {
 	out := make(map[string]string, len(vocabDvDetail))
 	for _, v := range vocabDvDetail {
-		out[cfg.Prefix+v] = "dvdetail"
+		out[cfg.Prefix+cfg.label(v)] = "dvdetail"
 	}
 	return out
 }
@@ -264,7 +278,7 @@ func EmittableDvDetailTags(cfg DvDetailConfig) map[string]string {
 		if allowed != nil && !allowed[v] {
 			continue
 		}
-		out[cfg.Prefix+v] = "dvdetail"
+		out[cfg.Prefix+cfg.label(v)] = "dvdetail"
 	}
 	return out
 }
@@ -311,7 +325,7 @@ func EmitDvDetailTags(detail DvDetail, cfg DvDetailConfig) []string {
 		if allowed != nil && !allowed[v] {
 			continue
 		}
-		out = append(out, cfg.Prefix+v)
+		out = append(out, cfg.Prefix+cfg.label(v))
 	}
 	return out
 }
@@ -341,5 +355,5 @@ func EmitNoDvTag(cfg DvDetailConfig) []string {
 	if allowed != nil && !allowed["no-dv"] {
 		return nil
 	}
-	return []string{cfg.Prefix + "no-dv"}
+	return []string{cfg.Prefix + cfg.label("no-dv")}
 }
