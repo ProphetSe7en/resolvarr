@@ -247,7 +247,7 @@ func TestDispatchWebhookRules_SkipsPerRuleURLRules(t *testing.T) {
 	env := &connectEventEnvelope{EventType: "Download"}
 	body := []byte(`{"eventType":"Download"}`)
 	inst := &store.Get().Instances[0]
-	fired := s.dispatchWebhookRules(t.Context(), inst, env, body)
+	fired := s.dispatchWebhookRules(t.Context(), inst, env, body, "")
 
 	// Exactly ONE rule should have fired — rule A. Rule B was skipped
 	// because it has its own per-rule URL.

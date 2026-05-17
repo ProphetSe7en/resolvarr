@@ -158,9 +158,11 @@ func (s *Server) handleWebhookReceivePerRule(w http.ResponseWriter, r *http.Requ
 	// authoritative.
 	logged := false
 	logCount := 0
+	eventID := ""
 	if inst.Webhook.LoggingEnabled {
+		eventID = genID()
 		ev := WebhookEvent{
-			ID:         genID(),
+			ID:         eventID,
 			InstanceID: inst.ID,
 			ReceivedAt: time.Now().UTC(),
 			EventType:  env.EventType,
@@ -172,7 +174,7 @@ func (s *Server) handleWebhookReceivePerRule(w http.ResponseWriter, r *http.Requ
 		logged = true
 	}
 
-	rulesFired := s.dispatchSingleWebhookRule(r.Context(), inst, rule, &env, body)
+	rulesFired := s.dispatchSingleWebhookRule(r.Context(), inst, rule, &env, body, eventID)
 
 	writeJSON(w, map[string]any{
 		"status":     "ok",

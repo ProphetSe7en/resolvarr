@@ -489,6 +489,18 @@ func (s *Server) appendQbitAggregatedHistory(
 	//    Mixed names/hashes keep the per-count summary + first name.
 	itemTitle := qbitEventItemTitle(events)
 
+	// qBit-add Changed semantics: window had at least one successful
+	// AddTags call. Mirrors the rule-fire path so the "Made changes"
+	// filter on Recent Activity / Rule History treats qBit-add fires
+	// consistently. Fatal-reason and "no rule matched on N torrents"
+	// keep Changed=false (no state mutation happened).
+	changed := false
+	for _, r := range results {
+		if r.applied > 0 {
+			changed = true
+			break
+		}
+	}
 	run := core.WebhookRuleRun{
 		StartedAt:   startedAt,
 		DurationMs:  durationMs,
@@ -497,6 +509,7 @@ func (s *Server) appendQbitAggregatedHistory(
 		ItemTitle:   itemTitle,
 		ItemContext: fmt.Sprintf("aggregated %d", len(events)),
 		Summary:     summary,
+		Changed:     changed,
 	}
 	s.appendWebhookRuleRunsBatch([]pendingRuleRun{{ruleID: ruleID, run: run}})
 	// M-Webhook notifications are NOT wired here even when the rule

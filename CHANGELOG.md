@@ -2,6 +2,36 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.6-dev — Activity Table redesign + webhook secret management (2026-05-17)
+
+### What you get
+
+- **Recent Activity is a readable table now.** No more JSON dumps. Five columns: Time / Type / Item (title + subtitle + quality summary) / Outcome / Expand. Each row shows you what happened in plain language — series + episode name, quality + audio + codec + release group + file size, and which rule did what. Click to expand for the full card view with file path, scene name, source trail, and per-rule outcome details. Raw JSON is still available, just hidden behind a collapsible button so it doesn't drown the rest.
+
+- **Three filter dimensions on Recent Activity.**
+  - **Type** (chip row): All / Grab / Import / Delete / etc.
+  - **Outcome**: All / Made changes / No change / No rule matched / Errors only
+  - **Content shape**: 🎬 Episode / 📚 Season pack / 🎞 Movie / ⓘ System — app-type-aware (Radarr shows Movie + System, Sonarr shows Episode + Season pack + System)
+  - Counter: "N of M events" so you can see how aggressive your filtering is
+
+- **Webhook setup gets a "Show details" button.** Reveals the URL + Secret on the existing instance card without needing to regenerate the token. Secret is masked by default (`abcd••••••••wxyz` — first 4 + last 4 chars) so you can confirm a paste matches without exposing the whole value. Includes a 7-step plain-language setup checklist for the Sonarr/Radarr Connect form.
+
+- **Generate / Rotate Secret button** on the setup card. If your instance has no Secret yet (legacy migration), click **Generate** → fresh Secret without invalidating the URL Sonarr/Radarr already has. If you want to rotate after a suspected leak, click **Rotate** → same flow with a confirmation warning that you'll need to re-paste into Sonarr/Radarr's Password field.
+
+- **Auto-pick the instance picker when only one exists for the active app-type.** No more clicking through "— pick an instance —" on every visit to the Recent activity tab if you only have one Sonarr or one Radarr.
+
+### Bug fixes
+
+- **Season-pack Grab events now read as "S07 (22 episodes)" instead of the misleading "S07E01 + 21 more".** Same-season detection: when every episode in `episodes[]` shares one season number, it's a pack — use the season form. Mixed-season (rare) keeps the old fallback.
+
+- **Per-episode Import events no longer misclassified as season packs.** Sonarr quirk: per-file Imports list ALL of the pack's 22 episodes in `episodes[]` even though only one file is being imported. The Content-shape filter now checks `episodeFiles` count first — exactly one file = single Episode, regardless of what the episodes metadata says.
+
+- **Per-episode Import subtitle parses the file's actual episode.** Was "S07E01 + 21 more" on every per-episode import within a pack; now reads "S07E01" by parsing the SnnEmm token from `episodeFile.sceneName` / `relativePath`. Falls back to the season-pack form for genuine multi-episode events with no files yet.
+
+- **Content-shape filter chips now only show shapes that match the app-type.** Was showing Episode + Season pack while on Radarr (Sonarr-only concepts) and Movie while on Sonarr.
+
+- **Auto-pick honours the active app-type.** Was picking the first instance globally instead of the first instance of the selected Radarr/Sonarr pill, which could land you on the wrong type.
+
 ## v0.6.5-dev — Notifications + custom tag labels + qBit URL override (2026-05-16)
 
 ### What you get

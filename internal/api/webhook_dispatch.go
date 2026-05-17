@@ -142,6 +142,7 @@ func (s *Server) dispatchWebhookRules(
 	inst *core.Instance,
 	env *connectEventEnvelope,
 	body []byte,
+	eventID string,
 ) int {
 	if env == nil || env.EventType == "" {
 		return 0
@@ -201,8 +202,44 @@ func (s *Server) dispatchWebhookRules(
 	}
 	if len(pending) > 0 {
 		s.appendWebhookRuleRunsBatch(pending)
+		// Attach denormalised outcomes to the logged event so Recent
+		// Activity can render the Outcome column without joining
+		// per-rule history. Skipped when logging is off or the event
+		// never landed in the ring (eventID == "").
+		if eventID != "" && s.WebhookLog != nil {
+			outcomes := buildEventOutcomes(cfg, pending)
+			if len(outcomes) > 0 {
+				s.WebhookLog.attachOutcomes(inst.ID, eventID, outcomes)
+			}
+		}
 	}
 	return len(pending)
+}
+
+// buildEventOutcomes converts the just-built pending RuleRuns into
+// WebhookEventOutcome entries for storage on the event itself.
+// Rule name lookup uses the config snapshot pinned at dispatch start
+// so a mid-event UI rename doesn't show stale names.
+func buildEventOutcomes(cfg core.Config, pending []pendingRuleRun) []WebhookEventOutcome {
+	if len(pending) == 0 {
+		return nil
+	}
+	nameByID := make(map[string]string, len(cfg.WebhookRules))
+	for _, r := range cfg.WebhookRules {
+		nameByID[r.ID] = r.Name
+	}
+	out := make([]WebhookEventOutcome, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, WebhookEventOutcome{
+			RuleID:    p.ruleID,
+			RuleName:  nameByID[p.ruleID],
+			Status:    p.run.Status,
+			Changed:   p.run.Changed,
+			Summary:   p.run.Summary,
+			StartedAt: p.run.StartedAt,
+		})
+	}
+	return out
 }
 
 // executeWebhookRule runs the canonical function-order pipeline against
@@ -336,6 +373,7 @@ func (s *Server) dispatchSingleWebhookRule(
 	rule *core.WebhookRule,
 	env *connectEventEnvelope,
 	body []byte,
+	eventID string,
 ) int {
 	if env == nil || env.EventType == "" || rule == nil || !rule.Enabled {
 		return 0
@@ -359,10 +397,20 @@ func (s *Server) dispatchSingleWebhookRule(
 	// disk I/O of appendWebhookRuleRunsBatch's atomic Config.Update.
 	// Mirrors the ordering in dispatchWebhookRules.
 	s.fireWebhookNotifications(rule, inst, env, body, results, run)
-	s.appendWebhookRuleRunsBatch([]pendingRuleRun{{
+	pending := []pendingRuleRun{{
 		ruleID: rule.ID,
 		run:    run,
-	}})
+	}}
+	s.appendWebhookRuleRunsBatch(pending)
+	// Attach outcome to the logged event (same pattern as
+	// dispatchWebhookRules — Recent Activity table reads from
+	// event.Outcomes without joining per-rule history).
+	if eventID != "" && s.WebhookLog != nil {
+		outcomes := buildEventOutcomes(cfg, pending)
+		if len(outcomes) > 0 {
+			s.WebhookLog.attachOutcomes(inst.ID, eventID, outcomes)
+		}
+	}
 	return 1
 }
 
@@ -504,12 +552,22 @@ func (s *Server) tagDetailsFor(
 //   - "error"   every function failed
 func buildWebhookRuleRun(env *connectEventEnvelope, body []byte, started time.Time, results []functionResult) core.WebhookRuleRun {
 	var okCount, errCount int
+	changed := false
 	parts := make([]string, 0, len(results))
 	for _, r := range results {
 		if r.OK {
 			okCount++
 		} else {
 			errCount++
+		}
+		// Changed=true means an adapter actually modified state — at
+		// least one tag added/removed, one rename applied, one S/E tag
+		// pushed to qBit, etc. Aggregates to the rule-level flag so the
+		// Recent Activity / Rule History "Made changes" filter can
+		// hide rule fires that produced no diff. Skipped functions and
+		// no-op success (e.g. "tag already correct") keep Changed=false.
+		if r.Changed {
+			changed = true
 		}
 		// Prefix non-OK summaries with "error: " so the frontend's
 		// per-function status classifier (parseRuleRunSummary +
@@ -546,6 +604,7 @@ func buildWebhookRuleRun(env *connectEventEnvelope, body []byte, started time.Ti
 		ReleaseTitle: releaseTitle,
 		FilePath:     filePath,
 		Summary:      strings.Join(parts, "; "),
+		Changed:      changed,
 	}
 }
 

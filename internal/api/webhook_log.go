@@ -56,6 +56,35 @@ type WebhookEvent struct {
 	Title      string          `json:"title,omitempty"`   // movie/series title pulled out for the card
 	Subtitle   string          `json:"subtitle,omitempty"` // year / S01E05 / etc. — best-effort second line
 	Raw        json.RawMessage `json:"raw"`               // full decoded body, pretty-printable on expand
+	// Outcomes records which rule(s) fired on this event and what
+	// they did. Populated AFTER dispatch completes via
+	// webhookLog.attachOutcomes — append() writes the raw event, the
+	// handler updates outcomes once rule dispatch returns. Empty slice
+	// means "no rule matched"; UI renders that as a grey "no rule
+	// matched" chip in the Outcome column.
+	//
+	// Drives the Recent Activity table's Outcome column + the "Made
+	// changes" / "No change" / "Errors only" filters without a join
+	// against per-rule history.
+	Outcomes []WebhookEventOutcome `json:"outcomes,omitempty"`
+}
+
+// WebhookEventOutcome is the per-rule summary attached to a logged
+// event. Denormalised copy of the relevant fields from the rule's
+// WebhookRuleRun so Recent Activity can render the row WITHOUT a
+// join across every rule's History slice. A single event with
+// N matching rules carries N outcomes (e.g. tag-rg rule fires +
+// recover rule fires on the same Grab event).
+//
+// StartedAt is the join key back to the WebhookRuleRun in
+// Rule.History when the UI needs the full run detail.
+type WebhookEventOutcome struct {
+	RuleID    string    `json:"ruleId"`
+	RuleName  string    `json:"ruleName,omitempty"`
+	Status    string    `json:"status"` // "ok" | "partial" | "error"
+	Changed   bool      `json:"changed,omitempty"`
+	Summary   string    `json:"summary,omitempty"`
+	StartedAt time.Time `json:"startedAt"`
 }
 
 // webhookLog is a per-instance ring buffer + atomic JSON-file mirror.
@@ -188,6 +217,37 @@ func (l *webhookLog) append(ev WebhookEvent) int {
 
 // fanOut delivers the event to every active subscriber for the
 // instance. Non-blocking sends — channels are buffered, full
+// attachOutcomes updates the most-recent event with the given ID in
+// the per-instance ring with the supplied rule outcomes. Called by
+// dispatch after rule fires complete so the Recent Activity table
+// can render the Outcome column from the event itself (no join
+// against per-rule history).
+//
+// The lookup walks the per-instance ring from the newest end —
+// just-appended events are at the end, so this terminates in O(1)
+// for the common case. Silently no-op when the event has aged out
+// of the ring or never logged (logging disabled per-instance).
+//
+// Persists immediately so the outcome is durable across container
+// restarts. Same write-everything pattern as append().
+func (l *webhookLog) attachOutcomes(instanceID, eventID string, outcomes []WebhookEventOutcome) {
+	if eventID == "" || len(outcomes) == 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	bucket := l.events[instanceID]
+	for i := len(bucket) - 1; i >= 0; i-- {
+		if bucket[i].ID == eventID {
+			bucket[i].Outcomes = outcomes
+			l.events[instanceID] = bucket
+			l.persistLocked()
+			return
+		}
+	}
+	// Event aged out or never logged — no-op.
+}
+
 // channels mean "client is too slow", drop the event for them.
 // Held under subMu so subscribe/unsubscribe can't race with
 // the broadcast.
