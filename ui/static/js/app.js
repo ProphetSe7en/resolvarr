@@ -48,7 +48,18 @@ function app() {
     webhookEventsLoading: false,
     webhookActivityInstanceId: '',
     webhookEventFilter: 'all',     // 'all' | <eventType> — chip filter on activity panel
+    webhookOutcomeFilter: 'all',   // 'all' | 'changed' | 'no-change' | 'no-rule' | 'errors' — outcome dropdown
+    // Content-shape multi-select. Empty array = no filter (show all).
+    // Non-empty = only shapes in the array. Possible values:
+    //   'episode'      single episode (episodes.length === 1)
+    //   'season-pack'  multi-episode grab or "S04E05 + N more" subtitle
+    //   'movie'        Radarr event (body.movie present)
+    //   'system'       no movie + no series (Test / Health / Manual /
+    //                  Application update / qBit-add catch-all)
+    webhookContentShapeFilter: [],
     webhookEventExpanded: {},      // { [eventId]: true } — expand-to-see-JSON toggle
+    webhookDetailsExpanded: {},    // { [instanceId]: true } — Setup-card details panel (URL + Secret)
+    webhookSecretRevealed: {},     // { [instanceId]: true } — show secret in plaintext vs masked
     // Webhook configuration wizard state. Two-step flow matching the
     // QFA / Tag / Discover wizards' Step-1-carries-everything pattern:
     //   Step 1 (Choices): Arr type pick (Sonarr/Radarr radio) +
@@ -4175,12 +4186,16 @@ function app() {
         const cfg = next[inst.id];
         if (cfg && cfg.token) this.prefetchWebhookEventsForLabel(inst.id);
       }
-      // Auto-pick the first instance for the Recent activity sub-tab
-      // if the user hasn't picked one yet — saves a click on first
-      // visit. They can still flip via the dropdown.
+      // Auto-pick the first instance OF THE ACTIVE app-type for the
+      // Recent activity sub-tab if the user hasn't picked one yet —
+      // saves a click on first visit. Honours the webhookAppType pill
+      // so a user on the Sonarr pill auto-lands on Sonarr-1 even when
+      // Radarr-1 is first in the global instance list.
       if (!this.webhookActivityInstanceId && insts.length > 0) {
-        this.webhookActivityInstanceId = insts[0].id;
-        this.loadWebhookEvents(insts[0].id);
+        const t = this.webhookAppType || 'radarr';
+        const first = insts.find(i => i.type === t) || insts[0];
+        this.webhookActivityInstanceId = first.id;
+        this.loadWebhookEvents(first.id);
       }
     },
 
@@ -4644,8 +4659,17 @@ function app() {
 
     webhookEventsFiltered() {
       const events = this.webhookEvents[this.webhookActivityInstanceId] || [];
-      if (this.webhookEventFilter === 'all') return events;
-      return events.filter(ev => ev.eventType === this.webhookEventFilter);
+      let out = events;
+      if (this.webhookEventFilter !== 'all') {
+        out = out.filter(ev => ev.eventType === this.webhookEventFilter);
+      }
+      if (this.webhookOutcomeFilter && this.webhookOutcomeFilter !== 'all') {
+        out = out.filter(ev => this.eventOutcomeFilterMatch(ev));
+      }
+      if ((this.webhookContentShapeFilter || []).length > 0) {
+        out = out.filter(ev => this.eventContentShapeFilterMatch(ev));
+      }
+      return out;
     },
 
     // Toggle the expand-to-see-JSON state on a single event card.
@@ -4670,6 +4694,324 @@ function app() {
         return JSON.stringify(raw, null, 2);
       } catch (e) {
         return String(raw);
+      }
+    },
+
+    // ===== Webhook setup details (URL + Secret) =====
+    //
+    // Toggles inline display of a configured webhook's URL + Secret on
+    // the Setup-tab instance card. Lets the user copy the Secret after
+    // initial wizard config without having to regenerate the token
+    // (which would invalidate the URL Sonarr/Radarr currently has).
+
+    toggleWebhookDetails(instanceId) {
+      const cur = !!this.webhookDetailsExpanded[instanceId];
+      this.webhookDetailsExpanded = { ...this.webhookDetailsExpanded, [instanceId]: !cur };
+      // Auto-mask secret again when collapsing
+      if (cur) {
+        this.webhookSecretRevealed = { ...this.webhookSecretRevealed, [instanceId]: false };
+      }
+    },
+    toggleWebhookSecretReveal(instanceId) {
+      const cur = !!this.webhookSecretRevealed[instanceId];
+      this.webhookSecretRevealed = { ...this.webhookSecretRevealed, [instanceId]: !cur };
+    },
+    webhookSecretDisplay(instanceId) {
+      const cfg = this.webhookConfigs[instanceId] || {};
+      const secret = cfg.secret || '';
+      if (!secret) return '(not yet generated)';
+      if (this.webhookSecretRevealed[instanceId]) return secret;
+      // Masked: keep first 4 + last 4 chars so user can verify the
+      // value matches what they pasted into Sonarr/Radarr without
+      // exposing the whole secret in over-shoulder screenshots.
+      if (secret.length <= 12) return '•'.repeat(secret.length);
+      return secret.slice(0, 4) + '•'.repeat(Math.max(0, secret.length - 8)) + secret.slice(-4);
+    },
+    // rotateWebhookSecret asks the backend for a fresh Secret while
+    // keeping the existing Token (URL stays valid in Sonarr/Radarr).
+    // Use when the instance has no Secret (legacy migration), or when
+    // the user explicitly wants to rotate after a suspected leak.
+    //
+    // No confirm modal for the "missing Secret" case (zero-impact —
+    // there was nothing to invalidate); shows a confirm for explicit
+    // rotation when a Secret already exists because Sonarr/Radarr
+    // will need its password re-pasted.
+    async rotateWebhookSecret(instanceId) {
+      const cfg = this.webhookConfigs[instanceId] || {};
+      const hadSecret = !!cfg.secret;
+      if (hadSecret) {
+        const ok = await this.confirmDialog({
+          title:       'Rotate webhook Secret?',
+          message:     "A new Secret will be generated. The URL in Sonarr/Radarr stays the same, but you must paste the new Secret into the Connect → Password field — until you do, events with the old Secret will be rejected if Require signature is on.",
+          confirmText: 'Rotate',
+          kind:        'warning',
+        });
+        if (!ok) return;
+      }
+      try {
+        const r = await this.apiFetch('/api/instances/' + instanceId + '/webhook/rotate-secret', { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        // Patch the local cache so the details panel updates without
+        // a full reload.
+        this.webhookConfigs = { ...this.webhookConfigs, [instanceId]: { ...cfg, secret: d.secret, url: d.url } };
+        // Auto-reveal so user can immediately copy it.
+        this.webhookSecretRevealed = { ...this.webhookSecretRevealed, [instanceId]: true };
+        this.showToast(hadSecret ? 'Secret rotated — paste the new one into Sonarr/Radarr' : 'Secret generated — paste it into Sonarr/Radarr → Connect → Password', 'success');
+      } catch (e) {
+        this.showToast('Rotate failed: ' + e.message, 'error');
+      }
+    },
+
+    async copyWebhookSecret(instanceId) {
+      const cfg = this.webhookConfigs[instanceId] || {};
+      const secret = cfg.secret || '';
+      if (!secret) {
+        this.showToast('No secret to copy', 'error');
+        return;
+      }
+      const ok = await this.copyToClipboard(secret);
+      this.showToast(ok ? 'Secret copied' : 'Copy failed — reveal + select manually', ok ? 'success' : 'error');
+    },
+
+    // ===== Recent Activity table renderers (Phase A3) =====
+    //
+    // Per-event-type helpers pull the relevant fields from raw payload
+    // and produce display strings for the table. Backend's eventTitle/
+    // eventSubtitle are coarse — these renderers go deeper and produce
+    // a quality summary + outcome chips. Pure functions on the event
+    // shape; safe to call in x-text bindings (no side effects).
+    //
+    // Spec: dev/analysis/M-activity-table.md §4
+    eventIcon(eventType) {
+      switch (eventType) {
+        case 'Grab':                return '🎯';
+        case 'Download':            return '📥';
+        case 'MovieFileDelete':
+        case 'EpisodeFileDelete':   return '🗑';
+        case 'Rename':              return '✏️';
+        case 'qbit:torrentAdded':   return '📦';
+        case 'HealthIssue':
+        case 'HealthRestored':      return '🏥';
+        case 'ApplicationUpdate':   return '⬆️';
+        case 'ManualInteractionRequired': return '⚠️';
+        case 'Test':                return '✨';
+        default:                    return 'ⓘ';
+      }
+    },
+
+    // eventQualitySummary builds the right-side compact summary like
+    // "1080p WEB-DL · EAC3 5.1 · h264 · FLUX · 3.04 GiB".
+    // Resilient against missing fields (older payloads, partial data).
+    eventQualitySummary(ev) {
+      const body = ev.raw || {};
+      // For Download events, episodeFiles/movieFile has the canonical
+      // info. For Grab events, release.releaseTitle is the source of
+      // truth (mediainfo not yet known). For Delete, the old file's
+      // quality is in episodeFile/movieFile.
+      let parts = [];
+      let file = null;
+      if (Array.isArray(body.episodeFiles) && body.episodeFiles.length) {
+        file = body.episodeFiles[0];
+      } else if (body.episodeFile) {
+        file = body.episodeFile;
+      } else if (body.movieFile) {
+        file = body.movieFile;
+      }
+      if (file) {
+        if (file.quality) parts.push(file.quality);
+        const mi = file.mediaInfo || {};
+        if (mi.audioCodec) {
+          const ch = mi.audioChannels ? ' ' + mi.audioChannels : '';
+          parts.push(mi.audioCodec + ch);
+        }
+        if (mi.videoCodec) parts.push(mi.videoCodec);
+        if (mi.videoDynamicRangeType) parts.push(mi.videoDynamicRangeType);
+        if (file.releaseGroup) parts.push(file.releaseGroup);
+        if (file.size) parts.push(this.formatBytes(file.size));
+      } else if (body.release && body.release.releaseTitle) {
+        // Grab event — no file yet. Just show the release title.
+        return body.release.releaseTitle;
+      }
+      return parts.join(' · ');
+    },
+
+    // eventIndexerLine returns the indexer + downloader source-trail
+    // string ("BHD → qBit-tv") shown on the expanded card. Empty when
+    // both fields are missing.
+    eventIndexerLine(ev) {
+      const body = ev.raw || {};
+      const indexer = (body.release && body.release.indexer) || '';
+      const dlClient = body.downloadClient || '';
+      if (indexer && dlClient) return indexer + ' → ' + dlClient;
+      return indexer || dlClient || '';
+    },
+
+    // eventSceneName returns episodeFile.sceneName or movieFile.sceneName
+    // for the expand-card display. Useful when comparing grab-name vs
+    // import-name drift.
+    eventSceneName(ev) {
+      const body = ev.raw || {};
+      if (Array.isArray(body.episodeFiles) && body.episodeFiles.length) {
+        return body.episodeFiles[0].sceneName || '';
+      }
+      if (body.episodeFile) return body.episodeFile.sceneName || '';
+      if (body.movieFile) return body.movieFile.sceneName || '';
+      return '';
+    },
+
+    // eventFilePath returns the imported file's full path. Empty for
+    // events that don't have a file (Grab, Test, Health).
+    eventFilePath(ev) {
+      const body = ev.raw || {};
+      if (Array.isArray(body.episodeFiles) && body.episodeFiles.length) {
+        return body.episodeFiles[0].path || '';
+      }
+      if (body.episodeFile) return body.episodeFile.path || '';
+      if (body.movieFile) return body.movieFile.path || '';
+      return '';
+    },
+
+    // formatBytes converts a byte count into a human-readable string
+    // (KiB/MiB/GiB). Standard binary IEC prefixes.
+    formatBytes(bytes) {
+      if (!bytes || bytes < 1024) return (bytes || 0) + ' B';
+      const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+      let v = bytes / 1024;
+      let i = 0;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return v.toFixed(2) + ' ' + units[i];
+    },
+
+    // eventOutcomeChips returns the per-rule outcome chips to render in
+    // the Outcome column. Empty array → "no rule matched" placeholder
+    // in the template.
+    eventOutcomeChips(ev) {
+      const outcomes = ev.outcomes || [];
+      return outcomes.map(o => ({
+        ruleId:   o.ruleId,
+        ruleName: o.ruleName || '(unnamed rule)',
+        status:   o.status || 'ok',
+        changed:  !!o.changed,
+        summary:  o.summary || '',
+        symbol:   o.status === 'error'   ? '✗'
+                : o.status === 'partial' ? '~'
+                : o.changed              ? '✓'
+                : '·',
+        color:    o.status === 'error'   ? 'var(--accent-red)'
+                : o.status === 'partial' ? 'var(--accent-orange)'
+                : o.changed              ? 'var(--accent-green)'
+                : 'var(--text-muted-secondary)',
+      }));
+    },
+
+    // eventOutcomeFilterMatch returns true when the event's outcomes
+    // satisfy the current outcome filter. Drives webhookEventsFiltered
+    // when the outcome dropdown isn't "all".
+    eventOutcomeFilterMatch(ev) {
+      const outcomes = ev.outcomes || [];
+      const f = this.webhookOutcomeFilter;
+      if (!f || f === 'all') return true;
+      if (f === 'no-rule')  return outcomes.length === 0;
+      if (f === 'changed')  return outcomes.some(o => o.changed && o.status !== 'error');
+      if (f === 'no-change') return outcomes.length > 0 && outcomes.every(o => !o.changed && o.status !== 'error');
+      if (f === 'errors')   return outcomes.some(o => o.status === 'error' || o.status === 'partial');
+      return true;
+    },
+
+    // eventContentShape classifies an event by what kind of content it
+    // describes. Sonarr-quirk-aware:
+    //
+    //   - Grab events report ALL episodes the release covers in
+    //     episodes[]. A season-pack grab has episodes.length=24 + no
+    //     episodeFiles. → 'season-pack'.
+    //
+    //   - Download (Import) events fire ONCE PER EPISODE FILE. But for
+    //     files imported AS PART OF a season pack, Sonarr lists ALL of
+    //     the pack's episodes in episodes[] (not just the one in this
+    //     file). The signal that distinguishes per-episode-from-pack
+    //     from true multi-episode is episodeFiles[] — exactly one entry
+    //     means the event is about that single file. So
+    //     "episodes.length=24 + episodeFiles.length=1" = single episode
+    //     import that happens to be from a pack, NOT a season-pack
+    //     event in the user's sense.
+    //
+    //   - True multi-episode events are exceedingly rare. They'd be
+    //     either a Grab (no files yet) or a special "multi-ep file"
+    //     (e.g. an S01E01E02 mux) — both result in episodeFiles being
+    //     empty OR a single file holding multiple episode IDs.
+    //
+    // Detection order:
+    //   movie field         → 'movie'
+    //   no episodes context → 'system'
+    //   has 1+ episodeFiles → 'episode'   (single file, regardless of
+    //                                       episodes[] count)
+    //   episodes.length > 1 → 'season-pack' (Grab without files)
+    //   else                → 'episode'
+    eventContentShape(ev) {
+      const body = ev.raw || {};
+      if (body.movie) return 'movie';
+      const epCount = Array.isArray(body.episodes) ? body.episodes.length : 0;
+      if (epCount === 0 && !body.series) return 'system';
+      const fileCount = Array.isArray(body.episodeFiles) ? body.episodeFiles.length : 0;
+      if (fileCount >= 1) return 'episode';
+      if (epCount > 1) return 'season-pack';
+      return 'episode';
+    },
+
+    // eventContentShapeFilterMatch returns true when the event's shape
+    // is in the active filter set, or when no shape filter is active.
+    eventContentShapeFilterMatch(ev) {
+      const f = this.webhookContentShapeFilter || [];
+      if (f.length === 0) return true;
+      return f.includes(this.eventContentShape(ev));
+    },
+
+    // Toggle a content-shape in the filter set. Click cycles a shape
+    // in/out independently — multi-select semantics.
+    toggleWebhookContentShape(shape) {
+      const cur = this.webhookContentShapeFilter || [];
+      const i = cur.indexOf(shape);
+      if (i >= 0) {
+        this.webhookContentShapeFilter = cur.filter(s => s !== shape);
+      } else {
+        this.webhookContentShapeFilter = [...cur, shape];
+      }
+    },
+
+    // Returns the content-shape chips that make sense for the active
+    // webhookAppType. Radarr can't produce episode / season-pack
+    // events; Sonarr can't produce movie events. System (Test/Health
+    // /Manual/qBit-add) applies regardless.
+    activeWebhookContentShapes() {
+      const all = [
+        {id: 'episode',     label: '🎬 Episode',      help: 'Single-episode events (1 entry in episodes[])',     appType: 'sonarr'},
+        {id: 'season-pack', label: '📚 Season pack',  help: 'Multi-episode grab — covers a full season',          appType: 'sonarr'},
+        {id: 'movie',       label: '🎞 Movie',        help: 'Radarr events (movie field present)',                appType: 'radarr'},
+        {id: 'system',      label: 'ⓘ System',         help: 'Test / Health / Manual / qBit-add / other',          appType: 'any'},
+      ];
+      const t = this.webhookAppType || 'radarr';
+      return all.filter(s => s.appType === 'any' || s.appType === t);
+    },
+
+    // Auto-select the activity-instance picker when exactly one
+    // instance exists for the active app-type. Saves a click when
+    // the user has just one Sonarr OR one Radarr — common single-
+    // host setups. Triggered on app-type pill change AND on initial
+    // load. Doesn't clobber an existing selection.
+    autoPickWebhookActivityInstance() {
+      const candidates = this.webhookInstancesForAppType();
+      if (candidates.length === 1) {
+        // Only force when current selection isn't already among the
+        // candidates — if user switched app-type pill and the
+        // previous instance was a different type, replace it.
+        const stillValid = candidates.some(i => i.id === this.webhookActivityInstanceId);
+        if (!stillValid) {
+          this.webhookActivityInstanceId = candidates[0].id;
+          this.loadWebhookEvents(this.webhookActivityInstanceId);
+        }
+      } else if (candidates.length === 0) {
+        this.webhookActivityInstanceId = '';
       }
     },
 
@@ -12180,19 +12522,16 @@ function app() {
       if (this.webhookAppType === type) return;
       this.webhookAppType = type;
       localStorage.setItem('resolvarr-webhook-app-type', type);
-      // Reset Recent activity instance picker if the currently-
-      // selected instance is no longer in the filtered pool. Keeps
-      // the dropdown + the events display in sync with the pill.
-      if (this.webhookActivityInstanceId) {
-        const inst = (this.instances || []).find(i => i.id === this.webhookActivityInstanceId);
-        if (!inst || inst.type !== type) {
-          // Auto-pick first instance of the new type (matches the
-          // first-load auto-pick behaviour in loadWebhookSetupPage).
-          const first = (this.instances || []).find(i => i.type === type);
-          this.webhookActivityInstanceId = first ? first.id : '';
-          if (this.webhookActivityInstanceId) {
-            this.loadWebhookEvents(this.webhookActivityInstanceId);
-          }
+      // Auto-pick the Recent activity instance whenever the new
+      // pill has exactly one instance, OR the currently-selected
+      // instance no longer matches the new app-type. Saves a click
+      // when the user only has one Sonarr / one Radarr.
+      const candidates = (this.instances || []).filter(i => i.type === type);
+      const currentValid = candidates.some(i => i.id === this.webhookActivityInstanceId);
+      if (!currentValid) {
+        this.webhookActivityInstanceId = candidates.length > 0 ? candidates[0].id : '';
+        if (this.webhookActivityInstanceId) {
+          this.loadWebhookEvents(this.webhookActivityInstanceId);
         }
       }
       this.pushNav();

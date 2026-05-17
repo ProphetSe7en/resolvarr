@@ -683,6 +683,17 @@ type WebhookRuleRun struct {
 	FilePath string `json:"filePath,omitempty"`
 	Summary  string `json:"summary"` // short, e.g. "tagAudio: 3 added; grabRename: skipped (already correct)"
 	LogPath  string `json:"logPath,omitempty"`
+	// Changed — true when at least one function on the rule actually
+	// modified state (added/removed a tag, renamed a file, etc.). False
+	// when every function either skipped (function not enabled, condition
+	// not met) or fired with Changed=false (e.g. tag already present,
+	// nothing to rename). Aggregated from per-function functionResult.
+	// Changed at run-build time.
+	//
+	// Drives the Recent Activity / Rule History "Made changes" filter
+	// default — lets users see only rows where something actually
+	// happened, hiding the noise of "rule fired but produced no diff".
+	Changed bool `json:"changed,omitempty"`
 }
 
 // FunctionsAppliesToCheck returns the first function on the rule that

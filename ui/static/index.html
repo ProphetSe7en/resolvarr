@@ -5002,10 +5002,70 @@
                       </label>
                       <div style="flex:1"></div>
                       <button class="btn btn-sm btn-primary" @click="openWebhookRuleEditor(inst.id)" style="font-size:12px;padding:4px 12px" title="Pick which functions fire on Connect events from this instance. Each rule saves Filters / Audio / Video / DV / Active groups snapshots so it fires consistently.">+ Add rule</button>
+                      <button class="btn btn-sm" @click="toggleWebhookDetails(inst.id)" :title="webhookDetailsExpanded[inst.id] ? 'Hide URL + Secret details' : 'Show URL + Secret — copy them into Sonarr/Radarr Connect settings'">
+                        <span x-show="!webhookDetailsExpanded[inst.id]">Show details</span>
+                        <span x-show="webhookDetailsExpanded[inst.id]">Hide details</span>
+                      </button>
                       <button class="btn btn-sm" @click="copyWebhookUrl(inst.id)" title="Copy this instance's webhook URL to the clipboard for pasting into Sonarr/Radarr → Connect.">Copy URL</button>
                       <button class="btn btn-sm" @click="confirmRegenerateWebhookToken(inst.id, inst.name)" title="Generate a new token + secret. The old URL stops working immediately — you'll need to paste the new URL AND new Secret into Sonarr/Radarr.">Regenerate URL</button>
                       <button class="btn btn-sm btn-danger" @click="confirmDeleteWebhook(inst.id, inst.name)" title="Remove the webhook configuration. The current URL stops working immediately. Recent activity log is kept (clear it from the Activity tab if you also want to wipe events).">Delete</button>
                     </div>
+
+                    <!-- Webhook details panel — collapsed by default.
+                         Opens when user clicks "Show details" above.
+                         Shows the URL + Secret with copy-to-clipboard
+                         and a reveal toggle for the secret. Lets the
+                         user fix the "Received without Authorization
+                         header" warning without regenerating. -->
+                    <template x-if="webhookDetailsExpanded[inst.id]">
+                      <div style="padding:14px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:6px;margin-bottom:14px;display:flex;flex-direction:column;gap:14px">
+                        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
+                          To verify webhook authenticity, paste these values into <strong x-text="inst.type === 'sonarr' ? 'Sonarr' : 'Radarr'"></strong> → Settings → Connect → <em x-text="inst.name"></em>:
+                        </div>
+                        <div>
+                          <label class="label" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.4px">URL (paste into Connect "URL" field)</label>
+                          <div style="display:flex;gap:6px;align-items:stretch;margin-top:4px">
+                            <input class="input" readonly :value="webhookConfigs[inst.id].url || ''" style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;flex:1">
+                            <button class="btn btn-sm" @click="copyWebhookUrl(inst.id)" style="white-space:nowrap">Copy</button>
+                          </div>
+                        </div>
+                        <div>
+                          <label class="label" style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.4px">Secret (paste into Connect "Password" field)</label>
+                          <div style="display:flex;gap:6px;align-items:stretch;margin-top:4px">
+                            <template x-if="webhookConfigs[inst.id] && webhookConfigs[inst.id].secret">
+                              <input class="input" readonly :value="webhookSecretDisplay(inst.id)" style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;flex:1">
+                            </template>
+                            <template x-if="!webhookConfigs[inst.id] || !webhookConfigs[inst.id].secret">
+                              <input class="input" readonly value="(not yet generated)" style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;flex:1;color:var(--text-muted-secondary);font-style:italic">
+                            </template>
+                            <template x-if="webhookConfigs[inst.id] && webhookConfigs[inst.id].secret">
+                              <button class="btn btn-sm" @click="toggleWebhookSecretReveal(inst.id)" style="white-space:nowrap" x-text="webhookSecretRevealed[inst.id] ? 'Hide' : 'Reveal'"></button>
+                            </template>
+                            <template x-if="webhookConfigs[inst.id] && webhookConfigs[inst.id].secret">
+                              <button class="btn btn-sm" @click="copyWebhookSecret(inst.id)" style="white-space:nowrap">Copy</button>
+                            </template>
+                            <button class="btn btn-sm"
+                                    :class="webhookConfigs[inst.id] && webhookConfigs[inst.id].secret ? '' : 'btn-primary'"
+                                    @click="rotateWebhookSecret(inst.id)"
+                                    style="white-space:nowrap"
+                                    :title="webhookConfigs[inst.id] && webhookConfigs[inst.id].secret ? 'Generate a new Secret. URL stays the same; you must re-paste the new Secret into Sonarr/Radarr.' : 'Generate a Secret. URL stays the same; paste the Secret into Sonarr/Radarr → Connect → Password.'"
+                                    x-text="webhookConfigs[inst.id] && webhookConfigs[inst.id].secret ? 'Rotate' : 'Generate'"></button>
+                          </div>
+                          <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:6px;line-height:1.5">
+                            Setup steps in <span x-text="inst.type === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>:
+                            <ol style="margin:4px 0 0 18px;padding:0">
+                              <li>Settings → Connect → click the resolvarr webhook</li>
+                              <li>Paste URL above into the URL field</li>
+                              <li>Set Method to <code>POST</code></li>
+                              <li>Username: leave empty</li>
+                              <li>Password: paste Secret above</li>
+                              <li>Click Test — should land as a clean Test event in Recent activity (not "(unsigned)")</li>
+                              <li>Save in Sonarr/Radarr → come back here → turn on <strong>Require signature</strong> below</li>
+                            </ol>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
                     <!-- Require signature toggle — strict mode for the
                          shared-secret-as-Basic-auth-password validation.
                          Users typically flip this on from the wizard's
@@ -5244,20 +5304,48 @@
             </div>
           </div>
 
-          <!-- Filter chips per event type. Built dynamically from
-               whatever event types arrived; "All" + N counts. -->
+          <!-- Filter row: event-type chips + outcome dropdown.
+               Built dynamically from whatever event types arrived. -->
           <template x-if="webhookActivityInstanceId && (webhookEvents[webhookActivityInstanceId] || []).length > 0">
-            <div class="filter-row" style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px">
-              <span class="filter-label">Filter by event:</span>
-              <button class="filter-pill" :class="{ 'is-active': webhookEventFilter === 'all' }" @click="webhookEventFilter = 'all'">
-                All <span class="filter-count" x-text="'(' + (webhookEvents[webhookActivityInstanceId] || []).length + ')'"></span>
-              </button>
-              <template x-for="[type, count] in webhookEventTypeCounts(webhookActivityInstanceId)" :key="type">
-                <button class="filter-pill" :class="{ 'is-active': webhookEventFilter === type }" @click="webhookEventFilter = type">
-                  <span x-text="connectEventLabel(type)"></span>
-                  <span class="filter-count" x-text="'(' + count + ')'"></span>
+            <div style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px;display:flex;flex-direction:column;gap:8px">
+              <div class="filter-row" style="padding:0">
+                <span class="filter-label">Type:</span>
+                <button class="filter-pill" :class="{ 'is-active': webhookEventFilter === 'all' }" @click="webhookEventFilter = 'all'">
+                  All <span class="filter-count" x-text="'(' + (webhookEvents[webhookActivityInstanceId] || []).length + ')'"></span>
                 </button>
-              </template>
+                <template x-for="[type, count] in webhookEventTypeCounts(webhookActivityInstanceId)" :key="type">
+                  <button class="filter-pill" :class="{ 'is-active': webhookEventFilter === type }" @click="webhookEventFilter = type">
+                    <span x-text="eventIcon(type) + ' ' + connectEventLabel(type)"></span>
+                    <span class="filter-count" x-text="'(' + count + ')'"></span>
+                  </button>
+                </template>
+              </div>
+              <div style="display:flex;gap:12px;align-items:center;font-size:12px;flex-wrap:wrap">
+                <span class="filter-label" style="margin:0">Outcome:</span>
+                <select class="input" x-model="webhookOutcomeFilter" style="font-size:12px;height:28px;width:auto">
+                  <option value="all">All</option>
+                  <option value="changed">Made changes</option>
+                  <option value="no-change">No change (rule fired but no-op)</option>
+                  <option value="no-rule">No rule matched</option>
+                  <option value="errors">Errors only</option>
+                </select>
+                <span style="color:var(--text-muted-secondary)" x-text="webhookEventsFiltered().length + ' of ' + (webhookEvents[webhookActivityInstanceId] || []).length + ' events'"></span>
+              </div>
+              <div class="filter-row" style="padding:0">
+                <span class="filter-label">Content:</span>
+                <template x-for="shape in activeWebhookContentShapes()" :key="shape.id">
+                  <button class="filter-pill"
+                          :class="{ 'is-active': (webhookContentShapeFilter || []).includes(shape.id) }"
+                          @click="toggleWebhookContentShape(shape.id)"
+                          :title="shape.help"
+                          x-text="shape.label"></button>
+                </template>
+                <template x-if="(webhookContentShapeFilter || []).length > 0">
+                  <button class="filter-pill" style="opacity:0.7"
+                          @click="webhookContentShapeFilter = []"
+                          title="Clear content-shape filter">✕ clear</button>
+                </template>
+              </div>
             </div>
           </template>
 
@@ -5277,44 +5365,113 @@
             <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:24px;text-align:center;color:var(--text-muted-secondary);font-size:13px">Loading…</div>
           </template>
 
-          <!-- Event cards. Hidden during a refresh so the user
-               doesn't see stale cards + spinner simultaneously
-               (the loading template above takes over).
-               Layout: CSS grid with fixed column widths so the
-               event-type pill, title block, timestamp, and expand
-               caret all line up across rows regardless of which
-               event-type filter is active. Title + subtitle are
-               on ONE LINE so card height stays constant. -->
+          <!-- Activity table. Phase A3 — five columns:
+               Time / Type / Item (title+subtitle+quality) / Outcome / Expand.
+               Click row → expand to card view with rule outcomes +
+               raw JSON. Spec: dev/analysis/M-activity-table.md §2. -->
           <template x-if="webhookActivityInstanceId && webhookEventsFiltered().length > 0 && !webhookEventsLoading">
-            <div style="display:flex;flex-direction:column;gap:6px">
-              <!-- Header row (column labels) — also CSS grid with the
-                   same template so labels sit over their columns. -->
-              <div style="display:grid;grid-template-columns:140px 1fr 170px 20px;gap:12px;align-items:center;padding:6px 14px;font-size:10px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-muted-secondary)">
-                <div>Event</div>
-                <div>Title</div>
-                <div>Received</div>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <div style="display:grid;grid-template-columns:130px 130px 1fr 200px 28px;gap:12px;align-items:center;padding:6px 14px;font-size:10px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-muted-secondary)">
+                <div>Time</div>
+                <div>Type</div>
+                <div>Item</div>
+                <div>Outcome</div>
                 <div></div>
               </div>
               <template x-for="ev in webhookEventsFiltered()" :key="ev.id">
                 <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
-                  <div style="display:grid;grid-template-columns:140px 1fr 170px 20px;gap:12px;align-items:center;padding:10px 14px;cursor:pointer" @click="toggleWebhookEventExpanded(ev.id)">
-                    <!-- Column 1: event-type pill, fixed width -->
-                    <span class="pill blue" style="font-size:11px;text-transform:none;justify-self:start;white-space:nowrap" x-text="connectEventLabel(ev.eventType)"></span>
-                    <!-- Column 2: title (+ inline subtitle), single line, ellipsis on overflow -->
-                    <div style="font-size:13px;color:var(--text-primary);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">
-                      <span x-text="ev.title || '(no title)'"></span>
-                      <template x-if="ev.subtitle">
-                        <span style="color:var(--text-secondary);font-weight:400;margin-left:6px" x-text="'(' + ev.subtitle + ')'"></span>
+                  <div style="display:grid;grid-template-columns:130px 130px 1fr 200px 28px;gap:12px;align-items:center;padding:10px 14px;cursor:pointer" @click="toggleWebhookEventExpanded(ev.id)">
+                    <!-- Col 1: time -->
+                    <span style="font-size:11px;color:var(--text-muted-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="formatDate(ev.receivedAt)"></span>
+                    <!-- Col 2: event-type with icon -->
+                    <span style="font-size:12px;color:var(--text-primary);white-space:nowrap" x-text="eventIcon(ev.eventType) + ' ' + connectEventLabel(ev.eventType)"></span>
+                    <!-- Col 3: title + subtitle + quality summary -->
+                    <div style="min-width:0;display:flex;flex-direction:column;gap:2px">
+                      <div style="font-size:13px;color:var(--text-primary);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                        <span x-text="ev.title || '(no title)'"></span>
+                        <template x-if="ev.subtitle">
+                          <span style="color:var(--text-secondary);font-weight:400;margin-left:6px" x-text="ev.subtitle"></span>
+                        </template>
+                      </div>
+                      <template x-if="eventQualitySummary(ev)">
+                        <div style="font-size:11px;color:var(--text-muted-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="eventQualitySummary(ev)"></div>
                       </template>
                     </div>
-                    <!-- Column 3: timestamp, fixed width -->
-                    <span style="font-size:11px;color:var(--text-muted-secondary);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" x-text="formatDate(ev.receivedAt)"></span>
-                    <!-- Column 4: expand caret, fixed width -->
+                    <!-- Col 4: outcome chips -->
+                    <div style="min-width:0;display:flex;flex-direction:column;gap:2px;font-size:11px">
+                      <template x-if="(ev.outcomes || []).length === 0">
+                        <span style="color:var(--text-muted-secondary);font-style:italic">no rule matched</span>
+                      </template>
+                      <template x-for="c in eventOutcomeChips(ev)" :key="c.ruleId">
+                        <div style="display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="c.summary">
+                          <span style="font-weight:600;flex-shrink:0" :style="'color:' + c.color" x-text="c.symbol"></span>
+                          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0" :style="'color:' + c.color" x-text="c.ruleName"></span>
+                        </div>
+                      </template>
+                    </div>
+                    <!-- Col 5: expand caret -->
                     <span style="font-size:14px;color:var(--text-muted-secondary);justify-self:center" x-text="webhookEventExpanded[ev.id] ? '▾' : '▸'"></span>
                   </div>
                   <template x-if="webhookEventExpanded[ev.id]">
-                    <div style="background:var(--bg-page);border-top:1px solid var(--border-subtle);padding:12px 14px">
-                      <pre style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;color:var(--text-body);margin:0;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-word" x-text="formatWebhookRaw(ev.raw)"></pre>
+                    <div style="background:var(--bg-page);border-top:1px solid var(--border-subtle);padding:12px 14px;display:flex;flex-direction:column;gap:10px">
+                      <!-- Detail rows -->
+                      <div style="display:grid;grid-template-columns:120px 1fr;gap:6px 12px;font-size:12px">
+                        <template x-if="ev.title">
+                          <template x-for="x in [1]"><div style="color:var(--text-muted-secondary)">Title:</div></template>
+                        </template>
+                        <template x-if="ev.title">
+                          <div style="color:var(--text-primary)" x-text="ev.title + (ev.subtitle ? ' — ' + ev.subtitle : '')"></div>
+                        </template>
+                        <template x-if="eventQualitySummary(ev)">
+                          <div style="color:var(--text-muted-secondary)">Quality:</div>
+                        </template>
+                        <template x-if="eventQualitySummary(ev)">
+                          <div style="color:var(--text-primary)" x-text="eventQualitySummary(ev)"></div>
+                        </template>
+                        <template x-if="eventIndexerLine(ev)">
+                          <div style="color:var(--text-muted-secondary)">Source:</div>
+                        </template>
+                        <template x-if="eventIndexerLine(ev)">
+                          <div style="color:var(--text-primary)" x-text="eventIndexerLine(ev)"></div>
+                        </template>
+                        <template x-if="eventSceneName(ev)">
+                          <div style="color:var(--text-muted-secondary)">Scene name:</div>
+                        </template>
+                        <template x-if="eventSceneName(ev)">
+                          <div style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;color:var(--text-body);word-break:break-all" x-text="eventSceneName(ev)"></div>
+                        </template>
+                        <template x-if="eventFilePath(ev)">
+                          <div style="color:var(--text-muted-secondary)">File path:</div>
+                        </template>
+                        <template x-if="eventFilePath(ev)">
+                          <div style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;color:var(--text-body);word-break:break-all" x-text="eventFilePath(ev)"></div>
+                        </template>
+                      </div>
+                      <!-- Per-rule outcome details -->
+                      <template x-if="(ev.outcomes || []).length > 0">
+                        <div style="border-top:1px solid var(--border-subtle);padding-top:10px;display:flex;flex-direction:column;gap:6px">
+                          <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-muted-secondary)">Rule outcomes</div>
+                          <template x-for="c in eventOutcomeChips(ev)" :key="c.ruleId">
+                            <div style="font-size:12px;display:flex;align-items:flex-start;gap:8px;padding:4px 0">
+                              <span style="font-weight:600;font-size:14px;flex-shrink:0;width:14px" :style="'color:' + c.color" x-text="c.symbol"></span>
+                              <div style="flex:1;min-width:0">
+                                <div style="color:var(--text-primary);font-weight:500" x-text="c.ruleName"></div>
+                                <div style="color:var(--text-secondary);font-size:11px;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;word-break:break-word;margin-top:2px" x-text="c.summary"></div>
+                              </div>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+                      <!-- Raw JSON toggle — collapsed by default to keep card readable -->
+                      <div x-data="{ rawOpen: false }" style="border-top:1px solid var(--border-subtle);padding-top:10px">
+                        <button type="button" @click="rawOpen = !rawOpen" class="icon-btn" style="font-size:11px;color:var(--text-muted-secondary);display:flex;align-items:center;gap:6px">
+                          <span x-show="!rawOpen">▸ Raw event JSON</span>
+                          <span x-show="rawOpen">▾ Raw event JSON</span>
+                        </button>
+                        <template x-if="rawOpen">
+                          <pre style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;color:var(--text-body);margin:6px 0 0 0;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:8px;background:var(--bg-card);border-radius:4px" x-text="formatWebhookRaw(ev.raw)"></pre>
+                        </template>
+                      </div>
                     </div>
                   </template>
                 </div>

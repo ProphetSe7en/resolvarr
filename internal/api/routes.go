@@ -180,6 +180,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/instances/{id}/webhook/events/stream", s.handleWebhookEventsStream)
 	mux.HandleFunc("DELETE /api/instances/{id}/webhook/events", s.handleWebhookClearEvents)
 	mux.HandleFunc("POST /api/instances/{id}/webhook/rotate", s.handleWebhookRotateToken)
+	mux.HandleFunc("POST /api/instances/{id}/webhook/rotate-secret", s.handleWebhookRotateSecret)
 	mux.HandleFunc("PUT /api/instances/{id}/webhook/logging", s.handleWebhookSetLogging)
 	mux.HandleFunc("PUT /api/instances/{id}/webhook/require-signature", s.handleWebhookSetRequireSignature)
 	mux.HandleFunc("DELETE /api/instances/{id}/webhook", s.handleWebhookDelete)

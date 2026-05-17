@@ -23,12 +23,38 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"resolvarr/internal/core"
 )
+
+// seasonEpisodeFromFilename pulls the first "S<dd>E<dd>" token out of
+// a filename or scene name. Used to disambiguate per-episode Import
+// events that carry the whole pack's episode list in episodes[]; the
+// file's actual subject episode is what the user sees in the subtitle.
+//
+// Returns "S01E05" formatted; empty when no token found (very unusual
+// for Sonarr filenames — every standard scene name includes one).
+var reSeasonEpisodeToken = regexp.MustCompile(`(?i)S(\d{1,3})E(\d{1,3})`)
+
+func extractFirstSeasonEpisode(s string) string {
+	if s == "" {
+		return ""
+	}
+	m := reSeasonEpisodeToken.FindStringSubmatch(s)
+	if len(m) < 3 {
+		return ""
+	}
+	// Parse + reformat so user always sees zero-padded SnnEmm even
+	// when the source had "S7E1" or similar.
+	var season, episode int
+	fmt.Sscanf(m[1], "%d", &season)
+	fmt.Sscanf(m[2], "%d", &episode)
+	return fmt.Sprintf("S%02dE%02d", season, episode)
+}
 
 // webhookBodyMaxBytes caps the POST body. Connect events in the wild
 // run ~1-50 KB; 1 MB is 20× margin, prevents a hostile/buggy client
@@ -139,6 +165,16 @@ type connectEventEnvelope struct {
 		EpisodeNumber int `json:"episodeNumber"`
 		SeasonNumber  int `json:"seasonNumber"`
 	} `json:"episodes,omitempty"`
+	// EpisodeFiles: present on Download (Import) events with one
+	// entry per file being imported in this fire. Sonarr fires one
+	// Download event per file even when the source release covers a
+	// whole season pack — so episodes[] may list 24 entries while
+	// episodeFiles[] has 1. Drives subtitle-disambiguation in
+	// preferFileEpisode.
+	EpisodeFiles []struct {
+		SceneName    string `json:"sceneName,omitempty"`
+		RelativePath string `json:"relativePath,omitempty"`
+	} `json:"episodeFiles,omitempty"`
 
 	// Health / ApplicationUpdate / ManualInteractionRequired carry
 	// Level / Message in different shapes; one minor signal.
@@ -160,11 +196,14 @@ func summariseEvent(env *connectEventEnvelope) (title, subtitle string) {
 	case env.Series != nil && env.Series.Title != "":
 		title = env.Series.Title
 		if len(env.Episodes) > 0 {
-			// Compress contiguous episodes per season into "S01E05"
-			// or "S01E05-E07" form. Multi-episode grabs can carry
-			// 24 entries (whole-season packs); a single label keeps
-			// the card readable.
-			subtitle = formatEpisodes(env.Episodes)
+			// Sonarr-quirk: per-episode Import (Download) events list
+			// ALL of the pack's episodes in episodes[] even though
+			// only ONE file is being imported. Cuts through the
+			// "S07E01 + 21 more" misleading subtitle by preferring
+			// the file's specific episode when one file is in play.
+			// Falls back to formatEpisodes for true multi-episode
+			// events (Grab on a pack, or rare multi-ep mux file).
+			subtitle = preferFileEpisode(env)
 		} else if env.Series.Year > 0 {
 			subtitle = fmt.Sprintf("%d", env.Series.Year)
 		}
@@ -175,9 +214,38 @@ func summariseEvent(env *connectEventEnvelope) (title, subtitle string) {
 	return title, subtitle
 }
 
-// formatEpisodes builds a compact "S01E05 + 3 more" label from the
-// Sonarr Episodes array. Same shape Sonarr uses in its own UI for
-// multi-episode events.
+// preferFileEpisode resolves the subtitle for Sonarr events. When the
+// payload includes exactly ONE episodeFile, the per-file episode label
+// is what the user cares about (this is "the import of THAT specific
+// episode") — Sonarr's full episodes[] list is just metadata about the
+// pack the file came from. Fall through to formatEpisodes for genuine
+// multi-episode events (Grab on a pack, no files yet).
+func preferFileEpisode(env *connectEventEnvelope) string {
+	if len(env.EpisodeFiles) == 1 {
+		// Parse "S01E05" directly from the scene name or relativePath
+		// — that's the canonical episode for this file.
+		if se := extractFirstSeasonEpisode(env.EpisodeFiles[0].SceneName); se != "" {
+			return se
+		}
+		if se := extractFirstSeasonEpisode(env.EpisodeFiles[0].RelativePath); se != "" {
+			return se
+		}
+	}
+	return formatEpisodes(env.Episodes)
+}
+
+// formatEpisodes builds a compact subtitle for the recent-events card
+// from Sonarr's episodes[] array. Shape-aware:
+//
+//   - single episode    → "S01E05"
+//   - all same season   → "S07 (22 episodes)"   (typical season pack)
+//   - mixed seasons     → "S01E05 + 23 more"    (rare, fallback)
+//
+// Sonarr-quirk note: per-episode Import events still arrive here with
+// the FULL pack's episodes[] in metadata. Callers should use
+// preferFileEpisode (which checks for a single episodeFile and pulls
+// SnnEmm from the file's own scene name) to disambiguate. This helper
+// stays the truthful "what does episodes[] cover" formatter.
 func formatEpisodes(eps []struct {
 	EpisodeNumber int `json:"episodeNumber"`
 	SeasonNumber  int `json:"seasonNumber"`
@@ -188,6 +256,18 @@ func formatEpisodes(eps []struct {
 	first := fmt.Sprintf("S%02dE%02d", eps[0].SeasonNumber, eps[0].EpisodeNumber)
 	if len(eps) == 1 {
 		return first
+	}
+	// Detect "all same season" — common for season-pack Grab events.
+	// 22 entries all with seasonNumber=7 → "S07 (22 episodes)".
+	allSameSeason := true
+	for i := 1; i < len(eps); i++ {
+		if eps[i].SeasonNumber != eps[0].SeasonNumber {
+			allSameSeason = false
+			break
+		}
+	}
+	if allSameSeason {
+		return fmt.Sprintf("S%02d (%d episodes)", eps[0].SeasonNumber, len(eps))
 	}
 	return fmt.Sprintf("%s + %d more", first, len(eps)-1)
 }
@@ -463,9 +543,11 @@ func (s *Server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
 	// raw-event log.
 	logged := false
 	logCount := 0
+	eventID := ""
 	if inst.Webhook.LoggingEnabled {
+		eventID = genID()
 		ev := WebhookEvent{
-			ID:         genID(),
+			ID:         eventID,
 			InstanceID: inst.ID,
 			ReceivedAt: time.Now().UTC(),
 			EventType:  env.EventType,
@@ -478,10 +560,10 @@ func (s *Server) handleWebhookReceive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rule dispatch — walks Config.WebhookRules for the resolved
-	// instance and fires matching rules' enabled functions. Today's
-	// adapters are stubs (see webhook_dispatch.go); real engine
-	// calls land per-function in the upcoming tasks.
-	rulesFired := s.dispatchWebhookRules(r.Context(), inst, &env, body)
+	// instance and fires matching rules' enabled functions. eventID
+	// is passed so the dispatcher can attach per-rule outcomes back
+	// to the logged event (Recent Activity table).
+	rulesFired := s.dispatchWebhookRules(r.Context(), inst, &env, body, eventID)
 
 	writeJSON(w, map[string]any{
 		"status":     "ok",
@@ -721,6 +803,51 @@ func (s *Server) handleWebhookRotateToken(w http.ResponseWriter, r *http.Request
 		"url":              url,
 		"loggingEnabled":   loggingEnabled,
 		"requireSignature": requireSignature,
+	})
+}
+
+// handleWebhookRotateSecret generates a fresh Secret for the instance
+// while preserving the Token. Use when the user wants to change the
+// shared-secret password without invalidating the URL Sonarr/Radarr
+// already has — typical case is filling in a missing Secret post-
+// migration, or rotating after a suspected leak.
+//
+// Returns the new Secret + the unchanged URL so the UI can prompt
+// "paste the new password into Sonarr/Radarr's Connect form".
+// Token-less instances are rejected — use /rotate to generate both
+// at once when starting from scratch.
+func (s *Server) handleWebhookRotateSecret(w http.ResponseWriter, r *http.Request) {
+	inst := s.instanceByID(w, r.PathValue("id"))
+	if inst == nil {
+		return
+	}
+	if inst.Webhook.Token == "" {
+		writeError(w, 400, "instance has no token — use /webhook/rotate to set up the URL + Secret in one step")
+		return
+	}
+	secret, err := generateWebhookSecret()
+	if err != nil {
+		writeError(w, 500, "generate secret: "+err.Error())
+		return
+	}
+	if err := s.App.Config.Update(func(c *core.Config) {
+		for i := range c.Instances {
+			if c.Instances[i].ID == inst.ID {
+				c.Instances[i].Webhook.Secret = secret
+				return
+			}
+		}
+	}); err != nil {
+		writeError(w, 500, "save: "+err.Error())
+		return
+	}
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	writeJSON(w, map[string]any{
+		"secret": secret,
+		"url":    fmt.Sprintf("%s://%s/api/webhooks/%s", scheme, r.Host, inst.Webhook.Token),
 	})
 }
 
