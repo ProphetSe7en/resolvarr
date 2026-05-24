@@ -119,8 +119,7 @@ func (s *Server) runTag(ctx context.Context, cfg core.Config, inst *core.Instanc
 	// after the primary decision pass we mirror each (movie, tag) decision
 	// to the secondary instance via TmdbID matching. Plus an orphan pass
 	// that cleans up tags on secondary movies the primary either doesn't
-	// have or no longer qualifies for. See dev/analysis/M3e-secondary-sync.md
-	// for the full bash analysis this implementation tracks.
+	// have or no longer qualifies for.
 	var (
 		syncEnabled       bool
 		secondary         *core.Instance
@@ -596,8 +595,6 @@ func (s *Server) handleScanTag(w http.ResponseWriter, r *http.Request, cfg core.
 // movie, no per-group iteration. Sync/orphan/apply machinery mirrors
 // runTag's so secondary mirroring works identically — only the
 // decision pass differs.
-//
-// See dev/analysis/filter-only-tag.md for the full design rationale.
 func (s *Server) runTagFilterOnly(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, filterCfg engine.FilterConfig, req scanRunRequest) (*scanResponse, *apiError) {
 	// Defense-in-depth tag-name validation. handleScanRun validates
 	// FilterOnlyTag for live HTTP calls, but the schedule path calls

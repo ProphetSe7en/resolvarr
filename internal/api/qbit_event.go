@@ -4,8 +4,7 @@ package api
 // added" hook. qBit curls POST /api/qbit/torrent-added/{instanceId}
 // for every newly-added torrent (cross-seed, manual, Sonarr-Connect-
 // grabbed all flow through here). Per-rule debounce buffer aggregates
-// burst-events into ONE history entry per window. See M-qBit-add
-// design doc at dev/analysis/M-qbit-add.md.
+// burst-events into ONE history entry per window.
 //
 // This file: HTTP handler (auth + parse + enqueue) + flush callback
 // wiring (classify + tag-apply + history). The buffer itself lives in

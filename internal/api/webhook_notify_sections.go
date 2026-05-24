@@ -7,7 +7,7 @@
 // adapter (webhook_dispatch.go's canonical chain) and translate it
 // into plain-language fields like "Sound: TrueHD Atmos 7.1".
 //
-// User-locked rules honoured by every section:
+// Rules honoured by every section:
 //
 //  1. Only actual changes. A section is omitted entirely when the
 //     adapter didn't populate Detail (legacy / unwired) OR the
@@ -29,8 +29,7 @@
 //     client width); long values (torrent names, file paths) take
 //     their own row.
 //
-// Per dev/analysis/M-webhook-notifications.md, the dispatcher (task #7)
-// will call composeFields() once per fire to produce the
+// The dispatcher calls composeFields() once per fire to produce the
 // agents.Payload.Fields slice.
 
 package api
@@ -792,9 +791,9 @@ func buildInstanceList(primary string, mirrored bool, secondary string) string {
 // dash labels (`^[a-z0-9-]+$`), which is constraint-driven, not
 // human-readable. This helper makes the embed slightly less robotic
 // without requiring a full mediaInfo → display-string converter.
-// User-confirmed in conversation: showing actual tag labels is OK
-// for the first cut; a future polish can build a proper formatter
-// reading mediaInfo directly when the visual gap matters.
+// Showing actual tag labels is acceptable for the first cut; a
+// future polish can build a proper formatter reading mediaInfo
+// directly when the visual gap matters.
 //
 // TODO (deferred from task 7.2 review): the bucketPrefix argument is
 // today hardcoded by each adapter ("audio-" / "video-" / "dv-"). The

@@ -44,10 +44,9 @@ type Instance struct {
 	// per-instance shared secret baked into the webhook URL the user
 	// pastes into Sonarr/Radarr — base64url-encoded crypto/rand
 	// 32 bytes. Other fields are user-toggleable function flags.
-	// Today only LoggingEnabled is wired; subsequent sessions add
+	// Today only LoggingEnabled is wired; subsequent releases add
 	// per-function flags (release-group tag on import, DV detail
-	// on import, etc.) — see dev/analysis/M-webhook.md § 3 for the
-	// full mapping.
+	// on import, etc.).
 	Webhook WebhookConfig `json:"webhook,omitempty"`
 }
 
@@ -357,8 +356,7 @@ type Config struct {
 	// standalone (not 1:1 paired with Arr instances) so a single qBit
 	// can be referenced from multiple Arr webhook configs without
 	// duplicating credentials. The pairing happens per-Arr inside
-	// WebhookConfig.QbitInstanceID — see internal/api/qbit_handlers.go
-	// + dev/analysis/M-webhook.md § "qBit pairing model".
+	// WebhookConfig.QbitInstanceID — see internal/api/qbit_handlers.go.
 	//
 	// Backlog scan (Service B) targets a QbitInstance directly without
 	// going through any Arr instance.

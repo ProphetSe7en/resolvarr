@@ -6,8 +6,7 @@
 // resolvarr-only extensions for the post-bash functions (qBit Category
 // Fix, per-bucket strip-on-delete, multi-agent routing).
 //
-// Architecture rule (locked in dev/analysis/M-webhook-notifications.md
-// "Foundation decisions"): the embed builders NEVER re-call engine
+// Architecture rule: the embed builders NEVER re-call engine
 // helpers. Every plain-language value comes from the typed Detail
 // payload that the adapter already populated based on the engine's
 // decision. Builders read state, never derive it.
@@ -278,7 +277,7 @@ var titleDisplayOrder = map[core.WebhookFunction]int{
 // function. A Tag-Q-R that successfully decided "no change needed"
 // (OK=true, Changed=false) does not surface in the title.
 //
-// User-locked rule: notifications must contain only actual changes.
+// Rule: notifications must contain only actual changes.
 // A delete event that fires its strip-on-delete dispatchers but
 // actually strips nothing (no managed tags on the deleted file)
 // produces NO embed — same skip-path as a Download event where every

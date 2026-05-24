@@ -134,7 +134,7 @@ func TestComposeTitle(t *testing.T) {
 			want:        "Category fixed - Movie (2024)",
 		},
 
-		// User-locked rule: notifications must contain only actual
+		// Rule: notifications must contain only actual
 		// changes. A delete event whose strip-on-delete dispatchers
 		// found no managed tags to strip → no embed. History still
 		// records the fire so the user can audit; Discord stays
@@ -192,7 +192,7 @@ func TestComposeTitle(t *testing.T) {
 			want:      "",
 		},
 
-		// User-locked rule: "notifications must contain only actual
+		// Rule: "notifications must contain only actual
 		// changes" — successful no-op results (OK=true, Changed=false)
 		// are excluded from the title even though the function ran
 		// cleanly. Bash tagarr_import.sh's "Nothing to report" gate

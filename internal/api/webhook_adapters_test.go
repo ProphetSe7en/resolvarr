@@ -19,9 +19,9 @@ import (
 // webhook_adapters_test.go — unit coverage for the pure helpers in
 // webhook_adapters.go. The full http-path adapter (dispatchTagAudio)
 // requires an arr.Client mock; that lands during soak / integration
-// once we have real Connect-event fixtures captured in
-// dev/analysis/webhook-samples/. These tests lock the pieces that
-// matter for correctness regardless of the http boundary:
+// once we have real Connect-event fixtures captured. These tests
+// lock the pieces that matter for correctness regardless of the
+// http boundary:
 //
 //   - extractDownload: payload-shape mapping per Arr type
 //   - pickAudioTagsConfig: per-rule-snapshot vs global fallback

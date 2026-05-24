@@ -9,10 +9,10 @@ import (
 )
 
 // TestWebhookRuleNotifyOnFireValidate is the slimmed-down validator
-// test after the 7.4d pivot. NotifyAgents + NotifyOnEveryEvent
-// retired (option A locked 2026-05-16) — only NotifyOnFire remains
-// as the per-rule master kill-switch. Which agents see what is
-// purely agents.Agent.Functions territory now.
+// test after the power-to-the-agent pivot. NotifyAgents +
+// NotifyOnEveryEvent are retired — only NotifyOnFire remains as
+// the per-rule master kill-switch. Which agents see what is purely
+// agents.Agent.Functions territory now.
 func TestWebhookRuleNotifyOnFireValidate(t *testing.T) {
 	dir := t.TempDir()
 	store := core.NewConfigStore(dir)

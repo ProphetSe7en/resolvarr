@@ -2,8 +2,7 @@
 // framework into the dispatcher hot path. Called by dispatchWebhookRules
 // after buildWebhookRuleRun completes for each fired rule.
 //
-// Gating model (power-to-the-agent, option A, locked 2026-05-16 in
-// dev/analysis/M-webhook-notifications.md):
+// Gating model (power-to-the-agent, option A):
 //
 //   1. rule.NotifyOnFire = false → no notifications fire from this
 //      rule, regardless of any agent's config. Per-rule master
@@ -56,8 +55,8 @@ import (
 // the rule produced nothing to notify about — the dispatcher
 // treats false as "skip".
 //
-// The skip path implements the user-locked rule "notifications must
-// contain only actual changes". When every result has Changed=false
+// The skip path implements the rule "notifications must contain
+// only actual changes". When every result has Changed=false
 // (or every changed result is filtered out by the agent's Functions
 // whitelist), composeTitle returns "" and we short-circuit with
 // fire=false — caller skips dispatch for THIS agent silently.
@@ -107,7 +106,7 @@ func buildNotificationPayload(
 }
 
 // resolveNotificationAgents picks the agents that should receive a
-// rule's notification. Power-to-the-agent model locked 2026-05-16:
+// rule's notification. Power-to-the-agent model:
 //
 //  1. `rule.NotifyOnFire == false` → return nil (master kill-switch).
 //  2. Else iterate enabled agents whose Events.OnX flag matches the
