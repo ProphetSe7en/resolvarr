@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // discordProvider implements Provider for Discord webhook notifications.
@@ -91,7 +92,7 @@ func (d discordProvider) Test(ctx context.Context, runtime Runtime, agent Agent)
 	results := make([]TestResult, 0, 2)
 
 	res := TestResult{Label: "Sync webhook", Status: statusOK}
-	if err := d.sendWebhook(ctx, runtime, mainWebhook, testTitle, testMessage("Discord"), testColor, nil, "", ""); err != nil {
+	if err := d.sendWebhook(ctx, runtime, mainWebhook, testTitle, testMessage("Discord"), testColor, nil, "", "", time.Time{}); err != nil {
 		res.Status = statusError
 		res.Error = err.Error()
 	}
@@ -99,7 +100,7 @@ func (d discordProvider) Test(ctx context.Context, runtime Runtime, agent Agent)
 
 	if updatesWebhook != "" && updatesWebhook != mainWebhook {
 		res := TestResult{Label: "Updates webhook", Status: statusOK}
-		if err := d.sendWebhook(ctx, runtime, updatesWebhook, testTitle, testMessage("Discord"), testColor, nil, "", ""); err != nil {
+		if err := d.sendWebhook(ctx, runtime, updatesWebhook, testTitle, testMessage("Discord"), testColor, nil, "", "", time.Time{}); err != nil {
 			res.Status = statusError
 			res.Error = err.Error()
 		}
@@ -122,7 +123,7 @@ func (d discordProvider) Notify(ctx context.Context, runtime Runtime, agent Agen
 	// Discord embed-fields-grid (Primary/Secondary as inline columns).
 	// Falls back to Message-as-description for callers that haven't
 	// adopted Fields yet (Gotify/NTFY/etc keep using Message).
-	if err := d.sendWebhook(ctx, runtime, webhook, payload.Title, payload.messageFor("discord"), payload.Color, payload.Fields, payload.ThumbnailURL, payload.FooterSuffix); err != nil {
+	if err := d.sendWebhook(ctx, runtime, webhook, payload.Title, payload.messageFor("discord"), payload.Color, payload.Fields, payload.ThumbnailURL, payload.FooterSuffix, payload.Timestamp); err != nil {
 		return err
 	}
 	if strings.TrimSpace(payload.Detail) != "" {
@@ -228,7 +229,7 @@ func (discordProvider) resolveWebhook(agent Agent, route Route) string {
 // callers to know the version string). Returns an error if the HTTP
 // client is missing, the URL fails validation, or Discord responds
 // with a 4xx/5xx status.
-func (discordProvider) sendWebhook(ctx context.Context, runtime Runtime, webhook, title, description string, color int, fields []PayloadField, thumbnailURL, footerSuffix string) error {
+func (discordProvider) sendWebhook(ctx context.Context, runtime Runtime, webhook, title, description string, color int, fields []PayloadField, thumbnailURL, footerSuffix string, ts time.Time) error {
 	if runtime.SafeClient == nil {
 		return fmt.Errorf("discord client not configured")
 	}
@@ -249,6 +250,12 @@ func (discordProvider) sendWebhook(ctx context.Context, runtime Runtime, webhook
 		"title":  title,
 		"color":  color,
 		"footer": map[string]string{"text": footerText},
+	}
+	if !ts.IsZero() {
+		// Discord expects RFC3339 (ISO8601 with timezone). UTC keeps
+		// the wire payload locale-stable; clients render in viewer's
+		// timezone via embed.timestamp's automatic locale handling.
+		embed["timestamp"] = ts.UTC().Format(time.RFC3339)
 	}
 	if thumb := strings.TrimSpace(thumbnailURL); thumb != "" {
 		embed["thumbnail"] = map[string]string{"url": thumb}

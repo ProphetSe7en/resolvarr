@@ -125,12 +125,12 @@ func mustParseCIDRs(cidrs ...string) []*net.IPNet {
 // value (e.g. SWAG / nginx `proxy_set_header X-Forwarded-For $remote_addr`).
 // The rightmost algorithm is a defense against misconfigured proxies, not
 // a substitute for proxy hygiene.
-func ParseClientIP(r *http.Request, trustedProxies []net.IP) net.IP {
+func ParseClientIP(r *http.Request, trustedProxies []*net.IPNet) net.IP {
 	remoteIP := remoteAddrIP(r.RemoteAddr)
 	if remoteIP == nil {
 		return nil
 	}
-	if len(trustedProxies) == 0 || !containsIP(trustedProxies, remoteIP) {
+	if len(trustedProxies) == 0 || !containsIPNet(trustedProxies, remoteIP) {
 		return remoteIP
 	}
 	xff := r.Header.Get("X-Forwarded-For")
@@ -145,7 +145,7 @@ func ParseClientIP(r *http.Request, trustedProxies []net.IP) net.IP {
 		if ip == nil {
 			continue
 		}
-		if containsIP(trustedProxies, ip) {
+		if containsIPNet(trustedProxies, ip) {
 			continue
 		}
 		return ip
@@ -165,6 +165,20 @@ func remoteAddrIP(addr string) net.IP {
 func containsIP(list []net.IP, ip net.IP) bool {
 	for _, p := range list {
 		if p.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsIPNet returns true when ip is covered by any IPNet in the
+// list. Used by ParseClientIP for trusted-proxy membership where a
+// single entry can be either a host IP (promoted to /32) or a CIDR
+// block (e.g. 172.19.0.0/24 matching every container on a Docker
+// bridge). Linear scan — proxy lists are typically <10 entries.
+func containsIPNet(list []*net.IPNet, ip net.IP) bool {
+	for _, n := range list {
+		if n != nil && n.Contains(ip) {
 			return true
 		}
 	}
@@ -223,26 +237,45 @@ func ParseTrustedNetworks(csv string) ([]*net.IPNet, error) {
 	return out, nil
 }
 
-// ParseTrustedProxies parses a comma-separated list of IP addresses.
-// Returns an error on any invalid entry — misconfiguration should be loud,
-// not silently produce an empty list (which would disable XFF parsing and
-// break reverse-proxy deployments).
-func ParseTrustedProxies(csv string) ([]net.IP, error) {
+// ParseTrustedProxies parses a comma-separated list of IPs and/or
+// CIDR ranges. Single IPs are promoted to /32 (IPv4) or /128 (IPv6)
+// so callers always work against a uniform IPNet slice; CIDR entries
+// pass through as-is.
+//
+// CIDR support exists for reverse-proxy deployments where the proxy
+// runs on a Docker bridge with dynamic container IPs — e.g. setting
+// TRUSTED_PROXIES=172.19.0.0/24 trusts any container on that bridge
+// without listing each one individually. The implicit /32-promotion
+// keeps the env-var backward-compatible with single-IP configs.
+//
+// Returns an error on any unparseable entry — misconfiguration should
+// be loud, not silently produce an empty list (which would disable
+// XFF parsing and break reverse-proxy deployments).
+func ParseTrustedProxies(csv string) ([]*net.IPNet, error) {
 	csv = strings.TrimSpace(csv)
 	if csv == "" {
 		return nil, nil
 	}
-	var out []net.IP
+	var out []*net.IPNet
 	for _, piece := range strings.Split(csv, ",") {
 		piece = strings.TrimSpace(piece)
 		if piece == "" {
 			continue
 		}
-		ip := net.ParseIP(piece)
-		if ip == nil {
-			return nil, fmt.Errorf("invalid IP in trusted_proxies: %q", piece)
+		if ip := net.ParseIP(piece); ip != nil {
+			// Single IP — promote to /32 (v4) or /128 (v6).
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
 		}
-		out = append(out, ip)
+		if _, network, err := net.ParseCIDR(piece); err == nil && network != nil {
+			out = append(out, network)
+			continue
+		}
+		return nil, fmt.Errorf("invalid entry in trusted_proxies: %q (expected IP or CIDR like 172.19.0.0/24)", piece)
 	}
 	return out, nil
 }

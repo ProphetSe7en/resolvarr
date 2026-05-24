@@ -192,6 +192,112 @@ func TestDispatchGrabRename_GroupBlocklist(t *testing.T) {
 	}
 }
 
+// TestSummariseGrabRenameRecovery exercises the raw-trigger-label →
+// user-friendly recovery-summary mapping. Each prefix branch from
+// evaluateGrabRenameTriggers is covered explicitly so a future
+// rename of the diagnostic prefix (e.g. "audio:" → "audio-mismatch:")
+// breaks here loudly rather than silently dropping tokens from the
+// "Tokens Recovered" embed field.
+func TestSummariseGrabRenameRecovery(t *testing.T) {
+	cases := []struct {
+		name       string
+		reasons    []string
+		rg         string
+		wantGroup  string
+		wantTokens []string
+	}{
+		{"empty reasons → no recovery", nil, "FLUX", "", nil},
+		{"missing-release-group (parser rejected variant)",
+			[]string{`missing-release-group (parser rejected: "Rango 2011 - SumVision" — strict parser bombs on space-dash-space)`},
+			"SumVision",
+			"SumVision", nil,
+		},
+		{"missing-release-group (parsed/expected mismatch variant)",
+			[]string{`missing-release-group (parsed="FLUX" expected="FLUX-RG")`},
+			"FLUX-RG",
+			"FLUX-RG", nil,
+		},
+		{"movie-version single token",
+			[]string{"movie-version: Director's Cut"},
+			"FLUX",
+			"", []string{"Director's Cut"},
+		},
+		{"movie-version multiple tokens split on slash",
+			[]string{"movie-version: Director's Cut/IMAX/Remaster"},
+			"FLUX",
+			"", []string{"Director's Cut", "IMAX", "Remaster"},
+		},
+		{"source mismatch",
+			[]string{"source: WEB-DL"},
+			"FLUX",
+			"", []string{"WEB-DL"},
+		},
+		{"audio mismatch — multi token",
+			[]string{"audio: TrueHD/Atmos"},
+			"FLUX",
+			"", []string{"TrueHD", "Atmos"},
+		},
+		{"scene-stripped → 'scene' token",
+			[]string{"scene-stripped (rg not a known scene group)"},
+			"FLUX",
+			"", []string{"scene"},
+		},
+		{"custom tokens",
+			[]string{"custom: IMAX/UHD"},
+			"FLUX",
+			"", []string{"IMAX", "UHD"},
+		},
+		{"always-rename has no recovery semantics",
+			[]string{"always-rename"},
+			"FLUX",
+			"", nil,
+		},
+		{"combo — RG + audio + custom",
+			[]string{
+				"missing-release-group (parser rejected: bare name)",
+				"audio: TrueHD/Atmos",
+				"custom: IMAX",
+			},
+			"FLUX",
+			"FLUX", []string{"TrueHD", "Atmos", "IMAX"},
+		},
+		{"dedup — same token from movie-version + custom",
+			[]string{
+				"movie-version: IMAX",
+				"custom: IMAX",
+			},
+			"FLUX",
+			"", []string{"IMAX"},
+		},
+		{"empty rg + missing-release-group → GroupRecovered stays empty (defence)",
+			[]string{"missing-release-group (parser rejected: x)"},
+			"",
+			"", nil,
+		},
+		{"unknown prefix passes through without contribution",
+			[]string{"future-trigger-shape: who-knows"},
+			"FLUX",
+			"", nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotGroup, gotTokens := summariseGrabRenameRecovery(tc.reasons, tc.rg)
+			if gotGroup != tc.wantGroup {
+				t.Errorf("GroupRecovered = %q, want %q", gotGroup, tc.wantGroup)
+			}
+			if len(gotTokens) != len(tc.wantTokens) {
+				t.Fatalf("TokensRecovered len = %d (%v), want %d (%v)", len(gotTokens), gotTokens, len(tc.wantTokens), tc.wantTokens)
+			}
+			for i, want := range tc.wantTokens {
+				if gotTokens[i] != want {
+					t.Errorf("TokensRecovered[%d] = %q, want %q", i, gotTokens[i], want)
+				}
+			}
+		})
+	}
+}
+
 func TestFindQbitInstanceByID(t *testing.T) {
 	cfg := core.Config{
 		QbitInstances: []core.QbitInstance{

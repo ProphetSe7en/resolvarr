@@ -595,7 +595,7 @@ func TestValidateConfig_RejectsExtremeTTL(t *testing.T) {
 
 func TestIsRequestFromTrustedProxy(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.TrustedProxies = []net.IP{net.ParseIP("172.17.0.1")}
+	cfg.TrustedProxies = []*net.IPNet{{IP: net.ParseIP("172.17.0.1"), Mask: net.CIDRMask(32, 32)}}
 	s := NewStore(cfg)
 
 	r := httptest.NewRequest("GET", "/", nil)
@@ -616,12 +616,41 @@ func TestIsRequestFromTrustedProxy(t *testing.T) {
 	}
 }
 
+func TestIsRequestFromTrustedProxy_CIDR(t *testing.T) {
+	// CIDR trust at the auth layer. A user with TRUSTED_PROXIES=
+	// 172.19.0.0/24 (e.g. Docker bridge) should have ANY peer in
+	// that range count as a trusted proxy — without listing each
+	// container IP. Locks the .Contains(peer) behaviour added in
+	// commit 487f5ec8.
+	cfg := testConfig(t)
+	_, cidr, err := net.ParseCIDR("172.19.0.0/24")
+	if err != nil {
+		t.Fatalf("ParseCIDR: %v", err)
+	}
+	cfg.TrustedProxies = []*net.IPNet{cidr}
+	s := NewStore(cfg)
+
+	r := httptest.NewRequest("GET", "/", nil)
+	// Two arbitrary IPs in the CIDR — both should count as trusted.
+	for _, addr := range []string{"172.19.0.55:5555", "172.19.0.200:5555"} {
+		r.RemoteAddr = addr
+		if !s.IsRequestFromTrustedProxy(r) {
+			t.Errorf("expected true for peer %s in CIDR 172.19.0.0/24", addr)
+		}
+	}
+	// IP just outside the CIDR — not trusted.
+	r.RemoteAddr = "172.19.1.5:5555"
+	if s.IsRequestFromTrustedProxy(r) {
+		t.Error("expected false for peer 172.19.1.5 outside CIDR 172.19.0.0/24")
+	}
+}
+
 func TestTrustedProxy_SpoofedLeftmost(t *testing.T) {
 	// Classic XFF spoof: client sets XFF=127.0.0.1 in their outgoing request,
 	// trusted proxy APPENDS their real IP (8.8.8.8). A leftmost-parser would
 	// read 127.0.0.1 → auth bypass. Rightmost reads 8.8.8.8 → blocked.
 	cfg := testConfig(t)
-	cfg.TrustedProxies = []net.IP{net.ParseIP("172.17.0.1")}
+	cfg.TrustedProxies = []*net.IPNet{{IP: net.ParseIP("172.17.0.1"), Mask: net.CIDRMask(32, 32)}}
 	s := NewStore(cfg)
 	_ = s.Setup("admin", "Password12")
 	h := s.Middleware(okHandler())
@@ -639,7 +668,7 @@ func TestTrustedProxy_SpoofedLeftmost(t *testing.T) {
 func TestTrustedProxy_LegitimateLocal(t *testing.T) {
 	// Legitimate: LAN user → trusted proxy → app. XFF is just "192.168.86.10".
 	cfg := testConfig(t)
-	cfg.TrustedProxies = []net.IP{net.ParseIP("172.17.0.1")}
+	cfg.TrustedProxies = []*net.IPNet{{IP: net.ParseIP("172.17.0.1"), Mask: net.CIDRMask(32, 32)}}
 	s := NewStore(cfg)
 	_ = s.Setup("admin", "Password12")
 	h := s.Middleware(okHandler())

@@ -219,10 +219,77 @@ func (s *Server) dispatchGrabRename(
 	// exact comparison qBit returned — no need to query qBit live to
 	// understand why a given rename fired. Per-trigger diagnostics
 	// (parser output, missing tokens) live inside reasons[].
+	groupRecovered, tokensRecovered := summariseGrabRenameRecovery(reasons, rg)
 	return functionResult{
-		Function: core.WebhookFnGrabRename, OK: true,
+		Function: core.WebhookFnGrabRename, OK: true, Changed: true,
 		Summary: fmt.Sprintf("renamed %q → %q (triggers: %s)", currentName, target, strings.Join(reasons, ", ")),
+		Detail: GrabRenameDetail{
+			From:            currentName,
+			To:              target,
+			Triggers:        reasons,
+			QbitInstance:    qbitInst.Name,
+			GroupRecovered:  groupRecovered,
+			TokensRecovered: tokensRecovered,
+		},
 	}
+}
+
+// summariseGrabRenameRecovery turns the engine's raw trigger labels
+// into the user-friendly GroupRecovered + TokensRecovered split bash
+// tagarr_import.sh surfaces in its embed. Pure string parsing — no
+// engine state needed beyond the rg token already on hand.
+//
+// Mapping rules:
+//
+//   - "missing-release-group …"  → GroupRecovered = rg
+//   - "movie-version: A/B/C"     → TokensRecovered += A, B, C
+//   - "source: WEB-DL"           → TokensRecovered += WEB-DL
+//   - "audio: TrueHD/Atmos"      → TokensRecovered += TrueHD, Atmos
+//   - "scene-stripped …"         → TokensRecovered += "scene"
+//   - "custom: Label1/Label2"    → TokensRecovered += Label1, Label2
+//   - "always-rename"            → no recovery semantics (rename
+//     fired without any specific trigger detecting a diff)
+//
+// Deduplicates token list — multiple triggers can surface the same
+// token in pathological configs and the embed should show it once.
+func summariseGrabRenameRecovery(reasons []string, rg string) (groupRecovered string, tokensRecovered []string) {
+	seen := map[string]bool{}
+	appendToken := func(tok string) {
+		t := strings.TrimSpace(tok)
+		if t == "" || seen[t] {
+			return
+		}
+		seen[t] = true
+		tokensRecovered = append(tokensRecovered, t)
+	}
+	for _, raw := range reasons {
+		r := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(r, "missing-release-group"):
+			if groupRecovered == "" {
+				groupRecovered = strings.TrimSpace(rg)
+			}
+		case strings.HasPrefix(r, "movie-version: "):
+			for _, t := range strings.Split(strings.TrimPrefix(r, "movie-version: "), "/") {
+				appendToken(t)
+			}
+		case strings.HasPrefix(r, "source: "):
+			for _, t := range strings.Split(strings.TrimPrefix(r, "source: "), "/") {
+				appendToken(t)
+			}
+		case strings.HasPrefix(r, "audio: "):
+			for _, t := range strings.Split(strings.TrimPrefix(r, "audio: "), "/") {
+				appendToken(t)
+			}
+		case strings.HasPrefix(r, "scene-stripped"):
+			appendToken("scene")
+		case strings.HasPrefix(r, "custom: "):
+			for _, t := range strings.Split(strings.TrimPrefix(r, "custom: "), "/") {
+				appendToken(t)
+			}
+		}
+	}
+	return groupRecovered, tokensRecovered
 }
 
 // evaluateGrabRenameTriggers walks each enabled trigger and returns a

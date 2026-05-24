@@ -31,31 +31,14 @@ func TestAppendTagSection(t *testing.T) {
 		want []agents.PayloadField
 	}{
 		{"nil → no fields", nil, nil},
-		{"empty added list → no Quality tag field, but Tagged in still renders", &TagDetail{Tag: "FLUX"}, []agents.PayloadField{
-			{Name: "Tagged in", Value: "primary Arr", Inline: false},
-		}},
-		{"added tag only", &TagDetail{Added: []string{"FLUX"}}, []agents.PayloadField{
-			{Name: "Tagged in", Value: "primary Arr", Inline: false},
+		{"empty Added → no fields (Tagged-in moved to universal lead)", &TagDetail{Tag: "FLUX"}, nil},
+		{"added tag only → just Quality tag", &TagDetail{Added: []string{"FLUX"}}, []agents.PayloadField{
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
 		}},
-		{"mirrored to named secondary", &TagDetail{Added: []string{"FLUX"}, Mirrored: true, SecondaryName: "Radarr 4K"}, []agents.PayloadField{
-			{Name: "Tagged in", Value: "primary Arr · Radarr 4K", Inline: false},
-			{Name: "Quality tag", Value: "FLUX", Inline: true},
-		}},
-		{"mirrored to unnamed secondary", &TagDetail{Added: []string{"FLUX"}, Mirrored: true}, []agents.PayloadField{
-			{Name: "Tagged in", Value: "primary Arr · secondary", Inline: false},
-			{Name: "Quality tag", Value: "FLUX", Inline: true},
-		}},
-		{"real primary instance name renders verbatim", &TagDetail{Added: []string{"FLUX"}, Primary: "Radarr Main"}, []agents.PayloadField{
-			{Name: "Tagged in", Value: "Radarr Main", Inline: false},
-			{Name: "Quality tag", Value: "FLUX", Inline: true},
-		}},
-		{"both real instance names under mirror", &TagDetail{Added: []string{"FLUX"}, Primary: "Radarr Main", Mirrored: true, SecondaryName: "Radarr 4K"}, []agents.PayloadField{
-			{Name: "Tagged in", Value: "Radarr Main · Radarr 4K", Inline: false},
+		{"mirrored/secondary fields are no-op here (Tagged-in lives in composeFields)", &TagDetail{Added: []string{"FLUX"}, Mirrored: true, SecondaryName: "Radarr 4K"}, []agents.PayloadField{
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
 		}},
 		{"multiple added tags joined with separator", &TagDetail{Added: []string{"FLUX", "SiC"}}, []agents.PayloadField{
-			{Name: "Tagged in", Value: "primary Arr", Inline: false},
 			{Name: "Quality tag", Value: "FLUX · SiC", Inline: true},
 		}},
 	}
@@ -159,8 +142,9 @@ func TestAppendRecoverSection(t *testing.T) {
 }
 
 // TestAppendGrabRenameSection covers the qBit torrent-rename
-// section. Mirrors bash tagarr_import.sh:452-489 field shape but
-// compressed to "Was / Now".
+// section. Mirrors bash tagarr_import.sh:452-489's "Torrent Name /
+// Restored to Release Name" field shape (post-2026-05-24 rewrite —
+// dropped the earlier compact "Was / Now" naming).
 func TestAppendGrabRenameSection(t *testing.T) {
 	cases := []struct {
 		name string
@@ -170,29 +154,40 @@ func TestAppendGrabRenameSection(t *testing.T) {
 		{"nil → no fields", nil, nil},
 		{"both From and To empty → no fields", &GrabRenameDetail{Triggers: []string{"x"}}, nil},
 		{"full rename with everything populated", &GrabRenameDetail{
-			From:           "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR",
-			To:             "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR-FLUX",
-			Triggers:       []string{"missing release group", "scene CF"},
-			QbitInstance:   "qBit Movies",
-			SceneCFChanged: true,
+			From:            "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR",
+			To:              "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR-FLUX",
+			Triggers:        []string{"missing-release-group …", "scene-stripped …"},
+			GroupRecovered:  "FLUX",
+			TokensRecovered: []string{"Director's Cut", "IMAX"},
+			QbitInstance:    "qBit Movies",
+			SceneCFChanged:  true,
 		}, []agents.PayloadField{
-			{Name: "Was", Value: "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR", Inline: false},
-			{Name: "Now", Value: "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR-FLUX", Inline: false},
-			{Name: "Triggers", Value: "missing release group · scene CF", Inline: true},
-			{Name: "Client", Value: "qBit Movies", Inline: true},
-			{Name: "⚠ Scene CF", Value: "Changed by rename", Inline: false},
+			{Name: "Renamed in", Value: "qBit Movies", Inline: false},
+			{Name: "Release Group Recovered", Value: "FLUX", Inline: true},
+			{Name: "Tokens Recovered", Value: "Director's Cut · IMAX", Inline: true},
+			{Name: "⚠ Scene CF", Value: "No longer matches after rename", Inline: false},
+			{Name: "Torrent Name", Value: "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR", Inline: false},
+			{Name: "Restored to Release Name", Value: "Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR-FLUX", Inline: false},
 		}},
-		{"minimal — only Now (added group, no prior name change)", &GrabRenameDetail{
+		{"minimal — only To set", &GrabRenameDetail{
 			To: "movie.2024.web-dl.x264-XEBEC",
 		}, []agents.PayloadField{
-			{Name: "Now", Value: "movie.2024.web-dl.x264-XEBEC", Inline: false},
+			{Name: "Restored to Release Name", Value: "movie.2024.web-dl.x264-XEBEC", Inline: false},
 		}},
 		{"scene CF warning omitted when flag false", &GrabRenameDetail{
 			From: "a", To: "b", QbitInstance: "qBit", SceneCFChanged: false,
 		}, []agents.PayloadField{
-			{Name: "Was", Value: "a", Inline: false},
-			{Name: "Now", Value: "b", Inline: false},
-			{Name: "Client", Value: "qBit", Inline: true},
+			{Name: "Renamed in", Value: "qBit", Inline: false},
+			{Name: "Torrent Name", Value: "a", Inline: false},
+			{Name: "Restored to Release Name", Value: "b", Inline: false},
+		}},
+		{"only release-group recovered, no other tokens", &GrabRenameDetail{
+			From: "a", To: "b", QbitInstance: "qBit", GroupRecovered: "FLUX",
+		}, []agents.PayloadField{
+			{Name: "Renamed in", Value: "qBit", Inline: false},
+			{Name: "Release Group Recovered", Value: "FLUX", Inline: true},
+			{Name: "Torrent Name", Value: "a", Inline: false},
+			{Name: "Restored to Release Name", Value: "b", Inline: false},
 		}},
 	}
 	for _, tc := range cases {
@@ -339,8 +334,9 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
 			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
 			{Name: "Picture", Value: "4K · HDR", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil)
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -353,8 +349,9 @@ func TestComposeFields(t *testing.T) {
 		}
 		want := []agents.PayloadField{
 			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil)
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -366,13 +363,14 @@ func TestComposeFields(t *testing.T) {
 				Detail: QbitSeDetail{Tag: "Episode", QbitInstance: "qBit"}},
 		}
 		want := []agents.PayloadField{
-			{Name: "Was", Value: "old.name", Inline: false},
-			{Name: "Now", Value: "new.name-FLUX", Inline: false},
-			{Name: "Client", Value: "qBit", Inline: true},
+			{Name: "Renamed in", Value: "qBit", Inline: false},
+			{Name: "Torrent Name", Value: "old.name", Inline: false},
+			{Name: "Restored to Release Name", Value: "new.name-FLUX", Inline: false},
 			{Name: "Tag", Value: "Episode", Inline: true},
 			{Name: "Client", Value: "qBit", Inline: true},
+			{Name: "Event", Value: "Grab", Inline: true},
 		}
-		got := composeFields(core.WebhookEventGrab, results, nil)
+		got := composeFields(core.WebhookEventGrab, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -400,8 +398,9 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Cleaned in", Value: "Radarr Main · Radarr 4K", Inline: false},
 			{Name: "Removed", Value: "Quality tag", Inline: false},
+			{Name: "Event", Value: "File deleted", Inline: true},
 		}
-		got := composeFields(core.WebhookEventMovieFileDelete, results, nil)
+		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -431,8 +430,9 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Cleaned in", Value: "Radarr Main · Radarr 4K", Inline: false},
 			{Name: "Removed", Value: "Audio · Video · Quality tag", Inline: false},
+			{Name: "Event", Value: "File deleted", Inline: true},
 		}
-		got := composeFields(core.WebhookEventMovieFileDelete, results, nil)
+		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -451,14 +451,15 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Cleaned in", Value: "Radarr Main", Inline: false},
 			{Name: "Removed", Value: "Audio · Video · Quality tag", Inline: false},
+			{Name: "Event", Value: "File deleted", Inline: true},
 		}
-		got := composeFields(core.WebhookEventMovieFileDelete, results, nil)
+		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
 	t.Run("MovieFileDelete — nothing stripped → empty", func(t *testing.T) {
 		results := []functionResult{}
-		got := composeFields(core.WebhookEventMovieFileDelete, results, nil)
+		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "")
 		if len(got) != 0 {
 			t.Errorf("expected empty fields slice, got %+v", got)
 		}
@@ -478,13 +479,14 @@ func TestComposeFields(t *testing.T) {
 		}
 		want := []agents.PayloadField{
 			{Name: "Picture", Value: "1080p", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil)
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
 	t.Run("Empty results → empty fields", func(t *testing.T) {
-		got := composeFields(core.WebhookEventDownload, nil, nil)
+		got := composeFields(core.WebhookEventDownload, nil, nil, "", "", "")
 		if len(got) != 0 {
 			t.Errorf("expected empty fields, got %+v", got)
 		}
@@ -528,8 +530,9 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Was in", Value: "movies", Inline: true},
 			{Name: "Moved to", Value: "movies-imp", Inline: true},
 			{Name: "Client", Value: "qBit Movies", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil)
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -548,8 +551,9 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Tagged in", Value: "Radarr Main · Radarr 4K", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil)
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -563,7 +567,7 @@ func TestComposeFields(t *testing.T) {
 			{Function: core.WebhookFnSyncToSecondary, OK: true, Changed: true,
 				Detail: SyncDetail{SecondaryName: "Radarr 4K"}},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil)
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
 		if len(got) != 0 {
 			t.Errorf("expected empty fields for orphan Sync, got %+v", got)
 		}
@@ -585,8 +589,9 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Tagged in", Value: "Radarr Main", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil)
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -603,8 +608,9 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Tagged in", Value: "Radarr Main", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil)
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -621,8 +627,9 @@ func TestComposeFields(t *testing.T) {
 		}
 		want := []agents.PayloadField{
 			{Name: "Sound", Value: "TrueHD 7.1", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil)
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -643,8 +650,9 @@ func TestComposeFields(t *testing.T) {
 		// renders.
 		want := []agents.PayloadField{
 			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, []string{"tagAudio"})
+		got := composeFields(core.WebhookEventDownload, results, []string{"tagAudio"}, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -660,8 +668,9 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Tagged in", Value: "Radarr Main", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
 			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, []string{"tagReleaseGroups", "tagAudio"})
+		got := composeFields(core.WebhookEventDownload, results, []string{"tagReleaseGroups", "tagAudio"}, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -675,7 +684,7 @@ func TestComposeFields(t *testing.T) {
 		// composeFields returns no fields → caller skips dispatch
 		// (preserves the "only actual changes" rule combined with
 		// "agent only sees what it subscribed to").
-		got := composeFields(core.WebhookEventDownload, results, []string{"grabRename"})
+		got := composeFields(core.WebhookEventDownload, results, []string{"grabRename"}, "", "", "")
 		if len(got) != 0 {
 			t.Errorf("expected empty fields when filter excludes everything, got %+v", got)
 		}
@@ -694,8 +703,9 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Tagged in", Value: "Radarr Main", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, []string{"tagReleaseGroups"})
+		got := composeFields(core.WebhookEventDownload, results, []string{"tagReleaseGroups"}, "", "", "")
 		fieldsEqual(t, got, want)
 	})
 }

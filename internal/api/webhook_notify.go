@@ -16,8 +16,7 @@
 //   - per-function Detail struct types (consumed by builders in #5)
 //   - composeTitle: bash-parity combo-title builder
 //   - pickColor: 5-color palette (orange/gold/green/blue/red)
-//   - composeFooterSuffix: "rule: {name}" suffix for the agents
-//     Payload.FooterSuffix field
+//   - eventLabel: plain-language label for the universal "Event" field
 //
 // Per-function section builders + dispatcher wiring + UI live in
 // follow-up tasks (#5 / #7 / #8).
@@ -142,9 +141,25 @@ type RecoverDetail struct {
 type GrabRenameDetail struct {
 	From           string   // torrent name before rename
 	To             string   // torrent name after rename (release name from the indexer)
-	Triggers       []string // short list of why the rename fired (e.g. ["missing release group", "missing audio tokens"])
+	Triggers       []string // raw trigger labels from the engine — debug-grade, surfaced in History only
 	SceneCFChanged bool     // true = the rename changed scene-CF matching (worth flagging in the embed)
 	QbitInstance   string   // qBit instance display name where the rename happened
+
+	// GroupRecovered is the release-group token that was missing on
+	// the torrent and is now restored by the rename — populated only
+	// when the missing-release-group trigger detected a diff. Empty
+	// when the rename was driven solely by other triggers (audio /
+	// source / movie-version / scene / custom). Mirrors bash
+	// tagarr_import.sh's "Release Group Recovered" field shown only
+	// when group_recovered=true.
+	GroupRecovered string
+
+	// TokensRecovered is the user-friendly list of OTHER tokens the
+	// rename restored (movie-version, source, audio, custom). Empty
+	// when only the release-group token was recovered. Mirrors bash
+	// tagarr_import.sh's "Tokens Recovered" field — collapsed list
+	// of token labels without the engine's diagnostic prefix.
+	TokensRecovered []string
 }
 
 // QbitSeDetail is the typed payload for WebhookFnQbitSeTag results.
@@ -465,25 +480,11 @@ func pickColor(event core.WebhookConnectEvent, results []functionResult, allowed
 	return embedColorTagged
 }
 
-// composeFooterSuffix produces the per-payload footer suffix the
-// agents Discord provider appends after "Resolvarr {version} by
-// ProphetSe7en". Per dev/analysis/M-webhook-notifications.md:
-//
-//	"Resolvarr v0.6.4 by ProphetSe7en · rule: Tag 4K imports"
-//
-// Suffix is the rule name only — version + by-line stay automatic
-// in the provider. Empty rule name produces an empty suffix (caller
-// won't append " · ").
-func composeFooterSuffix(rule *core.WebhookRule) string {
-	if rule == nil {
-		return ""
-	}
-	name := strings.TrimSpace(rule.Name)
-	if name == "" {
-		return ""
-	}
-	return "rule: " + name
-}
+// (composeFooterSuffix deleted 2026-05-24 — rule name now lives in
+// the embed body's "Rule" field instead of crammed onto the footer
+// line. The footer is reserved for "Resolvarr {version} by
+// ProphetSe7en" + the locale-aware embed timestamp on the right.
+// See appendRuleSection in webhook_notify_sections.go.)
 
 // posterImage is one entry in a Radarr/Sonarr Connect payload's
 // images[] array. CoverType discriminates the image kind ("poster",
@@ -608,4 +609,29 @@ func isDeleteEvent(event core.WebhookConnectEvent) bool {
 		return true
 	}
 	return false
+}
+
+// eventLabel maps a Connect event-type to the short plain-language
+// label rendered in the embed's "Event" field. Mirrors bash
+// tagarr_import.sh's exposure of $EVENT_TYPE but with friendlier
+// wording (bash exposes the literal "MovieFileDeleteForUpgrade";
+// we render "Upgraded").
+//
+// Returns "" for unknown / unhandled events — caller suppresses the
+// Event field rather than emitting a literal "Unknown".
+func eventLabel(event core.WebhookConnectEvent) string {
+	switch event {
+	case core.WebhookEventGrab:
+		return "Grab"
+	case core.WebhookEventDownload:
+		return "Import"
+	case core.WebhookEventMovieFileDelete:
+		return "File deleted"
+	case core.WebhookEventEpisodeFileDelete:
+		return "Episode deleted"
+	case core.WebhookEventMovieFileDeleteForUpgrade,
+		core.WebhookEventEpisodeFileDeleteForUpgrade:
+		return "Upgraded"
+	}
+	return ""
 }
