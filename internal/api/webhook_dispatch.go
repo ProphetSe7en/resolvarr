@@ -88,7 +88,7 @@ var canonicalFunctionOrder = []core.WebhookFunction{
 // Notifications consume Changed: bash tagarr_import.sh's "Nothing to
 // report — skipping Discord notification" pattern (line 1457) is
 // implemented as "skip the function from the embed when Changed is
-// false". This is the user-locked rule "notifications contain only
+// false". This is the rule "notifications contain only
 // actual changes" — no "ran and did nothing" lines pollute the embed.
 // History-side tracking still uses OK so the user can debug why a
 // rule fired but produced no change.

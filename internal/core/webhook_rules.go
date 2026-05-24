@@ -628,9 +628,8 @@ type WebhookRule struct {
 	// agent renders is decided by per-agent config (agents.Agent.Events
 	// for event-class subscription + agents.Agent.Functions for
 	// function-level subscription) — NOT per-rule. This is the
-	// "power-to-the-agent" model locked 2026-05-16; the old per-rule
-	// NotifyAgents whitelist + NotifyOnEveryEvent debug flag were
-	// retired in commit 7.4d.
+	// "power-to-the-agent" model; the old per-rule NotifyAgents
+	// whitelist + NotifyOnEveryEvent debug flag are retired.
 	NotifyOnFire bool `json:"notifyOnFire,omitempty"`
 
 	// Webhook — opt-in per-rule webhook URL. When non-nil with a

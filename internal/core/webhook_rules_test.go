@@ -15,7 +15,7 @@ import (
 // adapters (stubs today, real coverage lands per task #5/#7/#8/#9).
 
 func TestWebhookFunctionAppliesTo_PerInstanceTypeMatrix(t *testing.T) {
-	// Per dev/analysis/M-webhook.md § "Per-Arr-type scope":
+	// Per-Arr-type scope:
 	cases := []struct {
 		fn         WebhookFunction
 		radarr     bool

@@ -68,7 +68,6 @@ type scanRunRequest struct {
 	// quality+audio filter with FilterOnlyTag. Filter-only mode replaces
 	// the broken "shared tag across multiple groups" pattern (which
 	// flapped on every alternating run) with a clean single-tag rule.
-	// See dev/analysis/filter-only-tag.md.
 	TagSource     string `json:"tagSource,omitempty"`
 	FilterOnlyTag string `json:"filterOnlyTag,omitempty"`
 

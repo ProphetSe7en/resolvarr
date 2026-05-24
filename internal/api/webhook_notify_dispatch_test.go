@@ -76,7 +76,7 @@ func TestBuildNotificationPayload(t *testing.T) {
 		run := core.WebhookRuleRun{ItemTitle: "Some Movie", ItemContext: "2024"}
 		_, fire := buildNotificationPayload(rule, radarrInstance, core.WebhookEventDownload, results, nil, run, nil)
 		if fire {
-			t.Errorf("expected fire=false on Changed=false-only results (user-locked rule)")
+			t.Errorf("expected fire=false on Changed=false-only results (only-actual-changes rule)")
 		}
 	})
 
@@ -207,7 +207,7 @@ func TestBuildNotificationPayload(t *testing.T) {
 }
 
 // TestResolveNotificationAgents locks the three-layer gating-precedence
-// rule per dev/analysis/M-webhook-notifications.md "Foundation decisions".
+// rule from the M-Webhook framework's foundation decisions.
 func TestResolveNotificationAgents(t *testing.T) {
 	mkAgent := func(id, name string, enabled bool, events core.AgentEvents) core.NotificationAgent {
 		return core.NotificationAgent{ID: id, Name: name, Type: "discord", Enabled: enabled, Events: events}

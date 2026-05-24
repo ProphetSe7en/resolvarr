@@ -91,8 +91,8 @@ func detectTimezone() string {
 // Locale is what drives the JS Intl format choice: nb-NO renders
 // `28.04.2026, 17:30:00` (24h, dotted), en-US renders
 // `4/28/2026, 5:30:00 PM` (12h, slashed). Letting locale decide
-// 12h vs 24h instead of forcing one is what the user asked for —
-// "vis det som er riktig basert på hvor container kjører".
+// 12h vs 24h is a deliberate choice — the UI matches whatever
+// the host environment expects, no in-app toggle to maintain.
 func detectLocale() string {
 	lang := strings.TrimSpace(os.Getenv("LANG"))
 	if lang != "" && lang != "C" && lang != "POSIX" {

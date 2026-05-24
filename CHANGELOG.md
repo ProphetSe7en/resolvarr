@@ -2,6 +2,10 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.8-dev — Internal comment cleanup (2026-05-25)
+
+Internal-only housekeeping pass on code comments. No functional change vs `v0.6.7-dev` — your config, notifications, and webhooks behave exactly the same. Safe upgrade.
+
 ## v0.6.7-dev — Notification layout redesign + TRUSTED_PROXIES accepts CIDR (2026-05-25)
 
 ### Discord notifications now show every detail, labelled
@@ -433,8 +437,7 @@ get clamped to "" at next config Load.
 
 - **Wizard-everywhere finalisation.** Decide where bucket configs
   live — sub-tab page (current), wizard with save-to-globals on
-  fire, or wizard with localStorage memory. Three documented
-  paths in `dev/analysis/wizard-everywhere-followup.md`.
+  fire, or wizard with localStorage memory.
 - **qBit auto-tagging via Sonarr Grab webhook + backlog scan.**
   Two services on the M-Webhook foundation: realtime tag-on-grab
   and one-off backlog catch-up.

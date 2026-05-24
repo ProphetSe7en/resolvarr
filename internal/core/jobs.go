@@ -96,7 +96,7 @@ type JobOptions struct {
 	//                      passing the quality + audio filter with FilterOnlyTag
 	// Filter-only mode is the architecturally clean replacement for the
 	// "shared tag across multiple groups" pattern that used to flap on
-	// every alternating run. See dev/analysis/filter-only-tag.md.
+	// every alternating run.
 	TagSource     string `json:"tagSource,omitempty"`
 	FilterOnlyTag string `json:"filterOnlyTag,omitempty"` // only meaningful when TagSource == "filter-only"
 
