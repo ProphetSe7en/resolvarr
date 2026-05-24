@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDiscordValidate verifies the Discord provider's Validate logic:
@@ -277,6 +278,70 @@ func TestDiscordNotifyThumbnail(t *testing.T) {
 	}
 	if got.Embeds[0].Thumbnail.URL != "https://image.tmdb.org/t/p/original/poster.jpg" {
 		t.Fatalf("thumbnail.url = %q, want poster URL", got.Embeds[0].Thumbnail.URL)
+	}
+}
+
+// TestDiscordNotifyTimestamp verifies that a non-zero Payload.Timestamp
+// is emitted as the embed's `timestamp` field in RFC3339 / UTC. Discord
+// renders this as the locale-aware "Today at 14:32" / "Yesterday at …"
+// label in the lower-right of the embed.
+func TestDiscordNotifyTimestamp(t *testing.T) {
+	mock := newOKPoster()
+	rt := testRuntime(nil, mock)
+	agent := Agent{Name: "Discord", Type: "discord", Enabled: true, Config: Config{
+		DiscordWebhook: "https://discord.com/api/webhooks/111/aaa",
+	}}
+	// Pick a fixed non-UTC instant so we can verify both that the field
+	// lands AND that the wire-form is UTC-normalised RFC3339.
+	loc, _ := time.LoadLocation("Europe/Oslo")
+	ts := time.Date(2026, 5, 24, 16, 32, 7, 0, loc) // 16:32:07 Oslo = 14:32:07 UTC
+	payload := Payload{
+		Title:     "Tagged - Movie (2024)",
+		Route:     RouteDefault,
+		Timestamp: ts,
+	}
+
+	if err := (discordProvider{}).Notify(context.Background(), rt, agent, payload); err != nil {
+		t.Fatalf("Notify() error: %v", err)
+	}
+
+	var got struct {
+		Embeds []struct {
+			Timestamp string `json:"timestamp"`
+		} `json:"embeds"`
+	}
+	if err := json.Unmarshal(mock.lastBody, &got); err != nil {
+		t.Fatalf("unmarshal body: %v\nbody: %s", err, mock.lastBody)
+	}
+	if len(got.Embeds) != 1 {
+		t.Fatalf("expected 1 embed, got %d", len(got.Embeds))
+	}
+	// RFC3339-formatted UTC: "2026-05-24T14:32:07Z" — original Oslo
+	// offset (+02:00) is normalised to Z so wire payload is locale-
+	// stable. Discord clients re-render in viewer's timezone.
+	const wantWire = "2026-05-24T14:32:07Z"
+	if got.Embeds[0].Timestamp != wantWire {
+		t.Errorf("embed.timestamp = %q, want %q (UTC RFC3339)", got.Embeds[0].Timestamp, wantWire)
+	}
+}
+
+// TestDiscordNotifyTimestampZeroValue verifies that the zero-value
+// time.Time omits the `timestamp` key entirely. Non-webhook callers
+// (Test path, ad-hoc notifications) leave Timestamp unset; they
+// should not have the embed pinned to 0001-01-01.
+func TestDiscordNotifyTimestampZeroValue(t *testing.T) {
+	mock := newOKPoster()
+	rt := testRuntime(nil, mock)
+	agent := Agent{Name: "Discord", Type: "discord", Enabled: true, Config: Config{
+		DiscordWebhook: "https://discord.com/api/webhooks/111/aaa",
+	}}
+	payload := Payload{Title: "no timestamp", Route: RouteDefault} // Timestamp left zero
+
+	if err := (discordProvider{}).Notify(context.Background(), rt, agent, payload); err != nil {
+		t.Fatalf("Notify() error: %v", err)
+	}
+	if strings.Contains(string(mock.lastBody), `"timestamp"`) {
+		t.Errorf("zero Timestamp should omit the timestamp key, got body: %s", mock.lastBody)
 	}
 }
 

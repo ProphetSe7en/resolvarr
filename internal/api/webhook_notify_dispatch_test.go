@@ -46,11 +46,25 @@ func TestBuildNotificationPayload(t *testing.T) {
 		if payload.ThumbnailURL != "https://cdn.tmdb.example/poster.jpg" {
 			t.Errorf("thumbnail = %q, want poster URL", payload.ThumbnailURL)
 		}
-		if payload.FooterSuffix != "rule: Tag 4K imports" {
-			t.Errorf("footer suffix = %q, want 'rule: Tag 4K imports'", payload.FooterSuffix)
+		if payload.FooterSuffix != "" {
+			t.Errorf("footer suffix = %q, want empty (rule name now lives in a 'Rule' field, not the footer)", payload.FooterSuffix)
+		}
+		if payload.Timestamp.IsZero() {
+			t.Errorf("expected payload.Timestamp set for webhook-fire notifications")
 		}
 		if len(payload.Fields) == 0 {
 			t.Errorf("expected fields to render for the bundle, got 0")
+		}
+		// Verify the new Rule field landed.
+		var sawRule bool
+		for _, f := range payload.Fields {
+			if f.Name == "Rule" && f.Value == "Tag 4K imports" {
+				sawRule = true
+				break
+			}
+		}
+		if !sawRule {
+			t.Errorf("expected a Rule field with rule name; got %+v", payload.Fields)
 		}
 	})
 
@@ -158,8 +172,36 @@ func TestBuildNotificationPayload(t *testing.T) {
 		if payload.Color != embedColorDiscover {
 			t.Errorf("color = %#x, want gold %#x (filtered to Discover-only)", payload.Color, embedColorDiscover)
 		}
-		if len(payload.Fields) != 1 || payload.Fields[0].Name != "New group" {
-			t.Errorf("fields = %+v, want one 'New group' entry", payload.Fields)
+		// Post-2026-05-24: payload includes universal Tagged-in lead +
+		// Rule + Event suffix in addition to per-section fields. The
+		// agent-filter check here verifies that the Discover-only
+		// filtered fire surfaces ONLY "New group" as its detail field
+		// (no Quality tag from the filtered-out Tag-RG).
+		var sawNewGroup, sawTaggedIn, sawRule, sawEvent bool
+		var detailCount int
+		for _, f := range payload.Fields {
+			switch f.Name {
+			case "New group":
+				sawNewGroup = true
+				detailCount++
+			case "Tagged in":
+				sawTaggedIn = true
+			case "Rule":
+				sawRule = true
+			case "Event":
+				sawEvent = true
+			default:
+				detailCount++
+			}
+		}
+		if !sawNewGroup {
+			t.Errorf("expected a 'New group' field; got %+v", payload.Fields)
+		}
+		if detailCount != 1 {
+			t.Errorf("expected exactly one detail field (New group); got %d in %+v", detailCount, payload.Fields)
+		}
+		if !sawTaggedIn || !sawRule || !sawEvent {
+			t.Errorf("expected universal Tagged-in + Rule + Event scaffolding; got %+v", payload.Fields)
 		}
 	})
 }
@@ -452,9 +494,10 @@ func TestFireWebhookNotificationsEndToEnd(t *testing.T) {
 	if e.Color != embedColorTagged {
 		t.Errorf("color = %#x, want orange %#x", e.Color, embedColorTagged)
 	}
-	// Fields: Tagged in + Quality tag + Sound. NO "New group" since
-	// Discover was filtered.
-	wantFields := []string{"Tagged in", "Quality tag", "Sound"}
+	// Fields (post-2026-05-24 layout): Tagged in + Quality tag + Sound
+	// from the detail sections, then Rule + Event from the universal
+	// suffix. NO "New group" since Discover was filtered.
+	wantFields := []string{"Tagged in", "Quality tag", "Sound", "Rule", "Event"}
 	if len(e.Fields) != len(wantFields) {
 		t.Fatalf("field count = %d (%+v), want %d (%v)", len(e.Fields), e.Fields, len(wantFields), wantFields)
 	}
@@ -473,12 +516,19 @@ func TestFireWebhookNotificationsEndToEnd(t *testing.T) {
 	if e.Fields[2].Value != "TrueHD Atmos 7.1" {
 		t.Errorf("Sound = %q, want 'TrueHD Atmos 7.1'", e.Fields[2].Value)
 	}
-	// Footer: includes version + rule name suffix.
+	if e.Fields[3].Value != "Tag 4K imports" {
+		t.Errorf("Rule = %q, want 'Tag 4K imports'", e.Fields[3].Value)
+	}
+	if e.Fields[4].Value != "Import" {
+		t.Errorf("Event = %q, want 'Import'", e.Fields[4].Value)
+	}
+	// Footer: version + by-line only — rule name is no longer crammed
+	// into the footer (it has its own Rule field now).
 	if !strings.Contains(e.Footer.Text, "Resolvarr test by ProphetSe7en") {
 		t.Errorf("footer missing default text: %q", e.Footer.Text)
 	}
-	if !strings.Contains(e.Footer.Text, "rule: Tag 4K imports") {
-		t.Errorf("footer missing rule suffix: %q", e.Footer.Text)
+	if strings.Contains(e.Footer.Text, "rule:") {
+		t.Errorf("footer should not contain 'rule:' suffix anymore: %q", e.Footer.Text)
 	}
 	// Thumbnail: poster URL flows through the http(s)-filter.
 	if e.Thumbnail.URL != "https://cdn.tmdb.example/poster.jpg" {

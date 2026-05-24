@@ -106,7 +106,7 @@ func displayBucketForEngine(engineBucket string) string {
 // non-empty = render only results whose Function is in the list.
 // Each agent gets its own composeFields call with its own filter so
 // the embed body is tailored to what THAT agent subscribed to.
-func composeFields(event core.WebhookConnectEvent, results []functionResult, allowedFunctions []string) []agents.PayloadField {
+func composeFields(event core.WebhookConnectEvent, results []functionResult, allowedFunctions []string, instanceName, ruleName, filename string) []agents.PayloadField {
 	results = filterResultsByFunctions(results, allowedFunctions)
 	// Local names use `rec` for RecoverDetail to avoid shadowing
 	// the built-in `recover()` (vet -predeclared flags it; a future
@@ -233,25 +233,117 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 		}
 	}
 
-	var fields []agents.PayloadField
+	// Resolve the mirrored-secondary name once. Used by the
+	// universal "Tagged in" line at the top of non-delete embeds so
+	// auto-tag-only events (where no TagDetail exists) still surface
+	// the mirror target. Falls back to TagDetail's own mirrored info
+	// when TagDetail is present, which keeps the legacy Tag-RG +
+	// Sync path unchanged.
+	var mirroredSecondary string
+	for _, r := range results {
+		if r.Function != core.WebhookFnSyncToSecondary || !r.Changed {
+			continue
+		}
+		if d, ok := r.Detail.(SyncDetail); ok {
+			mirroredSecondary = strings.TrimSpace(d.SecondaryName)
+		}
+		break
+	}
+	if mirroredSecondary == "" && tag != nil && tag.Mirrored {
+		mirroredSecondary = strings.TrimSpace(tag.SecondaryName)
+	}
+
+	// Defence-in-depth: if the caller didn't thread instanceName
+	// (e.g. legacy tests or future call paths that forgot to pass
+	// inst.Name) fall back to whatever the Detail layer populated.
+	// Production callers should always pass inst.Name explicitly —
+	// the fallbacks here just avoid a "primary Arr" placeholder
+	// landing in real embeds when the data is sitting right there
+	// on Detail.
+	resolvedInstance := strings.TrimSpace(instanceName)
+	if resolvedInstance == "" {
+		if tag != nil {
+			resolvedInstance = strings.TrimSpace(tag.Primary)
+		}
+		if resolvedInstance == "" && fileDel != nil {
+			resolvedInstance = strings.TrimSpace(fileDel.Primary)
+		}
+	}
+
+	// Build detail sections first into a separate slice so the
+	// universal "Tagged in" lead + "Rule"/"Event"/"Filename" suffix
+	// only emit when at least one detail field was added. This keeps
+	// the legacy "empty fire → empty embed" contract: a results
+	// slice with no Changed=true entries (or filtered out by the
+	// agent's Functions whitelist) returns nil rather than emitting
+	// a metadata-only embed.
+	var detail []agents.PayloadField
 	if isDeleteEvent(event) {
 		// On delete events, the per-bucket strip + Tag-RG strip
 		// collapse into one File-Delete section. The Tag /
 		// Auto-tag / Discover / Recover sections are unreachable
 		// per EventsForFunction — but defence-in-depth: skip them
 		// here too if they somehow arrived.
-		fields = appendFileDeleteSection(fields, fileDel)
-		return fields
+		detail = appendFileDeleteSection(detail, fileDel)
+	} else {
+		// Non-delete events: build detail sections in user-scan
+		// order. Tag section now emits only the Quality tag
+		// (Tagged-in moved out to the universal lead below).
+		detail = appendTagSection(detail, tag)
+		detail = appendAutoTagsSection(detail, audio, video, dv)
+		detail = appendDiscoverSection(detail, discover)
+		detail = appendRecoverSection(detail, rec)
+		detail = appendGrabRenameSection(detail, grab)
+		detail = appendQbitSeSection(detail, qbitSe)
+		detail = appendQbitCategoryFixSection(detail, qbitCat)
 	}
 
-	// Non-delete events: build sections in user-scan order.
-	fields = appendTagSection(fields, tag)
-	fields = appendAutoTagsSection(fields, audio, video, dv)
-	fields = appendDiscoverSection(fields, discover)
-	fields = appendRecoverSection(fields, rec)
-	fields = appendGrabRenameSection(fields, grab)
-	fields = appendQbitSeSection(fields, qbitSe)
-	fields = appendQbitCategoryFixSection(fields, qbitCat)
+	if len(detail) == 0 {
+		return nil
+	}
+
+	var fields []agents.PayloadField
+	// Universal "Tagged in" lead — non-Grab, non-delete events get
+	// the instance name surfaced as the first row. Grab events
+	// integrate the instance into the Grab Rename section's
+	// "Renamed in"; delete events use the File-Delete section's
+	// own "Cleaned in" line.
+	if !isDeleteEvent(event) && event != core.WebhookEventGrab {
+		fields = appendTaggedInSection(fields, resolvedInstance, mirroredSecondary)
+	}
+	fields = append(fields, detail...)
+	fields = appendRuleSection(fields, ruleName)
+	fields = appendEventFilenameSection(fields, event, filename)
+	return fields
+}
+
+// appendTaggedInSection emits the universal "Tagged in: <instance>"
+// line at the top of non-delete embeds. Always called for Import/
+// Auto-tag events so the user knows WHERE the change landed
+// regardless of which function families fired — fixes the legacy
+// gap where auto-tag-only events (Audio + Video + DV with no
+// Tag-RG) surfaced no instance context at all.
+//
+//	Tagged in    Radarr Movies
+//	Tagged in    Radarr Movies · Radarr 4K   (mirrored)
+//
+// Always non-inline so the instance name has its own row — keeps
+// the visual hierarchy "where → what" stable across single- and
+// multi-function fires.
+func appendTaggedInSection(fields []agents.PayloadField, primary, mirroredSecondary string) []agents.PayloadField {
+	value := buildInstanceList(primary, mirroredSecondary != "", mirroredSecondary)
+	if value == "" || value == "primary Arr" {
+		// Empty primary name produces the generic fallback; suppress
+		// the field entirely rather than emit "Tagged in: primary Arr"
+		// — the user knows nothing concrete and the embed reads as
+		// a debug stub.
+		return fields
+	}
+	fields = append(fields, agents.PayloadField{
+		Name:   "Tagged in",
+		Value:  value,
+		Inline: false,
+	})
 	return fields
 }
 
@@ -260,26 +352,15 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 // strip is folded into the File-Delete section (see
 // appendFileDeleteSection).
 //
-//	Tagged in    Radarr · Radarr 4K
 //	Quality tag  FLUX
 //
-// Fields are inline so a typical render packs Quality-tag next to
-// Tagged-in. SyncTarget folds into "Tagged in" — never its own field
-// (Sync is auxiliary metadata, not a primary action).
+// "Tagged in" moved out to the universal appendTaggedInSection so
+// every non-delete embed surfaces the instance regardless of which
+// function families fired. This section now carries only what's
+// Tag-RG-specific: the actual tag(s) added.
 func appendTagSection(fields []agents.PayloadField, d *TagDetail) []agents.PayloadField {
 	if d == nil {
 		return fields
-	}
-	// "Tagged in" line — instance(s) name. Mirrored adds the
-	// secondary side-by-side with the same separator the rest of
-	// the embed uses (" · ").
-	tagged := buildInstanceList(d.Primary, d.Mirrored, d.SecondaryName)
-	if tagged != "" {
-		fields = append(fields, agents.PayloadField{
-			Name:   "Tagged in",
-			Value:  tagged,
-			Inline: false,
-		})
 	}
 	// "Quality tag" line — the tag(s) added on this fire. The Added
 	// slice is the post-change state from the user's perspective;
@@ -398,21 +479,23 @@ func appendRecoverSection(fields []agents.PayloadField, d *RecoverDetail) []agen
 }
 
 // appendGrabRenameSection renders the qBittorrent-side torrent
-// rename outcome. Mirrors bash tagarr_import.sh:452-489's field
-// shape but compressed to the visual style "Was / Now" rather than
-// "Torrent Name / Restored to Release Name" — same info, fewer
-// words.
+// rename outcome — bash tagarr_import.sh:452-489 field shape with
+// the user-friendly "Torrent Name / Restored to Release Name"
+// wording rather than the earlier compact "Was / Now".
 //
-//	Was   Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR
-//	Now   Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR-FLUX
-//	Triggers   missing release group · scene CF
-//	Client     qBit Movies
+//	Renamed in                  qBit Movies
+//	Release Group Recovered     FLUX                (when GroupRecovered set)
+//	Tokens Recovered            Director's Cut · IMAX (when TokensRecovered)
+//	⚠ Scene CF                  No longer matches after rename
+//	Torrent Name                Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR
+//	Restored to Release Name    Dune.Part.Two.2024.2160p.WEB-DL.DV.HDR-FLUX
 //
-// "Was" / "Now" are full-width (non-inline) because torrent names
-// are long. Triggers + qBit pack inline next to each other.
+// Torrent Name + Restored to Release Name are both inline:false so
+// they stack vertically with the same left-edge — makes the
+// before/after diff scannable without horizontal offset.
 //
-// ⚠ Scene CF warning gets its own full-width row when set — it
-// flags a CF-scoring impact the user may want to review.
+// ⚠ Scene CF warning surfaces only when the rename changed CF
+// matching (worth user review — affects Radarr scoring).
 func appendGrabRenameSection(fields []agents.PayloadField, d *GrabRenameDetail) []agents.PayloadField {
 	if d == nil {
 		return fields
@@ -422,38 +505,103 @@ func appendGrabRenameSection(fields []agents.PayloadField, d *GrabRenameDetail) 
 	if from == "" && to == "" {
 		return fields
 	}
-	if from != "" {
+	if qbit := strings.TrimSpace(d.QbitInstance); qbit != "" {
 		fields = append(fields, agents.PayloadField{
-			Name:   "Was",
-			Value:  from,
+			Name:   "Renamed in",
+			Value:  qbit,
 			Inline: false,
 		})
 	}
-	if to != "" {
+	if group := strings.TrimSpace(d.GroupRecovered); group != "" {
 		fields = append(fields, agents.PayloadField{
-			Name:   "Now",
-			Value:  to,
-			Inline: false,
-		})
-	}
-	if triggers := joinNonEmpty(d.Triggers, " · "); triggers != "" {
-		fields = append(fields, agents.PayloadField{
-			Name:   "Triggers",
-			Value:  triggers,
+			Name:   "Release Group Recovered",
+			Value:  group,
 			Inline: true,
 		})
 	}
-	if qbit := strings.TrimSpace(d.QbitInstance); qbit != "" {
+	if tokens := joinNonEmpty(d.TokensRecovered, " · "); tokens != "" {
 		fields = append(fields, agents.PayloadField{
-			Name:   "Client",
-			Value:  qbit,
+			Name:   "Tokens Recovered",
+			Value:  tokens,
 			Inline: true,
 		})
 	}
 	if d.SceneCFChanged {
 		fields = append(fields, agents.PayloadField{
 			Name:   "⚠ Scene CF",
-			Value:  "Changed by rename",
+			Value:  "No longer matches after rename",
+			Inline: false,
+		})
+	}
+	if from != "" {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Torrent Name",
+			Value:  from,
+			Inline: false,
+		})
+	}
+	if to != "" {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Restored to Release Name",
+			Value:  to,
+			Inline: false,
+		})
+	}
+	return fields
+}
+
+// appendRuleSection emits the "Rule" field surfacing which webhook
+// rule produced this notification. Replaces the previous
+// FooterSuffix that crammed " · rule: X" onto the footer line
+// alongside the version string — moving rule into the body keeps
+// the footer clean for the embed timestamp and gives rule its own
+// visual weight when multi-rule users need to attribute the fire.
+//
+//	Rule    4K imports
+//
+// Inline:false to keep the rule name on its own row even when
+// short — visually consistent regardless of rule-name length.
+// Empty ruleName suppresses the field entirely.
+func appendRuleSection(fields []agents.PayloadField, ruleName string) []agents.PayloadField {
+	name := strings.TrimSpace(ruleName)
+	if name == "" {
+		return fields
+	}
+	fields = append(fields, agents.PayloadField{
+		Name:   "Rule",
+		Value:  name,
+		Inline: false,
+	})
+	return fields
+}
+
+// appendEventFilenameSection emits the universal Event + Filename
+// suffix at the bottom of every embed. Mirrors bash
+// tagarr_import.sh:1414-1421's "Event + Filename" tail block.
+//
+//	Event       Import
+//	Filename    The.Substance.2024.2160p.WEB-DL.DV.HDR-FLUX.mkv
+//
+// Event is inline:true so on Grab events (where Filename is
+// empty — file not imported yet) the row collapses gracefully.
+// Filename is inline:false because import paths can be long and
+// would wrap awkwardly in an inline slot.
+//
+// Empty event-label OR unknown event suppresses the Event field.
+// Empty filename suppresses the Filename field. A Grab event with
+// no relativePath simply omits Filename and only shows Event.
+func appendEventFilenameSection(fields []agents.PayloadField, event core.WebhookConnectEvent, filename string) []agents.PayloadField {
+	if label := eventLabel(event); label != "" {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Event",
+			Value:  label,
+			Inline: true,
+		})
+	}
+	if name := strings.TrimSpace(filename); name != "" {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Filename",
+			Value:  name,
 			Inline: false,
 		})
 	}

@@ -45,6 +45,8 @@
 package api
 
 import (
+	"time"
+
 	"resolvarr/internal/core"
 	"resolvarr/internal/core/agents"
 )
@@ -81,16 +83,23 @@ func buildNotificationPayload(
 	}
 
 	instType := ""
+	instName := ""
 	if inst != nil {
 		instType = inst.Type
+		instName = inst.Name
 	}
+	ruleName := ""
+	if rule != nil {
+		ruleName = rule.Name
+	}
+	_, filename := extractReleaseAndFilePath(body)
 
 	payload := agents.Payload{
 		Title:        title,
 		Color:        pickColor(event, results, allowedFunctions),
-		Fields:       composeFields(event, results, allowedFunctions),
+		Fields:       composeFields(event, results, allowedFunctions, instName, ruleName, filename),
 		ThumbnailURL: extractPosterURL(body, instType),
-		FooterSuffix: composeFooterSuffix(rule),
+		Timestamp:    time.Now().UTC(),
 		Severity:     agents.SeverityInfo,
 		Route:        agents.RouteDefault,
 	}

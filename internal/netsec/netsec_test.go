@@ -9,6 +9,22 @@ import (
 	"time"
 )
 
+// hostNet promotes a literal IP string into a /32 (v4) or /128 (v6)
+// IPNet — the same shape ParseTrustedProxies produces for single-host
+// entries. Lets tests construct trusted-proxy slices without an
+// explicit promotion ceremony at every site.
+func hostNet(ipStr string) *net.IPNet {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return nil
+	}
+	bits := 32
+	if ip.To4() == nil {
+		bits = 128
+	}
+	return &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}
+}
+
 func TestIsBlockedIP(t *testing.T) {
 	cases := []struct {
 		ip      string
@@ -131,7 +147,7 @@ func TestParseClientIP_TrustedProxy_Rightmost(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "172.17.0.1:54321" // trusted proxy
 	r.Header.Set("X-Forwarded-For", "8.8.8.8")
-	trusted := []net.IP{net.ParseIP("172.17.0.1")}
+	trusted := []*net.IPNet{hostNet("172.17.0.1")}
 	ip := ParseClientIP(r, trusted)
 	if ip.String() != "8.8.8.8" {
 		t.Errorf("single XFF: got %s, want 8.8.8.8", ip)
@@ -145,7 +161,7 @@ func TestParseClientIP_SpoofedLeftmost(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "172.17.0.1:54321"
 	r.Header.Set("X-Forwarded-For", "127.0.0.1, 8.8.8.8")
-	trusted := []net.IP{net.ParseIP("172.17.0.1")}
+	trusted := []*net.IPNet{hostNet("172.17.0.1")}
 	ip := ParseClientIP(r, trusted)
 	if ip.String() != "8.8.8.8" {
 		t.Errorf("spoofed leftmost: got %s, want 8.8.8.8 (rightmost non-trusted)", ip)
@@ -161,7 +177,7 @@ func TestParseClientIP_ChainedProxies(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "172.17.0.2:54321" // proxy2
 	r.Header.Set("X-Forwarded-For", "1.2.3.4, 172.17.0.1")
-	trusted := []net.IP{net.ParseIP("172.17.0.1"), net.ParseIP("172.17.0.2")}
+	trusted := []*net.IPNet{hostNet("172.17.0.1"), hostNet("172.17.0.2")}
 	ip := ParseClientIP(r, trusted)
 	if ip.String() != "1.2.3.4" {
 		t.Errorf("chained proxies: got %s, want 1.2.3.4", ip)
@@ -173,7 +189,7 @@ func TestParseClientIP_UntrustedSource(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "8.8.8.8:54321"
 	r.Header.Set("X-Forwarded-For", "1.1.1.1")
-	trusted := []net.IP{net.ParseIP("172.17.0.1")}
+	trusted := []*net.IPNet{hostNet("172.17.0.1")}
 	ip := ParseClientIP(r, trusted)
 	if ip.String() != "8.8.8.8" {
 		t.Errorf("untrusted source: got %s, want 8.8.8.8 (ignore XFF)", ip)
@@ -185,10 +201,10 @@ func TestParseClientIP_AllXFFAreTrusted(t *testing.T) {
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "172.17.0.1:54321"
 	r.Header.Set("X-Forwarded-For", "172.17.0.2, 172.17.0.3")
-	trusted := []net.IP{
-		net.ParseIP("172.17.0.1"),
-		net.ParseIP("172.17.0.2"),
-		net.ParseIP("172.17.0.3"),
+	trusted := []*net.IPNet{
+		hostNet("172.17.0.1"),
+		hostNet("172.17.0.2"),
+		hostNet("172.17.0.3"),
 	}
 	ip := ParseClientIP(r, trusted)
 	if ip.String() != "172.17.0.1" {
@@ -202,13 +218,97 @@ func TestParseTrustedProxies_Valid(t *testing.T) {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if len(got) != 3 {
-		t.Fatalf("got %d IPs, want 3", len(got))
+		t.Fatalf("got %d entries, want 3", len(got))
 	}
-	want := []string{"172.17.0.1", "10.0.0.5", "192.168.1.1"}
+	// Literal IPs promoted to /32.
+	want := []string{"172.17.0.1/32", "10.0.0.5/32", "192.168.1.1/32"}
 	for i, w := range want {
 		if got[i].String() != w {
 			t.Errorf("idx %d: got %s, want %s", i, got[i], w)
 		}
+	}
+}
+
+func TestParseTrustedProxies_CIDR(t *testing.T) {
+	// CIDR ranges should parse as-is; common case for Docker bridge
+	// where reverse-proxy container IPs are dynamic.
+	got, err := ParseTrustedProxies("172.19.0.0/24")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1", len(got))
+	}
+	if got[0].String() != "172.19.0.0/24" {
+		t.Errorf("got %s, want 172.19.0.0/24", got[0])
+	}
+}
+
+func TestParseTrustedProxies_MixedIPAndCIDR(t *testing.T) {
+	// Mixed list: literal IPs alongside CIDR ranges. Common real-world
+	// config — a fixed loopback proxy + a Docker bridge range.
+	got, err := ParseTrustedProxies("127.0.0.1, 172.19.0.0/24, 10.0.0.5")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries, want 3", len(got))
+	}
+	wantStrings := []string{"127.0.0.1/32", "172.19.0.0/24", "10.0.0.5/32"}
+	for i, w := range wantStrings {
+		if got[i].String() != w {
+			t.Errorf("idx %d: got %s, want %s", i, got[i], w)
+		}
+	}
+}
+
+func TestParseTrustedProxies_IPv6CIDR(t *testing.T) {
+	// IPv6 CIDR — symmetric coverage with IPv4. ULA range fd00::/8
+	// is the IPv6 equivalent of RFC1918; /64 is the typical subnet
+	// size Docker assigns IPv6-enabled bridges.
+	got, err := ParseTrustedProxies("fd00::/64")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1", len(got))
+	}
+	if got[0].String() != "fd00::/64" {
+		t.Errorf("got %s, want fd00::/64", got[0])
+	}
+	if !got[0].Contains(net.ParseIP("fd00::1234")) {
+		t.Error("CIDR should match fd00::1234")
+	}
+}
+
+func TestParseTrustedProxies_IPv6Literal(t *testing.T) {
+	// IPv6 literal — should promote to /128 (host route).
+	got, err := ParseTrustedProxies("fe80::1")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1", len(got))
+	}
+	if got[0].String() != "fe80::1/128" {
+		t.Errorf("got %s, want fe80::1/128 (literal IPv6 promoted to /128)", got[0])
+	}
+}
+
+func TestParseTrustedProxies_CIDRMembership(t *testing.T) {
+	// End-to-end: parse a CIDR + verify ParseClientIP honours it.
+	// Mirrors the real Docker reverse-proxy deployment: any container
+	// on the 172.19.0.0/24 bridge is trusted to send XFF.
+	trusted, err := ParseTrustedProxies("172.19.0.0/24")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "172.19.0.55:54321" // arbitrary IP in the CIDR
+	r.Header.Set("X-Forwarded-For", "8.8.8.8")
+	ip := ParseClientIP(r, trusted)
+	if ip.String() != "8.8.8.8" {
+		t.Errorf("CIDR-trusted proxy: got %s, want 8.8.8.8 (XFF honoured)", ip)
 	}
 }
 

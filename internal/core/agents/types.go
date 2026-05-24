@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Agent describes one configured notification provider instance.
@@ -203,7 +204,26 @@ type Payload struct {
 	// the version string — version + by-line stay automatic, the
 	// suffix is purely the per-payload context (rule name, scheduler
 	// job name, …). Empty string keeps the plain default footer.
+	//
+	// Deprecated for webhook-fire notifications: rule name now lives
+	// in a dedicated "Rule" field in the embed body so the footer can
+	// host the locale-aware Discord timestamp without competing with
+	// rule context. FooterSuffix is kept for non-webhook notifiers
+	// (scheduler, ad-hoc) that still benefit from the inline suffix.
 	FooterSuffix string
+
+	// Timestamp is rendered as the Discord embed's locale-aware
+	// timestamp (lower-right of the embed, next to the footer text).
+	// Discord auto-formats: "Today at 14:32" / "Yesterday at 09:15" /
+	// "24/05/2026" depending on the viewer's locale + how recent the
+	// event was. Providers without timestamp support ignore this.
+	//
+	// Zero value (default) omits the timestamp from the embed —
+	// callers that don't care about temporal context don't need to
+	// populate this. Webhook-fire notifications set it to time.Now()
+	// at payload-build time, matching bash tagarr_import.sh's
+	// per-event ISO8601 timestamp.
+	Timestamp time.Time
 }
 
 // PayloadField is one cell in a Discord embed's fields-grid. Inline

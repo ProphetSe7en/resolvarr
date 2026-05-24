@@ -83,7 +83,7 @@ func TestEnsureCSRFCookie_RegeneratesOnMalformed(t *testing.T) {
 
 func TestEnsureCSRFCookie_SecureFlagViaTrustedProxy(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.TrustedProxies = []net.IP{net.ParseIP("172.17.0.1")}
+	cfg.TrustedProxies = []*net.IPNet{{IP: net.ParseIP("172.17.0.1"), Mask: net.CIDRMask(32, 32)}}
 	s := NewStore(cfg)
 	_ = s.Setup("admin", "Password12")
 

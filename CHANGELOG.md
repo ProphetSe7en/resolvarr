@@ -2,6 +2,33 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.7-dev — Notification layout redesign + TRUSTED_PROXIES accepts CIDR (2026-05-25)
+
+### Discord notifications now show every detail, labelled
+
+Notifications used to be sparse — you saw the movie title and the tag values, but not where the change landed, what triggered it, or which file was imported. Now every embed has a proper structure:
+
+- **Tagged in** — which Arr instance handled the change (and the mirror instance when sync-to-secondary fired). Shows up on every event, not just Tag-RG fires.
+- **Event** — Grab / Import / File deleted / Episode deleted / Upgraded.
+- **Filename** — the actual imported file (`The.Substance.2024.2160p.WEB-DL.DV.HDR-FLUX.mkv`).
+- **Rule** — which webhook rule produced this notification. Moved out of the footer into its own row.
+- **Timestamp** in the embed corner — Discord renders it locale-aware ("Today at 14:32" / "Yesterday at 09:15" / dated for older).
+
+**Grab Rename gets clearer wording:** Renamed in → Release Group Recovered → Tokens Recovered (Director's Cut / IMAX / TrueHD restored by the rename) → Torrent Name (before) → Restored to Release Name (after). The two filenames stack vertically with the same left edge so you can scan up/down to compare.
+
+**File-delete events** say "Cleaned in" instead of "Tagged in" so the wording stays accurate (tags were removed, not added).
+
+Footer is now just `Resolvarr {version} by ProphetSe7en` + the timestamp on the right.
+
+### TRUSTED_PROXIES now accepts CIDR ranges
+
+Set `TRUSTED_PROXIES=172.19.0.0/24` to trust any container on a Docker bridge — useful when your reverse proxy (Traefik / Caddy / nginx-proxy-manager / SWAG) sits on a bridge with dynamic container IPs. Literal IPs still work the same. Same fix shipped to **constat** and **vpn-gateway**.
+
+### Why this matters
+
+- **Notifications** — earlier embeds were missing the "what file / where / what triggered it" context, and grab-rename events even rendered without any detail fields. Now matches what the bash `tagarr_import.sh` script always had.
+- **TRUSTED_PROXIES** — `TRUSTED_NETWORKS` already accepted CIDR, but `TRUSTED_PROXIES` rejected it with `invalid entry in trusted_proxies: "172.19.0.0/24"`. Inconsistent, and forced you to list every reverse-proxy container IP individually (which changes on every Docker recreate).
+
 ## v0.6.6-dev — Activity Table redesign + webhook secret management (2026-05-17)
 
 ### What you get

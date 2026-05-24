@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"resolvarr/internal/core"
+	"resolvarr/internal/core/agents"
 )
 
 // TestComposeTitle covers every combo shape bash tagarr_import.sh
@@ -512,29 +513,30 @@ func TestPickColor(t *testing.T) {
 	})
 }
 
-// TestComposeFooterSuffix verifies the rule-name suffix produced for
-// the agents Payload.FooterSuffix field. Discord provider appends
-// this with " · " separator after "Resolvarr {version} by
-// ProphetSe7en"; the Notify path in the agents package owns the
-// separator, so this helper just produces "rule: {name}" or empty.
-func TestComposeFooterSuffix(t *testing.T) {
+// TestAppendRuleSection verifies the Rule field — replaces the
+// pre-2026-05-24 FooterSuffix that put rule name on the footer
+// alongside the version string. Rule now has its own embed body
+// field; the footer is reserved for "Resolvarr {version} by
+// ProphetSe7en" + the locale-aware embed timestamp.
+func TestAppendRuleSection(t *testing.T) {
 	cases := []struct {
 		name string
-		rule *core.WebhookRule
-		want string
+		rule string
+		want []agents.PayloadField
 	}{
-		{"nil rule → empty", nil, ""},
-		{"empty rule name → empty", &core.WebhookRule{Name: ""}, ""},
-		{"whitespace-only rule name → empty", &core.WebhookRule{Name: "   "}, ""},
-		{"normal rule name", &core.WebhookRule{Name: "Tag 4K imports"}, "rule: Tag 4K imports"},
-		{"rule name needs trimming", &core.WebhookRule{Name: "  Tag 4K imports  "}, "rule: Tag 4K imports"},
+		{"empty rule → no field", "", nil},
+		{"whitespace-only rule → no field", "   ", nil},
+		{"normal rule name", "Tag 4K imports", []agents.PayloadField{
+			{Name: "Rule", Value: "Tag 4K imports", Inline: false},
+		}},
+		{"rule name needs trimming", "  Tag 4K imports  ", []agents.PayloadField{
+			{Name: "Rule", Value: "Tag 4K imports", Inline: false},
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := composeFooterSuffix(tc.rule)
-			if got != tc.want {
-				t.Errorf("composeFooterSuffix() = %q, want %q", got, tc.want)
-			}
+			got := appendRuleSection(nil, tc.rule)
+			fieldsEqual(t, got, tc.want)
 		})
 	}
 }
