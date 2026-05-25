@@ -66,7 +66,7 @@ const (
 	MaskedDiscordWebhook = "https://discord.com/api/webhooks/[MASKED]/[MASKED]"
 	// MaskedToken is returned to the UI instead of bearer credentials.
 	// Exported for the same reason as MaskedDiscordWebhook.
-	MaskedToken = "••••••••••••••••"
+	MaskedToken = "••••••••••••••••" // #nosec G101 -- this IS the mask placeholder, by design (not a hardcoded credential)
 
 	// Internal-use aliases — keeps existing call sites untouched.
 	maskedDiscordWebhook = MaskedDiscordWebhook

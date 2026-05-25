@@ -15,7 +15,7 @@ import (
 // 100+ supported URL schemes.
 //
 // This provider runs in stateless mode: the user configures one or more
-// notification URLs in Clonarr, and each Test/Notify call ships those URLs
+// notification URLs here, and each Test/Notify call ships those URLs
 // along with the message body to the Apprise server. The Apprise server
 // itself holds no per-agent state.
 //
@@ -198,9 +198,9 @@ func apprisePost(ctx context.Context, client HTTPPoster, cfg Config, urls []stri
 	return client.Do(req)
 }
 
-// appriseTypeForSeverity maps Clonarr severity to Apprise's notification
-// type vocabulary. Apprise also defines "success" but Clonarr doesn't
-// distinguish info/success in its severity model — both map to "info".
+// appriseTypeForSeverity maps Severity to Apprise's notification
+// type vocabulary. Apprise also defines "success" but our severity
+// model doesn't distinguish info/success — both map to "info".
 func appriseTypeForSeverity(severity Severity) string {
 	switch severity {
 	case SeverityCritical:

@@ -1,11 +1,11 @@
 package api
 
 // webhook_log.go — per-instance ring buffer for received Connect events.
-// Logging-only feature today; functions wire next session. The buffer
-// exists so users can verify their Sonarr/Radarr Connect setup hits
-// resolvarr (instead of squinting at server stderr) and so we capture
-// real-world JSON shapes for the function-mapping work in subsequent
-// sessions.
+// Logging-only feature today; functions wire in a later release. The
+// buffer exists so users can verify their Sonarr/Radarr Connect setup
+// hits resolvarr (instead of squinting at server stderr) and so we
+// capture real-world JSON shapes for the function-mapping work that
+// follows.
 //
 // Persistence: the whole map is written atomically (.tmp → rename) on
 // every append. Connect-event rate is low (a few per minute peak) so

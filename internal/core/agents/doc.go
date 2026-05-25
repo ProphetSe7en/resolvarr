@@ -1,4 +1,4 @@
-// Package agents implements a provider-based notification system for Clonarr.
+// Package agents implements a provider-based notification system.
 //
 // The architecture follows a registry pattern: each notification provider
 // (Discord, Gotify, Pushover, etc.) implements the [Provider] interface and

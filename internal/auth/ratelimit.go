@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -49,9 +50,9 @@ var authRateLimit = rateLimitConfig{maxAttempts: 5, window: time.Minute}
 
 // rateLimiter is the in-memory state. attempts tracks each IP's recent
 // timestamps within the window; older entries are pruned on each
-// check. Entries for IPs that haven't connected in 10 windows are
-// garbage-collected on the next check that touches the same IP — small
-// memory leak otherwise (one bucket per IP that ever connected).
+// check. A background sweep goroutine drops stale buckets entirely so
+// the map doesn't grow unbounded under sustained scan traffic — see
+// startSweep() for the GC strategy.
 type rateLimiter struct {
 	mu       sync.Mutex
 	attempts map[string][]time.Time
@@ -59,9 +60,70 @@ type rateLimiter struct {
 }
 
 func newRateLimiter(cfg rateLimitConfig) *rateLimiter {
-	return &rateLimiter{
+	rl := &rateLimiter{
 		attempts: make(map[string][]time.Time),
 		cfg:      cfg,
+	}
+	rl.startSweep()
+	return rl
+}
+
+// sweepInterval determines how often the GC goroutine runs. Tied to
+// the configured window — sweeping more often than once per window
+// is wasteful (no entries can have aged out yet between sweeps).
+// Bounded below at 1 minute so a degenerate cfg.window (test-only)
+// doesn't spin a goroutine in a tight loop.
+func (rl *rateLimiter) sweepInterval() time.Duration {
+	if rl.cfg.window < time.Minute {
+		return time.Minute
+	}
+	return rl.cfg.window
+}
+
+// startSweep launches a background goroutine that periodically drops
+// IPs whose newest attempt is older than 10 windows. Bounds map growth
+// under one-shot scanner traffic where each IP connects once and never
+// returns. Goroutine has no shutdown hook — it runs for process
+// lifetime, which is correct since the rateLimiter itself does too.
+func (rl *rateLimiter) startSweep() {
+	go func() {
+		ticker := time.NewTicker(rl.sweepInterval())
+		defer ticker.Stop()
+		for range ticker.C {
+			// Recover INSIDE the loop body so a single panic in
+			// rl.sweep() doesn't kill the goroutine permanently —
+			// otherwise GC stops and the map grows unbounded under
+			// scanner traffic for the rest of process lifetime.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("ratelimit sweep panic recovered: %v", r)
+					}
+				}()
+				rl.sweep()
+			}()
+		}
+	}()
+}
+
+// sweep drops bucket entries for IPs whose newest entry is older than
+// 10 * window. Holds the lock for the full sweep — the lock window is
+// short because the scan is over the map, not nested loops over per-IP
+// slices. For maps with millions of entries this could be an issue;
+// homelab-scale (thousands max) doesn't care.
+func (rl *rateLimiter) sweep() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	cutoff := time.Now().Add(-10 * rl.cfg.window)
+	for ip, ts := range rl.attempts {
+		if len(ts) == 0 {
+			delete(rl.attempts, ip)
+			continue
+		}
+		// ts is in insertion order; the newest is at the end.
+		if ts[len(ts)-1].Before(cutoff) {
+			delete(rl.attempts, ip)
+		}
 	}
 }
 
@@ -84,6 +146,13 @@ func (rl *rateLimiter) allow(ip string) (bool, time.Duration) {
 	}
 	if len(kept) >= rl.cfg.maxAttempts {
 		// Bucket full — oldest attempt sets the retry-after window.
+		// Defensive against degenerate config (maxAttempts=0): when kept
+		// is empty, we'd panic on kept[0]. Return a sane retryAfter and
+		// don't crash the goroutine.
+		if len(kept) == 0 {
+			rl.attempts[ip] = kept
+			return false, rl.cfg.window
+		}
 		retryAfter := kept[0].Add(rl.cfg.window).Sub(now)
 		rl.attempts[ip] = kept
 		return false, retryAfter

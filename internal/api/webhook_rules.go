@@ -578,26 +578,66 @@ func collectEventsByFunction(appType string) map[core.WebhookFunction][]core.Web
 }
 
 // handleListWebhookRules — GET /api/webhook-rules.
+//
+// Per-rule Webhook.Token + Webhook.Secret are bearer credentials —
+// masked in this broad listing so the response surface can't be used
+// to enumerate active webhook tokens. Plain values are served only via
+// the dedicated /api/webhook-rules/{id}/webhook endpoint where the
+// admin user copies them into Sonarr/Radarr's Connect config.
 func (s *Server) handleListWebhookRules(w http.ResponseWriter, r *http.Request) {
 	cfg := s.App.Config.Get()
 	out := cfg.WebhookRules
 	if out == nil {
 		out = []core.WebhookRule{}
 	}
+	for i := range out {
+		maskWebhookRuleCreds(&out[i])
+	}
 	writeJSON(w, out)
 }
 
 // handleGetWebhookRule — GET /api/webhook-rules/{id}.
+//
+// Same Token/Secret masking story as handleListWebhookRules — even a
+// single-rule fetch must not echo the bearer credentials.
 func (s *Server) handleGetWebhookRule(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cfg := s.App.Config.Get()
 	for _, wr := range cfg.WebhookRules {
 		if wr.ID == id {
+			maskWebhookRuleCreds(&wr)
 			writeJSON(w, wr)
 			return
 		}
 	}
 	writeError(w, 404, "webhook rule not found")
+}
+
+// maskWebhookRuleCreds replaces the per-rule Webhook.Token +
+// Webhook.Secret with the masked sentinel so the broad rule-listing /
+// rule-fetch endpoints can return the rest of the rule struct without
+// leaking the bearer credentials. Callers that genuinely need the
+// plain values use the dedicated handleGetPerRuleWebhook endpoint.
+//
+// Critical: ConfigStore.Get deep-copies the outer slice/struct but
+// pointer fields like *WebhookConfig are SHARED with the store. We
+// MUST clone the Webhook substruct here before mutating it, otherwise
+// every GET would replace the real Token/Secret with the sentinel in
+// memory, and the next ConfigStore.Update would persist the masked
+// values back to disk — destroying the user's real credentials. Test
+// TestWebhookRule_PerRuleWebhookCreds_MaskedInListAndGet locks this.
+func maskWebhookRuleCreds(r *core.WebhookRule) {
+	if r == nil || r.Webhook == nil {
+		return
+	}
+	cloned := *r.Webhook
+	r.Webhook = &cloned
+	if r.Webhook.Token != "" {
+		r.Webhook.Token = maskSentinel
+	}
+	if r.Webhook.Secret != "" {
+		r.Webhook.Secret = maskSentinel
+	}
 }
 
 // handleCreateWebhookRule — POST /api/webhook-rules. Server assigns ID.
@@ -624,6 +664,10 @@ func (s *Server) handleCreateWebhookRule(w http.ResponseWriter, r *http.Request)
 		writeError(w, 500, "save webhook rule: "+err.Error())
 		return
 	}
+	// applyTo doesn't touch rule.Webhook today (per-rule webhook is
+	// set via the dedicated /webhook endpoint, not the rule editor)
+	// but defensively mask in case future applyTo carries it.
+	maskWebhookRuleCreds(&rule)
 	writeJSON(w, rule)
 }
 
@@ -663,6 +707,10 @@ func (s *Server) handleUpdateWebhookRule(w http.ResponseWriter, r *http.Request)
 	cfg = s.App.Config.Get()
 	for _, wr := range cfg.WebhookRules {
 		if wr.ID == id {
+			// Per-rule webhook Token + Secret are bearer credentials
+			// that may have been set previously via the dedicated
+			// /webhook endpoint. Mask before echoing the updated rule.
+			maskWebhookRuleCreds(&wr)
 			writeJSON(w, wr)
 			return
 		}

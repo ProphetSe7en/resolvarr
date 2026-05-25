@@ -1356,6 +1356,19 @@ func (s *ConfigStore) Get() Config {
 				qs := *r.QbitSe
 				out.WebhookRules[i].QbitSe = &qs
 			}
+			if r.QbitCategoryFix != nil {
+				qc := *r.QbitCategoryFix
+				out.WebhookRules[i].QbitCategoryFix = &qc
+			}
+			// Per-rule webhook config (Token + Secret) — was previously
+			// not deep-copied. Without this clone, masking handlers that
+			// mutated Webhook.Token in the returned snapshot would race
+			// + persist masked values back through ConfigStore.Update.
+			// Closes the class with all the other pointer fields above.
+			if r.Webhook != nil {
+				w := *r.Webhook
+				out.WebhookRules[i].Webhook = &w
+			}
 		}
 	}
 	// Deep-copy NotificationAgents — each agent's Config struct embeds

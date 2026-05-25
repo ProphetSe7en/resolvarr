@@ -1,0 +1,58 @@
+version: 2
+
+updates:
+  # Go module updates — surfaces CVE-fix bumps for our dependencies
+  # (golang.org/x/crypto, encoding/* indirects, etc.) as PRs we can
+  # review and merge weekly.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Oslo
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: deps
+      include: scope
+
+  # GitHub Actions updates — keeps the workflow actions current with
+  # security advisories. Combined with SHA-pinning in docker.yml this
+  # surfaces version bumps as PRs (the SHA + comment both refresh)
+  # rather than us trusting `@v4` to silently update.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Oslo
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: ci
+      include: scope
+
+  # Dockerfile base-image updates — alerts on Alpine version bumps
+  # via the container-base layer + the golang builder + dv-tools
+  # stage. We don't auto-merge these (manual review for stability)
+  # but we want to SEE them.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Oslo
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: deps(docker)
+      include: scope

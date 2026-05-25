@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -117,6 +119,123 @@ func TestWebhookRuleNotifyJSONOmitemptyContract(t *testing.T) {
 	for _, key := range []string{`"notifyOnFire"`, `"notifyOnEveryEvent"`, `"notifyAgents"`} {
 		if strings.Contains(body, key) {
 			t.Errorf("zero-value rule serialised retired/empty key %s; body: %s", key, body)
+		}
+	}
+}
+
+// TestWebhookRule_PerRuleWebhookCreds_MaskedInListAndGet verifies that
+// the broad rule-listing + single-rule-fetch endpoints mask the
+// per-rule Webhook.Token + Webhook.Secret bearer credentials. The
+// plain values stay reachable via the dedicated /webhook endpoint
+// (handleGetPerRuleWebhook) where the admin copies them into
+// Sonarr/Radarr — but they must NEVER leak through the broader rule
+// surface the wizard polls for the rule grid.
+//
+// Locks the security-audit finding: pre-fix v0.6.8-dev shipped with
+// handleListWebhookRules + handleGetWebhookRule returning the rule
+// struct verbatim, including any populated Webhook substruct.
+func TestWebhookRule_PerRuleWebhookCreds_MaskedInListAndGet(t *testing.T) {
+	dir := t.TempDir()
+	store := core.NewConfigStore(dir)
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	app := &core.App{Config: store}
+	s := &Server{App: app}
+
+	// Seed two rules: one without per-rule webhook (Webhook nil), one
+	// with per-rule webhook fully populated. Both should round-trip
+	// without leaking the Token + Secret.
+	const realToken = "0123456789abcdef0123456789abcdef"
+	const realSecret = "secret-must-not-leak-deadbeef-0123"
+	if err := store.Update(func(c *core.Config) {
+		c.WebhookRules = []core.WebhookRule{
+			{ID: "rule-no-webhook", Name: "no per-rule webhook", Enabled: true, InstanceID: "i1", AppType: "radarr"},
+			{ID: "rule-with-webhook", Name: "per-rule webhook", Enabled: true, InstanceID: "i1", AppType: "radarr",
+				Webhook: &core.WebhookConfig{Token: realToken, Secret: realSecret, RequireSignature: true}},
+		}
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// 1. handleListWebhookRules — the per-rule Token + Secret must be
+	// masked. The other rule's missing Webhook stays nil.
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/webhook-rules", nil)
+	s.handleListWebhookRules(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("List status %d, body %s", rr.Code, rr.Body.String())
+	}
+	listed := rr.Body.String()
+	for _, leak := range []string{realToken, realSecret} {
+		if strings.Contains(listed, leak) {
+			t.Errorf("List response leaked %q in: %s", leak, listed)
+		}
+	}
+	if !strings.Contains(listed, maskSentinel) {
+		t.Errorf("List response missing masked sentinel for the seeded rule; body: %s", listed)
+	}
+
+	// 2. handleGetWebhookRule for the rule with per-rule webhook — same
+	// masking story.
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/webhook-rules/rule-with-webhook", nil)
+	req.SetPathValue("id", "rule-with-webhook")
+	s.handleGetWebhookRule(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Get status %d, body %s", rr.Code, rr.Body.String())
+	}
+	got := rr.Body.String()
+	for _, leak := range []string{realToken, realSecret} {
+		if strings.Contains(got, leak) {
+			t.Errorf("Get response leaked %q in: %s", leak, got)
+		}
+	}
+	if !strings.Contains(got, maskSentinel) {
+		t.Errorf("Get response missing masked sentinel; body: %s", got)
+	}
+
+	// 3. On-disk state must still hold the plaintext — masking is for
+	// the response only, never the store. Critical invariant: mask
+	// without ever dropping the real value.
+	stored := store.Get().WebhookRules
+	var found *core.WebhookRule
+	for i := range stored {
+		if stored[i].ID == "rule-with-webhook" {
+			found = &stored[i]
+			break
+		}
+	}
+	if found == nil || found.Webhook == nil {
+		t.Fatalf("on-disk rule lost its Webhook substruct: %+v", stored)
+	}
+	if found.Webhook.Token != realToken {
+		t.Errorf("on-disk Token = %q, want %q (masking must NOT mutate the store)", found.Webhook.Token, realToken)
+	}
+	if found.Webhook.Secret != realSecret {
+		t.Errorf("on-disk Secret = %q, want %q", found.Webhook.Secret, realSecret)
+	}
+	if !found.Webhook.RequireSignature {
+		t.Errorf("on-disk RequireSignature flipped during round-trip")
+	}
+
+	// 4. RequireSignature (non-credential) must still surface to the
+	// caller — masking is targeted at bearer creds only.
+	var rules []core.WebhookRule
+	if err := json.Unmarshal([]byte(listed), &rules); err != nil {
+		t.Fatalf("re-decode list: %v", err)
+	}
+	for _, r := range rules {
+		if r.ID == "rule-with-webhook" {
+			if r.Webhook == nil {
+				t.Fatal("Webhook substruct dropped from listed rule")
+			}
+			if !r.Webhook.RequireSignature {
+				t.Errorf("RequireSignature was masked too aggressively; non-credential metadata must survive")
+			}
+			if r.Webhook.Token != maskSentinel || r.Webhook.Secret != maskSentinel {
+				t.Errorf("Token/Secret should be sentinel, got Token=%q Secret=%q", r.Webhook.Token, r.Webhook.Secret)
+			}
 		}
 	}
 }

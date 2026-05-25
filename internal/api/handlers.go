@@ -201,11 +201,10 @@ func localeFromTZ(tz string) string {
 }
 
 // handleHealth is the Docker healthcheck endpoint. Always public, no
-// auth required — baseline §1.1 calls out that auth-gated healthcheck
-// endpoints cause "unhealthy" immediately after auth lands (bit both
-// Constat and Clonarr). Returns a minimal JSON body so monitors can
-// tell "container responds with 200 + version" apart from "proxy
-// returns 200 for everything".
+// auth required — auth-gated healthcheck endpoints cause "unhealthy"
+// immediately after auth lands (a known regression class). Returns
+// a minimal JSON body so monitors can tell "container responds with
+// 200 + version" apart from "proxy returns 200 for everything".
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok", "version": s.Version})
 }
@@ -360,9 +359,8 @@ func (s *Server) handleGetLogging(w http.ResponseWriter, r *http.Request) {
 // — those have their own handlers.
 //
 // Flipping Authentication to "none" is the ONE destructive control in
-// the Radarr/Sonarr parity model (per baseline §3.4 / Clonarr v2.0.6
-// handlers.go:252-256) — the request body must include the current
-// admin password as confirm_password. Every other transition is safe
+// the Radarr/Sonarr parity model — the request body must include the
+// current admin password as confirm_password. Every other transition is safe
 // to apply with just a valid session cookie. Users don't get prompted
 // for a password to toggle LAN bypass, raise session TTL, or edit the
 // trusted-proxy list — that would be friction without security gain.
