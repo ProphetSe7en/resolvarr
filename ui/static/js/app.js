@@ -430,6 +430,34 @@ function app() {
     qbitError: {},
     deleteQbitTarget: null,
 
+    // Plex instances — user-managed list used by the Plex label-sync
+    // feature. Populated by loadPlexInstances on Settings → Plex visit
+    // and after every CRUD action. Each instance carries a cached
+    // Libraries list refreshed on demand via the "Fetch libraries"
+    // button (no auto-refresh — Plex's section list is stable enough
+    // that surprise-refreshes would just burn API calls).
+    plexInstances: [],
+    plexInstanceModal: {
+      open: false,
+      id: '',
+      name: '',
+      url: '',
+      token: '',
+      trustedCerts: false,
+      busy: false,
+      testing: false,
+      testResult: '',
+      testOk: false,
+    },
+    // Per-instance live status — parallel to qbitStatus / qbitError.
+    // refreshAllPlexStatus() sweeps on Settings → Plex visit + every
+    // 60s thereafter so the row pill stays current.
+    plexStatus: {},
+    plexError: {},
+    plexLibrariesBusy: {},
+    deletePlexTarget: null,
+    deletePlexBusy: false,
+
     // M-qBit-add Slice 5 — per-instance webhook hook modal state.
     qbitWebhookOpen: false,
     qbitWebhookInstance: null,
@@ -1270,6 +1298,11 @@ function app() {
       if (this.currentPage === 'settings' && this.section === 'security') {
         this.loadSecurityPanel();
       }
+      // Same lazy-load for the Plex panel — direct-hash landings on
+      // #settings/plex hit here.
+      if (this.currentPage === 'settings' && this.section === 'plex') {
+        this.loadPlexInstances();
+      }
       // Webhooks page mount effects — fired here (post-loadConfig)
       // rather than from restoreFromHash since restoreFromHash runs
       // before instances are populated. Both refresh-on-#webhooks
@@ -1286,13 +1319,15 @@ function app() {
         this.loadQbitInstances();
       }
       // Kick off initial status check for all instances, then poll every 60s.
-      // Same cadence applies to qBit so the row pill reflects live state, not
-      // the last-clicked Test result.
+      // Same cadence applies to qBit + Plex so the row pills reflect live
+      // state, not the last-clicked Test result.
       this.refreshAllStatus();
       this.refreshAllQbitStatus();
+      this.refreshAllPlexStatus();
       this.pollHandle = setInterval(() => {
         this.refreshAllStatus();
         this.refreshAllQbitStatus();
+        this.refreshAllPlexStatus();
       }, 60000);
     },
 
@@ -1345,6 +1380,9 @@ function app() {
       }
       if (section === 'qbit') {
         this.loadQbitInstances();
+      }
+      if (section === 'plex') {
+        this.loadPlexInstances();
       }
       this.pushNav();
     },
@@ -1651,6 +1689,190 @@ function app() {
         this.showToast('Delete failed: ' + e.message, 'error');
       } finally {
         this.deleteQbitBusy = false;
+      }
+    },
+
+    // ---- Plex instances (label-sync Settings tab) ----------------
+    // Same CRUD shape as the qBit handlers above; just operate on a
+    // different endpoint family. Token preservation mirrors qBit's
+    // password preservation — empty / masked input on edit keeps the
+    // stored value.
+
+    async loadPlexInstances() {
+      try {
+        const r = await this.apiFetch('/api/plex-instances');
+        if (r.ok) {
+          const d = await r.json();
+          this.plexInstances = Array.isArray(d) ? d : [];
+          this.refreshAllPlexStatus();
+        }
+      } catch (e) {
+        // Silent — page renders empty state until next refresh.
+      }
+    },
+
+    openPlexInstanceModal(pi) {
+      this.plexInstanceModal = {
+        open: true,
+        id: pi ? pi.id : '',
+        name: pi ? pi.name : '',
+        url: pi ? pi.url : '',
+        token: '', // never pre-populate — masked on edit, blank on create
+        trustedCerts: !!(pi && pi.trustedCerts),
+        busy: false,
+        testing: false,
+        testResult: '',
+        testOk: false,
+      };
+    },
+
+    closePlexInstanceModal() {
+      if (this.plexInstanceModal.busy) return;
+      this.plexInstanceModal.open = false;
+    },
+
+    // testPlexInstanceModal — inline-creds probe used before save so
+    // the user can verify URL + token without committing. Distinct
+    // from testPlexInstance() which probes saved creds for a row.
+    async testPlexInstanceModal() {
+      const m = this.plexInstanceModal;
+      if (!m.url) return;
+      m.testing = true;
+      m.testResult = '';
+      try {
+        const r = await this.apiFetch('/api/plex-instances/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: m.id, // empty on create — backend ignores; populated on edit so masked-token path can pull stored creds
+            url: m.url,
+            token: m.token,
+            trustedCerts: m.trustedCerts,
+          }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        m.testOk = !!d.ok;
+        m.testResult = d.ok ? (d.message || 'Connected') : ('Failed: ' + (d.error || 'unknown'));
+        // Bridge into the row-status map so closing the modal doesn't
+        // leave the row pill stuck at "Not tested".
+        if (m.id) {
+          this.plexStatus[m.id] = d.ok ? 'connected' : 'failed';
+          this.plexError[m.id] = d.ok ? '' : (d.error || '');
+        }
+      } catch (e) {
+        m.testOk = false;
+        m.testResult = 'Failed: ' + e.message;
+        if (m.id) {
+          this.plexStatus[m.id] = 'failed';
+          this.plexError[m.id] = e.message;
+        }
+      } finally {
+        m.testing = false;
+      }
+    },
+
+    async savePlexInstanceModal() {
+      const m = this.plexInstanceModal;
+      if (!m.name || !m.url) return;
+      m.busy = true;
+      try {
+        const body = {
+          name: m.name,
+          url: m.url,
+          token: m.token,
+          trustedCerts: m.trustedCerts,
+        };
+        const path = m.id ? '/api/plex-instances/' + m.id : '/api/plex-instances';
+        const method = m.id ? 'PUT' : 'POST';
+        const r = await this.apiFetch(path, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        await this.loadPlexInstances();
+        this.plexInstanceModal.open = false;
+        this.showToast('Plex instance saved', 'success');
+      } catch (e) {
+        this.showToast('Save failed: ' + e.message, 'error');
+      } finally {
+        m.busy = false;
+      }
+    },
+
+    async testPlexInstance(id, silent = false) {
+      if (!silent) this.plexStatus[id] = 'testing';
+      this.plexError[id] = '';
+      try {
+        const r = await this.apiFetch('/api/plex-instances/' + id + '/test', {
+          method: 'POST',
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        this.plexStatus[id] = d.ok ? 'connected' : 'failed';
+        this.plexError[id] = d.ok ? '' : (d.error || '');
+      } catch (e) {
+        this.plexStatus[id] = 'failed';
+        this.plexError[id] = e.message;
+      }
+    },
+
+    async refreshAllPlexStatus() {
+      for (const pi of (this.plexInstances || [])) {
+        if (this.plexStatus[pi.id] === 'testing') continue;
+        this.testPlexInstance(pi.id, true);
+      }
+    },
+
+    confirmDeletePlexInstance(pi) {
+      this.deletePlexTarget = pi;
+    },
+
+    async deletePlexInstance() {
+      const target = this.deletePlexTarget;
+      if (!target) return;
+      this.deletePlexBusy = true;
+      try {
+        const r = await this.apiFetch('/api/plex-instances/' + target.id, {
+          method: 'DELETE',
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
+        await this.loadPlexInstances();
+        this.deletePlexTarget = null;
+        this.showToast('Plex instance deleted', 'success');
+      } catch (e) {
+        this.showToast('Delete failed: ' + e.message, 'error');
+      } finally {
+        this.deletePlexBusy = false;
+      }
+    },
+
+    // fetchPlexLibraries hits the per-instance refresh endpoint, which
+    // calls Plex's /library/sections and persists the result back to
+    // PlexInstance.Libraries. On success the in-memory list is reloaded
+    // so the row's library-count pill updates without a manual refresh.
+    async fetchPlexLibraries(id) {
+      this.plexLibrariesBusy[id] = true;
+      try {
+        const r = await this.apiFetch('/api/plex-instances/' + id + '/fetch-libraries', {
+          method: 'POST',
+        });
+        const d = await r.json();
+        if (!r.ok || d.ok === false) {
+          throw new Error(d.error || ('HTTP ' + r.status));
+        }
+        await this.loadPlexInstances();
+        const count = (d.libraries || []).length;
+        this.showToast(count + ' libr' + (count === 1 ? 'y' : 'ies') + ' fetched', 'success');
+      } catch (e) {
+        this.showToast('Fetch libraries failed: ' + e.message, 'error');
+      } finally {
+        this.plexLibrariesBusy[id] = false;
       }
     },
 

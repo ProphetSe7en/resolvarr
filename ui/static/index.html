@@ -78,6 +78,7 @@
       <div class="settings-sidebar">
         <a class="settings-nav" :class="section === 'instances' && 'settings-nav-active'" :href="navHref('settings', { settingsSection: 'instances' })" @click="setSettingsSection('instances')">Instances</a>
         <a class="settings-nav" :class="section === 'qbit' && 'settings-nav-active'" :href="navHref('settings', { settingsSection: 'qbit' })" @click="setSettingsSection('qbit')">qBittorrent</a>
+        <a class="settings-nav" :class="section === 'plex' && 'settings-nav-active'" :href="navHref('settings', { settingsSection: 'plex' })" @click="setSettingsSection('plex')">Plex</a>
         <a class="settings-nav" :class="section === 'notifications' && 'settings-nav-active'" :href="navHref('settings', { settingsSection: 'notifications' })" @click="setSettingsSection('notifications')">Notifications</a>
         <a class="settings-nav" :class="section === 'security' && 'settings-nav-active'" :href="navHref('settings', { settingsSection: 'security' })" @click="setSettingsSection('security')">Security</a>
         <a class="settings-nav" :class="section === 'display' && 'settings-nav-active'" :href="navHref('settings', { settingsSection: 'display' })" @click="setSettingsSection('display')">Display</a>
@@ -201,6 +202,73 @@
                     <button class="btn btn-sm" @click="testQbitInstance(qi.id)" :disabled="qbitStatus[qi.id] === 'testing'">Test</button>
                     <button class="btn btn-sm" @click="openQbitInstanceModal(qi)">Edit</button>
                     <button class="btn btn-sm btn-danger" @click="confirmDeleteQbitInstance(qi)">Delete</button>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Plex section — user-managed list of Plex Media Servers used
+             by the Plex label-sync feature. Each row carries Test
+             Connection + Fetch libraries; libraries are cached on the
+             instance so the rule editor's picker can populate without
+             re-hitting Plex on every modal open. The X-Plex-Token is
+             stored masked in all responses; the only place plaintext
+             surfaces is when the user re-pastes it during edit. -->
+        <div x-show="section === 'plex'" x-cloak>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <div>
+              <div class="settings-section-title">Plex</div>
+              <div class="settings-section-desc">Plex Media Servers used by the label-sync feature. Each instance carries an X-Plex-Token; libraries are cached after the first <strong>Fetch libraries</strong> click so the rule editor's library picker has real data to show.</div>
+            </div>
+            <button class="btn btn-primary" @click="openPlexInstanceModal()">+ Add Plex</button>
+          </div>
+
+          <!-- Empty state -->
+          <template x-if="(plexInstances || []).length === 0">
+            <div style="background:var(--bg-card);border:1px dashed var(--border-subtle);border-radius:8px;padding:24px;text-align:center;color:var(--text-muted-secondary);font-size:13px">
+              No Plex instances configured yet. Click <strong>+ Add Plex</strong> to add one.
+            </div>
+          </template>
+
+          <!-- Per-instance row list. Same pattern as qBit instances —
+               name + status pill + actions on one line. Library-count
+               pill sits inline as a quick visual on whether the cache
+               has been populated since the user added the instance. -->
+          <div>
+            <template x-for="pi in (plexInstances || [])" :key="pi.id">
+              <div class="inst-row">
+                <div style="font-size:13px;font-weight:500;min-width:120px" x-text="pi.name"></div>
+                <template x-if="(pi.libraries || []).length > 0">
+                  <span style="font-size:11px;font-weight:500;background:var(--alpha-blue);color:var(--accent-sky);padding:2px 8px;border-radius:8px"
+                        :title="(pi.libraries || []).map(l => l.title + ' (' + l.type + ')').join(', ')"
+                        x-text="(pi.libraries || []).length + ' lib' + ((pi.libraries || []).length === 1 ? '' : 's') + ' cached'"></span>
+                </template>
+                <template x-if="(pi.libraries || []).length === 0">
+                  <span style="font-size:11px;color:var(--text-secondary)">No libraries cached yet</span>
+                </template>
+                <div style="margin-left:auto;display:flex;align-items:center;gap:10px;white-space:nowrap">
+                  <template x-if="plexStatus[pi.id] === 'testing'">
+                    <span class="status-testing"><span class="spinner"></span>Testing</span>
+                  </template>
+                  <template x-if="plexStatus[pi.id] === 'connected'">
+                    <span class="status-connected">Connected</span>
+                  </template>
+                  <template x-if="plexStatus[pi.id] === 'failed'">
+                    <span class="status-failed" :title="plexError[pi.id] || ''" x-text="'Failed' + (plexError[pi.id] ? ' — ' + plexError[pi.id] : '')"></span>
+                  </template>
+                  <template x-if="!plexStatus[pi.id]">
+                    <span style="font-size:12px;color:var(--text-muted)">Not tested</span>
+                  </template>
+                  <div style="display:flex;gap:6px">
+                    <button class="btn btn-sm" @click="testPlexInstance(pi.id)" :disabled="plexStatus[pi.id] === 'testing'">Test</button>
+                    <button class="btn btn-sm" @click="fetchPlexLibraries(pi.id)" :disabled="plexLibrariesBusy[pi.id]">
+                      <span x-show="!plexLibrariesBusy[pi.id]">Fetch libraries</span>
+                      <span x-show="plexLibrariesBusy[pi.id]">Fetching…</span>
+                    </button>
+                    <button class="btn btn-sm" @click="openPlexInstanceModal(pi)">Edit</button>
+                    <button class="btn btn-sm btn-danger" @click="confirmDeletePlexInstance(pi)">Delete</button>
                   </div>
                 </div>
               </div>
@@ -5788,6 +5856,97 @@
         <button class="btn btn-danger" @click="deleteQbitInstance()" :disabled="deleteQbitBusy">
           <span x-show="!deleteQbitBusy">Delete</span>
           <span x-show="deleteQbitBusy">Deleting…</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Plex instance Add/Edit modal =====
+       Shared between create + edit; plexInstanceModal.id distinguishes
+       (empty = create, set = edit). Token preservation: empty/masked
+       on edit keeps the stored value, real value replaces it. Test
+       Connection runs the inline-creds probe before save so the user
+       can verify the token + URL without committing to disk. Backdrop
+       click does NOT close — user has to click Cancel or press Escape. -->
+  <div class="modal-overlay" x-show="plexInstanceModal.open" x-cloak @keydown.escape.window="if (plexInstanceModal.open) closePlexInstanceModal()">
+    <div class="modal" style="width:540px;max-width:95vw">
+      <div class="modal-title" x-text="plexInstanceModal.id ? 'Edit Plex instance' : 'Add Plex instance'"></div>
+      <div class="form-group">
+        <label class="label">Name</label>
+        <input class="input" x-model="plexInstanceModal.name" placeholder="Main Plex" autocomplete="off">
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">Whatever helps you identify this server — used in the rule editor's picker.</div>
+      </div>
+      <div class="form-group">
+        <label class="label">URL</label>
+        <input class="input" x-model="plexInstanceModal.url" placeholder="http://192.168.1.100:32400" autocomplete="off">
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;line-height:1.5">
+          Two URL forms accepted:<br>
+          • Direct: <code>http://192.168.1.100:32400</code><br>
+          • Reverse-proxied: <code>https://plex.example.com</code>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="label">X-Plex-Token</label>
+        <input class="input" x-model="plexInstanceModal.token" :placeholder="plexInstanceModal.id ? '•••••••• (saved — leave blank to keep)' : 'paste from Plex Web → ⋮ on any item → Get Info → View XML'" type="password" autocomplete="off">
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;line-height:1.5">
+          Get it from Plex Web: open any item, click the <strong>⋮</strong> menu → <strong>Get Info</strong> → <strong>View XML</strong>. The <code>X-Plex-Token=&hellip;</code> parameter in the URL bar is your token.
+        </div>
+      </div>
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+          <input type="checkbox" x-model="plexInstanceModal.trustedCerts" style="accent-color:var(--accent-blue)">
+          <span>Skip TLS verification <span style="color:var(--text-secondary)">— only for self-signed reverse-proxy setups</span></span>
+        </label>
+        <!-- Same MITM warning as qBit — surface only on https:// URLs
+             since http:// has no TLS to skip and the checkbox is a no-op
+             there. -->
+        <template x-if="plexInstanceModal.trustedCerts && /^https:/i.test(plexInstanceModal.url || '')">
+          <div style="margin-top:8px;padding:8px 12px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;font-size:12px;color:var(--accent-red);line-height:1.5">
+            ⚠ <strong>Man-in-the-middle risk.</strong> With TLS verification off, anyone on the network path between this container and Plex can intercept or modify the connection — including the X-Plex-Token. Only safe when Plex is on the same host (loopback) or a trusted LAN segment you fully control. Prefer fixing the cert chain over disabling verification.
+          </div>
+        </template>
+      </div>
+
+      <!-- Inline test result banner — populated by Test Connection -->
+      <template x-if="plexInstanceModal.testResult">
+        <div :style="plexInstanceModal.testOk ? 'background:var(--alpha-green);border:1px solid var(--accent-green);color:var(--accent-green)' : 'background:var(--accent-red-bg);border:1px solid var(--accent-red);color:var(--accent-red)'"
+             style="padding:8px 12px;border-radius:6px;font-size:12px;line-height:1.4;margin-bottom:12px"
+             x-text="plexInstanceModal.testResult"></div>
+      </template>
+
+      <div class="modal-actions">
+        <button class="btn" @click="closePlexInstanceModal()" :disabled="plexInstanceModal.busy">Cancel</button>
+        <button class="btn" @click="testPlexInstanceModal()" :disabled="plexInstanceModal.busy || !plexInstanceModal.url">
+          <span x-show="!plexInstanceModal.testing">Test Connection</span>
+          <span x-show="plexInstanceModal.testing">Testing…</span>
+        </button>
+        <div style="flex:1"></div>
+        <button class="btn btn-primary" @click="savePlexInstanceModal()" :disabled="plexInstanceModal.busy || !plexInstanceModal.name || !plexInstanceModal.url">
+          <span x-show="!plexInstanceModal.busy">Save</span>
+          <span x-show="plexInstanceModal.busy">Saving…</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Plex instance delete-confirm modal =====
+       Same shape as the qBit delete modal — names the target so the
+       user doesn't blast away the wrong row. Warns about cascading
+       Plex-label-sync rule removal (matches the backend's
+       handleDeletePlexInstance cascade). -->
+  <div class="modal-overlay" x-show="deletePlexTarget" x-cloak @click.self="deletePlexTarget = null" @keydown.escape.window="deletePlexTarget = null">
+    <div class="modal" style="width:480px">
+      <div class="modal-title">Delete Plex instance</div>
+      <div style="font-size:13px;color:var(--text-body);line-height:1.5;margin-bottom:14px">
+        Remove <code style="background:var(--bg-muted);padding:1px 6px;border-radius:3px" x-text="deletePlexTarget && deletePlexTarget.name"></code>?
+        <div style="margin-top:6px;color:var(--text-secondary)">Any label-sync rule that points at this Plex server is removed too — a half-broken rule is worse than no rule. The Plex server itself is untouched (this just removes resolvarr's record of it).</div>
+      </div>
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <button class="btn" @click="deletePlexTarget = null" :disabled="deletePlexBusy">Cancel</button>
+        <button class="btn btn-danger" @click="deletePlexInstance()" :disabled="deletePlexBusy">
+          <span x-show="!deletePlexBusy">Delete</span>
+          <span x-show="deletePlexBusy">Deleting…</span>
         </button>
       </div>
     </div>

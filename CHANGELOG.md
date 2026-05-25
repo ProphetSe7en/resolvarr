@@ -2,6 +2,27 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.11-dev — Plex label sync (foundation) (2026-05-25)
+
+Foundation for a new feature: syncing Arr tags to Plex labels. This release lands the backend + the Settings UI to configure Plex instances. The actual sync engine ships in the next dev release; nothing fires yet on the new rules side, and there's no Add rule UI today.
+
+### What's new
+
+- **Settings → Plex.** New sub-tab between qBittorrent and Notifications. Add your Plex server with URL + X-Plex-Token (instructions in the modal point to the Plex Web → ⋮ → Get Info → View XML path). Test Connection runs an inline probe before save so you can verify the token without committing. Optional Skip-TLS-verification for self-signed reverse-proxy setups (MITM warning surfaces on `https://` URLs).
+- **Library fetch + cache.** Each Plex row carries a Fetch libraries button. Pulling the library list from Plex caches the names + types on the instance so the rule editor's library picker (next release) has real data without re-hitting Plex on every modal open.
+- **Live status pill.** Same Connected / Failed / Not tested pattern as qBittorrent instances. Auto-refreshes every 60 s alongside the other instance pollers.
+
+### What's NOT in this release
+
+- **No rule editor yet.** You can configure Plex servers but you can't create a label-sync rule. The Library scan → Plex sync sub-tab + Add rule wizard ship in `v0.6.12-dev`.
+- **No engine yet.** Even when the rule UI lands, the actual Arr-tag → Plex-label matching + writes need the engine which ships separately. We're building this in vertical slices so each release lands a tester-verifiable chunk.
+
+### Under the hood
+
+- New `internal/plex/` Go package — minimal Plex API client (Ping / GetLibraries / GetItems / AddLabel / RemoveLabel). 30 subtests lock the precise label-update URL shape against Plex's undocumented `tag-` suffix convention.
+- New API endpoints — 7 for Plex-instance CRUD + 5 for label-sync rules (rules unused today; reserved for the next release).
+- X-Plex-Token masked on every config read; round-trip-safe so editing Name without re-typing the token preserves the stored value. Deleting a Plex cascades to any sync rule pointing at it.
+
 ## v0.6.10-dev — Instance picker bug fix + dead code removal (2026-05-25)
 
 ### Fixed

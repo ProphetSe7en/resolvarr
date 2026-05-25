@@ -361,6 +361,18 @@ type Config struct {
 	// Backlog scan (Service B) targets a QbitInstance directly without
 	// going through any Arr instance.
 	QbitInstances []QbitInstance `json:"qbitInstances,omitempty"`
+
+	// PlexInstances is the user-named list of Plex Media Server
+	// connections used by the Plex label-sync feature.
+	// Standalone (not paired 1:1 with Arr) so a single Plex can be the
+	// target of multiple sync rules — same shape as QbitInstances.
+	PlexInstances []PlexInstance `json:"plexInstances,omitempty"`
+
+	// PlexLabelRules is the user-configured list of Arr-tag → Plex-label
+	// sync mappings. Each rule pairs ONE Arr instance + label-whitelist
+	// + ONE Plex instance + library-list. Triggered via schedule,
+	// webhook function, or one-off wizard.
+	PlexLabelRules []PlexLabelRule `json:"plexLabelRules,omitempty"`
 }
 
 // QbitInstance is one user-configured qBittorrent connection.
@@ -422,6 +434,44 @@ type QbitInstance struct {
 	// host. No trailing path — the endpoint path is appended by the
 	// builder. Validated at save-time in the configure handler.
 	WebhookCallbackURL string `json:"webhookCallbackUrl,omitempty"`
+}
+
+// PlexInstance is one user-configured Plex Media Server connection.
+// Same shape rule as QbitInstance: ID auto-generated on create + stable
+// thereafter so PlexLabelRule.Targets[].PlexInstanceID references survive
+// renames. URL accepts direct (http://192.168.x.x:32400) AND reverse-
+// proxy-fronted forms (https://plex.example.com); the plex client
+// preserves any subpath. TrustedCerts skips TLS verification when on —
+// opt-in for self-signed Plex setups.
+//
+// Token is the X-Plex-Token bearer credential. Masked in all GET
+// responses (matches the QbitInstance.Password / WebhookSecret pattern);
+// real value only via /test endpoints.
+//
+// Libraries is the cached library-list from the last successful
+// /fetch-libraries call. Populated on demand so the rule editor's
+// library picker has real data to show; empty until first fetch.
+// Refreshed manually via the "Fetch libraries" button — not on every
+// modal open (cheap API call but no benefit to surprise-refreshing).
+type PlexInstance struct {
+	ID           string        `json:"id"`
+	Name         string        `json:"name"`
+	URL          string        `json:"url"`
+	Token        string        `json:"token,omitempty"`
+	TrustedCerts bool          `json:"trustedCerts,omitempty"`
+	Libraries    []PlexLibrary `json:"libraries,omitempty"`
+}
+
+// PlexLibrary is one cached library section. Same fields as the Plex-
+// client-package's Library type (we copy across at fetch-time rather
+// than importing the package upward to avoid a core→plex dependency
+// arrow). Type is "movie" | "show" | "artist" | "photo" — only movie
+// and show are supported for label sync; UI filters the picker by
+// type matching the rule's Arr-instance type.
+type PlexLibrary struct {
+	Key   string `json:"key"`
+	Title string `json:"title"`
+	Type  string `json:"type"`
 }
 
 // RecoverExclusion is the per-instance skip list. Movies (Radarr) is
@@ -1404,6 +1454,69 @@ func (s *ConfigStore) Get() Config {
 	// reads on string fields under tight GC timing.
 	if len(s.cfg.QbitInstances) > 0 {
 		out.QbitInstances = append([]QbitInstance(nil), s.cfg.QbitInstances...)
+	}
+	// Deep-copy PlexInstances. Each entry has a Libraries slice that
+	// callers can mutate (mask helpers don't, but future per-rule
+	// engine code that filters libraries by type might) — same header-
+	// aliasing class as NotificationAgents.AppriseURLs.
+	if len(s.cfg.PlexInstances) > 0 {
+		out.PlexInstances = make([]PlexInstance, len(s.cfg.PlexInstances))
+		for i, p := range s.cfg.PlexInstances {
+			out.PlexInstances[i] = p
+			if len(p.Libraries) > 0 {
+				out.PlexInstances[i].Libraries = append([]PlexLibrary(nil), p.Libraries...)
+			}
+		}
+	}
+	// Deep-copy PlexLabelRules — outer slice plus per-rule Labels +
+	// Targets[].LibraryKeys + History + History[].PerLabel +
+	// History[].Added/Removed maps. Engine takes *PlexLabelRule
+	// pointers during a sync; without this copy a concurrent
+	// PUT/DELETE on the rule list would mutate the in-flight scan's
+	// view of the rule.
+	//
+	// Scalar string fields (RunMode, Status, Trigger, Summary, etc.)
+	// are deliberately left shallow — Go strings are immutable, so
+	// the slice-of-struct assignment already gives each reader an
+	// independent value. Only nested slices/maps need explicit deep
+	// copies.
+	if len(s.cfg.PlexLabelRules) > 0 {
+		out.PlexLabelRules = make([]PlexLabelRule, len(s.cfg.PlexLabelRules))
+		for i, r := range s.cfg.PlexLabelRules {
+			out.PlexLabelRules[i] = r
+			out.PlexLabelRules[i].Labels = append([]string(nil), r.Labels...)
+			if len(r.Targets) > 0 {
+				out.PlexLabelRules[i].Targets = make([]PlexLabelTarget, len(r.Targets))
+				for j, t := range r.Targets {
+					out.PlexLabelRules[i].Targets[j] = t
+					out.PlexLabelRules[i].Targets[j].LibraryKeys = append([]string(nil), t.LibraryKeys...)
+				}
+			}
+			if len(r.History) > 0 {
+				out.PlexLabelRules[i].History = make([]PlexLabelRuleRun, len(r.History))
+				for j, h := range r.History {
+					out.PlexLabelRules[i].History[j] = h
+					if len(h.Added) > 0 {
+						out.PlexLabelRules[i].History[j].Added = make(map[string]int, len(h.Added))
+						for k, v := range h.Added {
+							out.PlexLabelRules[i].History[j].Added[k] = v
+						}
+					}
+					if len(h.Removed) > 0 {
+						out.PlexLabelRules[i].History[j].Removed = make(map[string]int, len(h.Removed))
+						for k, v := range h.Removed {
+							out.PlexLabelRules[i].History[j].Removed[k] = v
+						}
+					}
+					if len(h.PerLabel) > 0 {
+						out.PlexLabelRules[i].History[j].PerLabel = append([]PlexLabelChange(nil), h.PerLabel...)
+					}
+					if len(h.Errors) > 0 {
+						out.PlexLabelRules[i].History[j].Errors = append([]string(nil), h.Errors...)
+					}
+				}
+			}
+		}
 	}
 	// Deep-copy AllowedValues slices on every auto-tag bucket — same
 	// header-aliasing class as NotificationAgents.AppriseURLs above.

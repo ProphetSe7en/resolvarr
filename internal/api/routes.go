@@ -207,6 +207,28 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Preview returns proposed tags; apply runs the same scan + writes.
 	mux.HandleFunc("POST /api/webhook-rules/qbit-se-backlog/preview", s.handleQbitSeBacklogPreview)
 	mux.HandleFunc("POST /api/webhook-rules/qbit-se-backlog/apply", s.handleQbitSeBacklogApply)
+
+	// Plex instances + Plex label rules. Plex instances are managed
+	// standalone (same shape as qBit instances) so a single Plex can
+	// be referenced from multiple label rules. /test probes
+	// credentials; /fetch-libraries refreshes the Libraries cache
+	// from Plex's /library/sections.
+	mux.HandleFunc("GET /api/plex-instances", s.handleListPlexInstances)
+	mux.HandleFunc("POST /api/plex-instances", s.handleCreatePlexInstance)
+	mux.HandleFunc("PUT /api/plex-instances/{id}", s.handleUpdatePlexInstance)
+	mux.HandleFunc("DELETE /api/plex-instances/{id}", s.handleDeletePlexInstance)
+	mux.HandleFunc("POST /api/plex-instances/{id}/test", s.handleTestPlexInstance)
+	mux.HandleFunc("POST /api/plex-instances/test", s.handleTestPlexInline)
+	mux.HandleFunc("POST /api/plex-instances/{id}/fetch-libraries", s.handleFetchPlexLibraries)
+
+	// Plex label rules — saved Arr-tag → Plex-label sync mappings.
+	// CRUD only; engine + triggers (scheduled / webhook / one-off
+	// wizard) wire in Phase C + D.
+	mux.HandleFunc("GET /api/plex-label-rules", s.handleListPlexLabelRules)
+	mux.HandleFunc("POST /api/plex-label-rules", s.handleCreatePlexLabelRule)
+	mux.HandleFunc("GET /api/plex-label-rules/{id}", s.handleGetPlexLabelRule)
+	mux.HandleFunc("PUT /api/plex-label-rules/{id}", s.handleUpdatePlexLabelRule)
+	mux.HandleFunc("DELETE /api/plex-label-rules/{id}", s.handleDeletePlexLabelRule)
 }
 
 // RegisterAuthRoutes wires the setup wizard, login/logout, and

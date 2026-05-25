@@ -272,6 +272,14 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.QbitInstances[i].WebhookSecret = maskSentinel
 		}
 	}
+	// Plex tokens masked — same bearer-credential category as the
+	// qBit password. Real value only via /api/plex-instances/.../test
+	// endpoints; never returned on a config read.
+	for i := range cfg.PlexInstances {
+		if cfg.PlexInstances[i].Token != "" {
+			cfg.PlexInstances[i].Token = maskSentinel
+		}
+	}
 	cfg.Discord.WebhookURL = maskSecret(cfg.Discord.WebhookURL, maskedDiscordWebhook)
 	// Mask credentials inside notification agents so the legacy /api/config
 	// endpoint can't leak webhook URLs/tokens. The dedicated
