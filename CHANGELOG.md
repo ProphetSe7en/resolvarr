@@ -2,6 +2,18 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.10-dev — Instance picker bug fix + dead code removal (2026-05-25)
+
+### Fixed
+
+- **Instance dropdowns now actually use the instance shown in the picker.** A render-ordering bug let dropdowns visually display the correct instance while the underlying state held a different one — pressing Run fired the scan against the wrong instance until you manually re-selected from the dropdown. Affected page-level Library scan + Recover instance pickers, the Tag inventory picker, the Compare-across-instances picker, the Recent Activity instance picker, the Webhook setup wizard, the rule-editor sync-target picker, and the per-action wizard instance selector (Run Tag Audio / Video / DV Details / Recover).
+
+### Internal cleanup
+
+- Removed unused legacy code that handled runtime downloads of `dovi_tool` + `ffmpeg`. Those binaries have shipped baked into the image since `v0.3.5` — the old download path was unreachable but still in the codebase. Pruned along with its tests (-750 lines). DV detail tagging continues to work exactly as before.
+
+- Internal-documentation cleanup pass across source comments. No functional change.
+
 ## v0.6.9-dev — Security baseline + defensive infrastructure (2026-05-25)
 
 A focused security pass — most of this is invisible from the UI but matters when something goes wrong. Safe upgrade from `v0.6.8-dev`; no config changes required.
