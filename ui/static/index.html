@@ -1150,7 +1150,8 @@
               <strong x-text="instances.find(i => i.type === 'radarr' && i.id !== scanInstanceId)?.name"></strong>
             </template>
             <template x-if="instances.filter(i => i.type === 'radarr' && i.id !== scanInstanceId).length > 1">
-              <select class="input" x-model="scanSyncTargetId" :disabled="!scanSyncToSecondary" style="width:200px;font-size:12px">
+              <select class="input" x-model="scanSyncTargetId" :disabled="!scanSyncToSecondary" style="width:200px;font-size:12px"
+                      x-init="$nextTick(() => { if (scanSyncTargetId) $el.value = scanSyncTargetId })">
                 <template x-for="i in instances.filter(i => i.type === 'radarr' && i.id !== scanInstanceId)" :key="i.id">
                   <option :value="i.id" x-text="i.name"></option>
                 </template>
@@ -3370,7 +3371,18 @@
             <template x-if="scanAvailableInstances().length > 1">
               <div class="form-group">
                 <label class="label" x-text="'Target ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance'"></label>
-                <select class="input" x-model="scanInstanceId" style="max-width:340px">
+                <!-- $nextTick force-sync: with x-model + an async-loaded
+                     <template x-for> option list, Alpine evaluates x-model
+                     before the for-template renders options, so the browser
+                     silently picks the first DOM option as the "selected"
+                     one — and x-model then writes THAT value back, blowing
+                     away the seeded scanInstanceId. The displayed text often
+                     still happens to show the seeded instance (because the
+                     option text matches), but the underlying state holds the
+                     wrong ID. Forcing $el.value AFTER the next tick (when
+                     options exist) restores the seeded value. -->
+                <select class="input" x-model="scanInstanceId" style="max-width:340px"
+                        x-init="$nextTick(() => { if (scanInstanceId) $el.value = scanInstanceId })">
                   <template x-for="inst in scanAvailableInstances()" :key="inst.id">
                     <option :value="inst.id" x-text="inst.name"></option>
                   </template>
@@ -3709,7 +3721,10 @@
             <template x-if="scanAvailableInstances().length > 1">
               <div class="form-group">
                 <label class="label" x-text="'Target ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance'"></label>
-                <select class="input" x-model="scanInstanceId" style="max-width:340px">
+                <!-- $nextTick force-sync — see comment on the matching
+                     scanInstanceId picker on the Tag library sub-tab. -->
+                <select class="input" x-model="scanInstanceId" style="max-width:340px"
+                        x-init="$nextTick(() => { if (scanInstanceId) $el.value = scanInstanceId })">
                   <template x-for="inst in scanAvailableInstances()" :key="inst.id">
                     <option :value="inst.id" x-text="inst.name"></option>
                   </template>
@@ -3890,7 +3905,8 @@
       <template x-if="cleanupWizardInstancesForType().length > 0">
         <div class="form-group">
           <label class="label" x-text="'Target ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance'"></label>
-          <select class="input" x-model="cleanupWizardState.instanceId">
+          <select class="input" x-model="cleanupWizardState.instanceId"
+                  x-init="$nextTick(() => { if (cleanupWizardState.instanceId) $el.value = cleanupWizardState.instanceId })">
             <template x-for="inst in cleanupWizardInstancesForType()" :key="inst.id">
               <option :value="inst.id" x-text="inst.name"></option>
             </template>
@@ -4332,7 +4348,8 @@
       </div>
       <label style="display:block;font-size:14px;color:var(--text-body);margin-bottom:6px;font-weight:500">Instance</label>
       <div style="display:flex;gap:8px;align-items:center">
-        <select class="input" style="flex:1" x-model="tagsInstanceId" @change="localStorage.setItem('tagarr-tags-instance', tagsInstanceId); resetTagSearchState(); compareCrossInstanceTarget = ''; closeCompare(); loadTags()">
+        <select class="input" style="flex:1" x-model="tagsInstanceId" @change="localStorage.setItem('tagarr-tags-instance', tagsInstanceId); resetTagSearchState(); compareCrossInstanceTarget = ''; closeCompare(); loadTags()"
+                x-init="$nextTick(() => { if (tagsInstanceId) $el.value = tagsInstanceId })">
           <template x-if="tagsAvailableInstances().length === 0">
             <option value="" x-text="'— no ' + tagsAppType + ' instance configured —'"></option>
           </template>
@@ -4503,7 +4520,8 @@
                     style="font-size:12px;padding:4px 8px;height:30px;max-width:200px"
                     x-model="compareCrossInstanceTarget"
                     @change="closeCompare()"
-                    :title="'Compare across instances — picks the same tag name on the chosen instance'">
+                    :title="'Compare across instances — picks the same tag name on the chosen instance'"
+                    x-init="$nextTick(() => { if (compareCrossInstanceTarget) $el.value = compareCrossInstanceTarget })">
               <option value="">— same instance —</option>
               <template x-for="inst in compareCrossInstanceCandidates()" :key="inst.id">
                 <option :value="inst.id" x-text="'vs ' + inst.name"></option>
@@ -5296,7 +5314,8 @@
               <div class="settings-section-desc">Last 100 received events per instance. Persists to <code style="background:var(--bg-page);padding:1px 5px;border-radius:3px">/config/webhook-events.json</code> across container restarts. Click a card to expand and see the full decoded JSON.</div>
             </div>
             <div style="display:flex;gap:8px;align-items:center">
-              <select class="input" x-model="webhookActivityInstanceId" @change="loadWebhookEvents(webhookActivityInstanceId)" style="font-size:12px;height:30px;max-width:240px">
+              <select class="input" x-model="webhookActivityInstanceId" @change="loadWebhookEvents(webhookActivityInstanceId)" style="font-size:12px;height:30px;max-width:240px"
+                      x-init="$nextTick(() => { if (webhookActivityInstanceId) $el.value = webhookActivityInstanceId })">
                 <option value="">— pick an instance —</option>
                 <!-- Filtered to the page-level webhookAppType pill so
                      a user on the Radarr pill doesn't see Sonarr
@@ -5821,7 +5840,8 @@
                 </div>
               </template>
               <template x-if="webhookWizardInstancesForType().length > 0">
-                <select class="input" x-model="webhookWizard.instanceId" style="max-width:340px">
+                <select class="input" x-model="webhookWizard.instanceId" style="max-width:340px"
+                        x-init="$nextTick(() => { if (webhookWizard.instanceId) $el.value = webhookWizard.instanceId })">
                   <template x-for="inst in webhookWizardInstancesForType()" :key="inst.id">
                     <option :value="inst.id" x-text="inst.name"></option>
                   </template>
@@ -6548,7 +6568,8 @@
                   <template x-if="instances.filter(i => i.type === (instances.find(j => j.id === editingRule.instanceId) || {}).type && i.id !== editingRule.instanceId).length > 1">
                     <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-body);margin:6px 0 0 26px">
                       <span>Mirror to:</span>
-                      <select class="input" x-model="editingRule.options.syncToInstanceId" :disabled="!editingRule.options.fnSyncToSecondary" style="width:220px;font-size:12px">
+                      <select class="input" x-model="editingRule.options.syncToInstanceId" :disabled="!editingRule.options.fnSyncToSecondary" style="width:220px;font-size:12px"
+                              x-init="$nextTick(() => { if (editingRule.options.syncToInstanceId) $el.value = editingRule.options.syncToInstanceId })">
                         <option value="">Auto-pick first available</option>
                         <template x-for="i in instances.filter(i => i.type === (instances.find(j => j.id === editingRule.instanceId) || {}).type && i.id !== editingRule.instanceId)" :key="i.id">
                           <option :value="i.id" x-text="i.name"></option>
@@ -6745,7 +6766,17 @@
           <template x-if="isPerActionAutoTag()">
             <div class="form-group">
               <label class="label" x-text="(ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instance'"></label>
-              <select class="input" :value="perActionInstanceSelectorValue()" @change="setPerActionInstance($event.target.value); ruleEditorOnInstanceChange()">
+              <!-- $nextTick force-sync: with :value + an async-loaded
+                   <template x-for> option list, Alpine sets the value
+                   attribute before for-template renders options. The
+                   browser then displays the first DOM option as
+                   selected — text often matches the seeded instance by
+                   coincidence, but the underlying $el.value is the
+                   wrong ID. Forcing $el.value AFTER the next tick (when
+                   options exist) makes the picker actually use what
+                   it visually shows. -->
+              <select class="input" :value="perActionInstanceSelectorValue()" @change="setPerActionInstance($event.target.value); ruleEditorOnInstanceChange()"
+                      x-init="$nextTick(() => { const v = perActionInstanceSelectorValue(); if (v) $el.value = v })">
                 <template x-for="inst in ruleEditorInstancesAvailable()" :key="inst.id">
                   <option :value="inst.id" x-text="inst.name"></option>
                 </template>
@@ -6815,7 +6846,8 @@
                   <template x-if="instances.filter(i => i.type === (instances.find(j => j.id === editingRule.instanceId) || {}).type && i.id !== editingRule.instanceId).length > 1">
                     <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-body);margin:6px 0 0 26px">
                       <span>Mirror to:</span>
-                      <select class="input" x-model="editingRule.options.syncToInstanceId" :disabled="!editingRule.options.syncToSecondary" style="width:220px;font-size:12px">
+                      <select class="input" x-model="editingRule.options.syncToInstanceId" :disabled="!editingRule.options.syncToSecondary" style="width:220px;font-size:12px"
+                              x-init="$nextTick(() => { if (editingRule.options.syncToInstanceId) $el.value = editingRule.options.syncToInstanceId })">
                         <option value="">Auto-pick first available</option>
                         <template x-for="i in instances.filter(i => i.type === (instances.find(j => j.id === editingRule.instanceId) || {}).type && i.id !== editingRule.instanceId)" :key="i.id">
                           <option :value="i.id" x-text="i.name"></option>
