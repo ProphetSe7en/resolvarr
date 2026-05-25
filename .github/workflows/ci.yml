@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: go test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: vet
+        run: go vet ./...
+      - name: test with race detector
+        run: go test -race -count=1 ./...
+
+  # govulncheck — scans the dependency tree against Go's official
+  # vulnerability database (golang.org/x/vuln). Catches CVEs in
+  # direct + transitive deps before they ship to users. Fails the
+  # build on any known issue affecting code we actually reach.
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: install govulncheck
+        # Pinned — govulncheck@latest may require newer Go than our
+        # go.mod declares. Bump together with the go.mod toolchain.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - name: scan
+        run: govulncheck ./...
+
+  # gosec — static analysis for common Go security mistakes
+  # (hardcoded credentials, weak crypto, SQL injection, unchecked
+  # errors that mask security issues, etc.). Complements govulncheck:
+  # govulncheck catches known-bad DEPS; gosec catches potentially-bad
+  # patterns in OUR code.
+  #
+  # -severity high: only High-severity findings fail the build.
+  # Medium + Low are skipped (most are stylistic noise on Go code,
+  # e.g. unchecked io.Close return values). The High-only baseline
+  # was 0 findings after annotating 4 known-safe sites with #nosec.
+  # Tighten to -severity medium after a baseline cleanup pass on
+  # the existing Medium hits if/when we decide to invest there.
+  gosec:
+    name: gosec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: install gosec
+        # Pinned to v2.26.1 (latest as of 2026-05-25). dependabot will
+        # surface bumps; we audit + bump explicitly so a compromised
+        # release of gosec can't quietly land here.
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.26.1
+      - name: scan
+        run: gosec -severity high -quiet -fmt=text ./...

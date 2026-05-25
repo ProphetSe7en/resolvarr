@@ -276,9 +276,14 @@ func (s *Server) handleScanHistoryFile(w http.ResponseWriter, r *http.Request) {
 	}
 	path := filepath.Join("/config/logs", name)
 	// Lstat + reject symlink: /config is appdata (user-writable at
-	// host uid:gid). A symlink scan-foo.json → /etc/passwd or
-	// → /config/clonarr.json would otherwise be served verbatim.
+	// host uid:gid). A symlink scan-foo.json → /etc/passwd or any
+	// other in-container file would otherwise be served verbatim.
 	// Defence-in-depth on top of the basename validation above.
+	//
+	// #nosec G703 -- name has passed four guards above (non-empty,
+	// no slashes/backslashes, scan-*.json prefix/suffix); the
+	// Lstat-rejects-symlink check below seals path-traversal. gosec's
+	// taint analysis can't see the validation chain.
 	info, lerr := os.Lstat(path)
 	if lerr != nil {
 		writeError(w, 404, "file not found")
@@ -288,7 +293,7 @@ func (s *Server) handleScanHistoryFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "scan history files must be regular files")
 		return
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G703 -- same validation chain as the Lstat call above
 	if err != nil {
 		writeError(w, 404, "file not found")
 		return

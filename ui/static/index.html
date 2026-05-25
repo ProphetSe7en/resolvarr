@@ -4,7 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Resolvarr</title>
-<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<!-- Alpine.js pinned to a specific version + SRI hash. If jsdelivr ever
+     serves a tampered/different bundle (CDN compromise, registry
+     hijack), the browser refuses to execute it. Dependabot keeps this
+     fresh — when a new Alpine.js version lands, re-run:
+       curl -fsSL https://cdn.jsdelivr.net/npm/alpinejs@<ver>/dist/cdn.min.js \
+         | openssl dgst -sha384 -binary | openssl base64 -A
+     and update both `@<ver>` in the src URL and the integrity hash. -->
+<script defer
+        src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.12/dist/cdn.min.js"
+        integrity="sha384-pb6hrQvo4s23cEUFtj0CZkzGE3jyK3pj26RIupXXxhSrrcUA/Cn0lZgcCrGH0t6L"
+        crossorigin="anonymous"></script>
 <!-- Resolve theme synchronously before CSS paints to avoid a flash of
      wrong theme. Mirrors the logic in applyTheme() in app.js.
      Wrapped in try/catch — Safari Private Mode and sandboxed iframes
@@ -40,11 +50,11 @@
     <div class="tabs">
       <a class="tab" :class="currentPage === 'scan' && 'active'" :href="navHref('scan')" @click="setCurrentPage('scan'); initScan()">Tag Library</a>
       <a class="tab" :class="currentPage === 'tags' && 'active'" :href="navHref('tags')" @click="setCurrentPage('tags'); if (!tagsInstanceId && instances.length > 0) { tagsInstanceId = instances[0].id; loadTags(); }">Tag inventory</a>
-      <!-- Future-feature tabs — disabled placeholders so test users can see what's coming.
-           Roadmap source: dev/analysis/post-M3d-roadmap.md.
-           Each navigates to a "coming soon" page describing the feature scope. -->
-      <a class="tab" :class="currentPage === 'lists' && 'active'" :href="navHref('lists')" @click="setCurrentPage('lists')" style="opacity:0.7" title="Coming with M5 — full plan in dev/analysis/post-M3d-roadmap.md">Lists <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:500">M5</span></a>
-      <a class="tab" :class="currentPage === 'webhooks' && 'active'" :href="navHref('webhooks')" @click="setCurrentPage('webhooks')" title="Receive Sonarr/Radarr Connect events — logging-only today; per-event functions land in coming sessions">Webhooks <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:500">logging</span></a>
+      <!-- Future-feature tabs — disabled placeholders so test users
+           can see what's coming. Each navigates to a "coming soon"
+           page describing the feature scope. -->
+      <a class="tab" :class="currentPage === 'lists' && 'active'" :href="navHref('lists')" @click="setCurrentPage('lists')" style="opacity:0.7" title="Coming with M5">Lists <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:500">M5</span></a>
+      <a class="tab" :class="currentPage === 'webhooks' && 'active'" :href="navHref('webhooks')" @click="setCurrentPage('webhooks')" title="Receive Sonarr/Radarr Connect events — logging-only today; per-event functions land in later releases">Webhooks <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:500">logging</span></a>
       <a class="tab" :class="currentPage === 'settings' && 'active'" :href="navHref('settings')" @click="setCurrentPage('settings')">Settings</a>
     </div>
     <!-- Right-side area: logout. Pushed to far right via margin-left:auto.
@@ -199,11 +209,10 @@
         </div>
 
         <!-- ============ Notifications (multi-agent) ============
-             Match clonarr v2.3's notifications panel: per-agent rows
-             using .inst-row (same horizontal-row pattern as Instances
-             page). Provider icon + name + type label + Enable toggle +
-             inline test result + Test/Edit/Delete buttons all on one
-             line. -->
+             Per-agent rows using .inst-row (same horizontal-row pattern
+             as Instances page). Provider icon + name + type label +
+             Enable toggle + inline test result + Test/Edit/Delete
+             buttons all on one line. -->
         <div x-show="section === 'notifications'">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
             <div>
@@ -262,10 +271,10 @@
 
         <!-- ============ Security ============
              Auth-mode + auth-required + trusted networks/proxies + session
-             TTL — same Radarr/Sonarr-parity pattern Clonarr uses. Plus API
-             key view/regenerate and password change. All endpoints already
-             exist on the backend (PUT /api/config/auth, /api/auth/*); this
-             card is the missing UI surface. -->
+             TTL — standard Radarr/Sonarr-parity pattern. Plus API key
+             view/regenerate and password change. All endpoints already
+             exist on the backend (PUT /api/config/auth, /api/auth/*);
+             this card is the missing UI surface. -->
         <div x-show="section === 'security'">
           <div class="settings-section-title">Security</div>
           <div class="settings-section-desc">Authentication, API key, and password. Same pattern as Radarr/Sonarr.</div>
@@ -507,8 +516,7 @@
   </div>
 
   <!-- ============ SCAN PAGE (settings-layout pattern — sidebar + content) ============
-       Matches the Settings-tab layout convention used across tagarr / clonarr / vpn-gateway:
-       a single card with a left sidebar (Run / Release Groups / Filters) and a content panel
+       A single card with a left sidebar (Run / Release Groups / Filters) and a content panel
        on the right. The sidebar is always visible while working in any sub-tab — no
        travel-to-top to switch. -->
   <div class="page" x-show="currentPage === 'scan'" x-cloak>
@@ -1287,7 +1295,7 @@
                filter + active list / use-discover + sync + cleanup).
                The wizard replaces the legacy stand-alone Tag library
                card — same backend (runLibraryScan) but now gated
-               through user-confirmed wizard choices. -->
+               through wizard-driven choices. -->
           <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px 20px;margin-bottom:16px">
             <div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap">
               <div style="flex:1;min-width:280px">
@@ -4792,8 +4800,7 @@
        Each is a "coming soon" preview describing what's planned, with
        a wire-frame-style mockup of the eventual layout. None of the
        controls inside are wired to backend handlers — pure visual
-       communication so testers see what's coming without asking. Full
-       plan: dev/analysis/post-M3d-roadmap.md. -->
+       communication so testers see what's coming without asking. -->
 
   <!-- ============ LISTS PAGE (M5 placeholder) ============ -->
   <div class="page" x-show="currentPage === 'lists'" x-cloak>
@@ -5368,7 +5375,7 @@
           <!-- Activity table. Phase A3 — five columns:
                Time / Type / Item (title+subtitle+quality) / Outcome / Expand.
                Click row → expand to card view with rule outcomes +
-               raw JSON. Spec: dev/analysis/M-activity-table.md §2. -->
+               raw JSON. -->
           <template x-if="webhookActivityInstanceId && webhookEventsFiltered().length > 0 && !webhookEventsLoading">
             <div style="display:flex;flex-direction:column;gap:4px">
               <div style="display:grid;grid-template-columns:130px 130px 1fr 200px 28px;gap:12px;align-items:center;padding:6px 14px;font-size:10px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-muted-secondary)">
@@ -5771,7 +5778,7 @@
        Two-step: Choices (Arr type + instance + functions) → Summary
        (URL + Connect events to enable in Sonarr/Radarr). Today only
        'Enable logging' is wired; per-function checkboxes are
-       placeholders for subsequent sessions. -->
+       placeholders for later releases. -->
   <div class="modal-overlay" x-show="webhookWizard.open" x-cloak @keydown.escape.window="if (webhookWizard.open) closeWebhookWizard()">
     <div class="modal" style="width:680px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0">
       <div style="flex:0 0 auto;padding:18px 22px 0">
@@ -9615,9 +9622,9 @@
     </div>
   </div>
 
-  <!-- Footer — same pattern as clonarr's layout/footer. Sits inside
-       the Alpine root (body has x-data="app()") so it can reactively
-       read this.version (loaded from /api/version on init). -->
+  <!-- Footer — sits inside the Alpine root (body has x-data="app()")
+       so it can reactively read this.version (loaded from /api/version
+       on init). -->
   <div style="text-align:center;padding:24px 0 12px;font-size:13px;color:var(--text-muted-secondary)">
     Resolvarr <span x-text="version || ''"></span> — Built by <a href="https://github.com/ProphetSe7en" target="_blank" rel="noopener" style="color:var(--text-muted-secondary);text-decoration:none">ProphetSe7en</a>
   </div>

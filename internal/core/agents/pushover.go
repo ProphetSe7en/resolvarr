@@ -140,7 +140,7 @@ func pushoverPost(ctx context.Context, client HTTPPoster, cfg Config, title, mes
 	return client.Do(req)
 }
 
-// pushoverPriority maps Clonarr severity levels to Pushover priority integers.
+// pushoverPriority maps Severity levels to Pushover priority integers.
 // Pushover supports priorities -2 (lowest) through 2 (emergency).
 //   - SeverityCritical → 1 (high priority: bypasses quiet hours, highlighted in red)
 //   - All others       → 0 (normal priority)

@@ -81,7 +81,7 @@
 .seg-btn.seg-btn-active[data-variant="simple"] { background: #23863633; color: var(--accent-green); }
 .seg-btn:disabled { cursor: default; opacity: 0.5; }
 
-/* Toggle switch — ported from clonarr .toggle, 30x16 compact variant */
+/* Toggle switch — 30x16 compact variant */
 .tg { position: relative; display: inline-block; width: 30px; height: 16px; }
 .tg input { opacity: 0; width: 0; height: 0; }
 .tg .slider { position: absolute; cursor: pointer; inset: 0; background: var(--border-subtle); border-radius: 8px; transition: background 0.15s; }

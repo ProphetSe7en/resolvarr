@@ -4781,8 +4781,6 @@ function app() {
     // eventSubtitle are coarse — these renderers go deeper and produce
     // a quality summary + outcome chips. Pure functions on the event
     // shape; safe to call in x-text bindings (no side effects).
-    //
-    // Spec: dev/analysis/M-activity-table.md §4
     eventIcon(eventType) {
       switch (eventType) {
         case 'Grab':                return '🎯';
@@ -5019,11 +5017,10 @@ function app() {
     //
     // Two-step (Choices → Summary), Arr-type-first layout matching
     // the QFA / Tag / Discover wizards. Today's only function pick
-    // is "Enable logging"; subsequent sessions add per-function
-    // checkboxes (release-group tag on import, DV detail on import,
-    // qBit S/E tag on grab, etc.) that drive the Step-2 summary's
-    // "Connect events to enable" list per dev/analysis/M-webhook.md
-    // § 3.
+    // is "Enable logging"; later releases add per-function checkboxes
+    // (release-group tag on import, DV detail on import, qBit S/E
+    // tag on grab, etc.) that drive the Step-2 summary's "Connect
+    // events to enable" list.
 
     openWebhookWizard() {
       // Seed Arr-type from the page-level pill (webhookAppType).
@@ -9523,8 +9520,7 @@ function app() {
           // Tag-mode source. Empty / "active" = legacy default
           // (per-group decisions). "discover" = Discover→Tag chain.
           // "filter-only" = ignore release group; tag every movie
-          // passing the filter with FilterOnlyTag. See
-          // dev/analysis/filter-only-tag.md.
+          // passing the filter with FilterOnlyTag.
           tagSource: '',
           filterOnlyTag: 'lossless-web',
         },
@@ -9618,8 +9614,7 @@ function app() {
           // Tag-mode source. Empty / "active" = legacy default
           // (per-group decisions). "discover" = Discover→Tag chain.
           // "filter-only" = ignore release group; tag every movie
-          // passing the filter with FilterOnlyTag. See
-          // dev/analysis/filter-only-tag.md.
+          // passing the filter with FilterOnlyTag.
           tagSource: '',
           filterOnlyTag: 'lossless-web',
         },
@@ -9866,8 +9861,7 @@ function app() {
           // Tag-mode source. Empty / "active" = legacy default
           // (per-group decisions). "discover" = Discover→Tag chain.
           // "filter-only" = ignore release group; tag every movie
-          // passing the filter with FilterOnlyTag. See
-          // dev/analysis/filter-only-tag.md.
+          // passing the filter with FilterOnlyTag.
           tagSource: '',
           filterOnlyTag: 'lossless-web',
         },
@@ -14295,7 +14289,7 @@ function app() {
 
     // --- Display ---
     applyUIScale() {
-      // Clonarr-style zoom: scales every element (fonts, padding, images) uniformly.
+      // CSS zoom: scales every element (fonts, padding, images) uniformly.
       document.documentElement.style.zoom = this.uiScale;
     },
 

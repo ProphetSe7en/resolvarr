@@ -1,7 +1,6 @@
 // notifications.go — REST endpoints for managing notification agents.
 // Provides full CRUD for the Config.NotificationAgents slice plus
-// inline + saved-agent test handlers. Mirrors the clonarr v2.3 shape
-// per docs/notification-agents-pattern.md.
+// inline + saved-agent test handlers.
 //
 // Routes (registered in routes.go):
 //

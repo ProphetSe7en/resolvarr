@@ -4,7 +4,7 @@
 // (S/E tag on Sonarr Grab + qBit grab rename + the future backlog
 // scan). Keep the surface small — login, list torrents, add tags,
 // rename torrent. Read-only metadata queries (transfer/info etc.)
-// are out of scope; vpn-gateway already does that.
+// are out of scope.
 //
 // Auth model: cookie-session login (POST /api/v2/auth/login →
 // `SID=...` Set-Cookie header). Cached per-Client. On a 401 we
@@ -84,7 +84,11 @@ func New(cfg Config) (*Client, error) {
 		Jar:     jar,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: cfg.TrustedCerts,
+				// User explicitly opts in via the per-instance
+				// TrustedCerts flag — self-signed qBit setups are
+				// common on homelab LAN. Gated behind an admin
+				// toggle, not a default. #nosec G402
+				InsecureSkipVerify: cfg.TrustedCerts, // #nosec G402 -- opt-in for self-signed LAN qBit
 			},
 			// Sane defaults — qBit is fast + local; long timeouts
 			// just hide bugs.

@@ -42,10 +42,10 @@ import (
 )
 
 // safeGoAuth runs fn in a new goroutine with panic recovery. Kept local
-// to the auth package so this self-contained security core stays import-
-// compatible across containers (Clonarr / Constat / vpn-gateway) that
-// live in their own modules. Duplicate of the app's own SafeGo helper
-// by design — the auth package must not depend on the parent's utils.
+// to the auth package so this self-contained security core has no
+// dependencies outside the standard library. Duplicate of the app's
+// own SafeGo helper by design — the auth package must not depend on
+// the parent's utils.
 func safeGoAuth(name string, fn func()) {
 	go func() {
 		defer func() {
@@ -342,6 +342,16 @@ func (s *Store) Setup(username, password string) error {
 // on the unknown-user path so timing is indistinguishable from the
 // known-user-wrong-password path (anti-enumeration).
 func (s *Store) VerifyPassword(username, password string) bool {
+	// Reject above bcrypt's 72-byte limit BEFORE the compare. Without
+	// this, bcrypt returns ErrPasswordTooLong via a different code path
+	// than a plain mismatch — a length-oracle side-channel. We also cap
+	// in validatePassword at registration, so this is defense in depth
+	// against a stored hash from a pre-cap version.
+	if len(password) > 72 {
+		// Equalize timing with the bcrypt path.
+		_ = bcrypt.CompareHashAndPassword(dummyHash, dummyHash)
+		return false
+	}
 	s.mu.RLock()
 	c := s.creds
 	s.mu.RUnlock()
@@ -642,10 +652,38 @@ func validateUsername(u string) error {
 	return nil
 }
 
-// validatePassword enforces: min 10 chars, at least 2 of {upper, lower, digit, symbol}.
+// validatePassword enforces password strength rules. Two acceptance paths:
+//
+//  1. Length 10-15: requires at least 2 of {upper, lower, digit, symbol}.
+//  2. Length 16-72: any character mix accepted (including pure-lowercase
+//     passphrases like "correcthorsebatterystaple").
+//
+// Upper bound is 72 bytes because that's bcrypt's input limit — silently
+// truncated by the algorithm. Without the cap, two passphrases that
+// share the first 72 bytes would hash to the same value and become
+// interchangeable at login (a real footgun for a long-passphrase path).
+//
+// Rationale for the long-passphrase path: a 16+ character single-class
+// password has substantial entropy (26^16 ≈ 73 bits). Diceware-style
+// 5+ word passphrases clear NIST 800-63B level 2 by length alone.
+// Forcing class diversity on long passwords is a usability tax without
+// security benefit; relaxing it removes a footgun where users pick
+// "Pa$$w0rd!!" (10 chars, 3 classes) over a far-stronger 25-char
+// passphrase that the old rule rejected.
 func validatePassword(pw string) error {
 	if len(pw) < 10 {
 		return errors.New("password must be at least 10 characters")
+	}
+	if len(pw) > 72 {
+		// bcrypt input limit — silently truncated past 72 bytes, which
+		// would let two distinct long passwords hash to the same value.
+		// Reject loudly instead.
+		return errors.New("password must be at most 72 characters (bcrypt limit)")
+	}
+	if len(pw) >= 16 {
+		// Long enough that brute-force entropy from length alone is
+		// sufficient — skip the class-diversity requirement.
+		return nil
 	}
 	var hasUpper, hasLower, hasDigit, hasSymbol bool
 	for _, r := range pw {
@@ -667,7 +705,7 @@ func validatePassword(pw string) error {
 		}
 	}
 	if count < 2 {
-		return errors.New("password must contain at least 2 of: uppercase, lowercase, digit, symbol")
+		return errors.New("password must contain at least 2 of: uppercase, lowercase, digit, symbol (or use a 16+ character passphrase)")
 	}
 	return nil
 }
@@ -719,10 +757,6 @@ var publicExact = map[string]struct{}{
 // trailing slash; a path is public if it has exactly this prefix followed
 // by more characters (so "/static" alone is NOT public, but "/static/x" is).
 // This prevents "/loginhack" from matching "/login".
-// CONTAINER-LOCAL — see security-baseline §2.9. publicPrefixes additions
-// for static-asset paths are per-container (different containers serve
-// different prefixes). DO NOT mirror these from clonarr's auth.go; this
-// slice is intentionally divergent.
 var publicPrefixes = []string{
 	"/static/",
 	"/setup/", // for any setup-wizard sub-resources (e.g. form POSTs)

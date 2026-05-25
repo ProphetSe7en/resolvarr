@@ -1,0 +1,26 @@
+# gitleaks ignore — false-positive allowlist.
+# Format: <commit-sha>:<file>:<rule>:<line>
+#
+# Entries below are synthetic test fixtures (deliberately real-looking
+# strings used to verify masking, rotation, and credential-handling
+# code paths). Real secrets must never land here.
+
+# qBit webhook test — fake "previous-secret" + "old-secret" string
+# values used in rotation-flow assertions. Synthetic.
+2e11c79e8fe3177dfc13f1c81b458c84725fd1af:internal/api/qbit_webhook_config_test.go:curl-auth-header:327
+2e11c79e8fe3177dfc13f1c81b458c84725fd1af:internal/api/qbit_webhook_config_test.go:curl-auth-header:404
+
+# qbit_handlers_test.go fixture — repeating-hex placeholder. The
+# const declaration carries a self-documenting comment marking it
+# as synthetic.
+dbdea214a13508a8f50aa9eeea06f6ff3a1b9f9c:internal/api/qbit_handlers_test.go:generic-api-key:53
+
+# Historical entries that survive in immutable git history. Tokens
+# rotated; the current HEAD content is synthetic. CI gitleaks would
+# otherwise re-flag these on every PR.
+1699e586b9b2c80fc53adf4fa12ba95bfa861708:internal/api/qbit_handlers_test.go:generic-api-key:46
+1699e586b9b2c80fc53adf4fa12ba95bfa861708:internal/api/qbit_handlers_test.go:generic-api-key:160
+
+# masking_test.go — "abcdef1234567890" literal used to assert the
+# truncation helper. Synthetic.
+d4b5f3c592d810bf5f1b2d2641f0beeeecef60ba:internal/api/masking_test.go:generic-api-key:14

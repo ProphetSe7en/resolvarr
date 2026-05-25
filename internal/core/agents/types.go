@@ -42,24 +42,22 @@ type Agent struct {
 	Functions []string `json:"functions,omitempty"`
 }
 
-// Events controls which application events trigger notifications for an agent.
-// Each flag corresponds to a distinct event category in Clonarr's lifecycle.
-// When a flag is false the agent is silently skipped for that event type.
-// Events controls which application events trigger notifications for an
-// agent. Tagarr's domain is scheduled runs (today) and webhook events
+// Events controls which application events trigger notifications for
+// an agent. Our domain is scheduled runs (today) and webhook events
 // (when the Radarr Connect receiver lands). Each event has an explicit
 // per-agent toggle so a user can route different events to different
-// agents (e.g. errors → Pushover, summaries → Discord).
+// agents (e.g. errors → Pushover, summaries → Discord). When a flag
+// is false the agent is silently skipped for that event type.
 type Events struct {
-	OnScheduleSuccess bool `json:"onScheduleSuccess"` // scheduled run finished without error (tagarr scope)
-	OnScheduleFailure bool `json:"onScheduleFailure"` // scheduled run errored (tagarr scope)
-	// Webhook events (deferred to a later session — Radarr Connect receiver):
+	OnScheduleSuccess bool `json:"onScheduleSuccess"` // scheduled run finished without error
+	OnScheduleFailure bool `json:"onScheduleFailure"` // scheduled run errored
+	// Webhook events (Radarr Connect receiver):
 	OnImport     bool `json:"onImport,omitempty"`     // Import / Upgrade / ManualImport / DownloadMovie
 	OnGrab       bool `json:"onGrab,omitempty"`       // grab event (release indexed + sent to download client)
 	OnUpgrade    bool `json:"onUpgrade,omitempty"`    // upgrade-specific subset of import (movie file replaced)
 	OnFileDelete bool `json:"onFileDelete,omitempty"` // movieFile / episodeFile deletion event
-	// Legacy clonarr fields kept on the struct so the agents/ tree stays
-	// drift-compatible. Always false in tagarr; ignored by tagarr providers.
+	// Legacy event fields kept on the struct for forward compatibility
+	// with future event categories. Always false today; ignored.
 	OnSyncSuccess bool `json:"onSyncSuccess,omitempty"`
 	OnSyncFailure bool `json:"onSyncFailure,omitempty"`
 	OnCleanup     bool `json:"onCleanup,omitempty"`
@@ -160,7 +158,7 @@ const (
 // tags. Adding `json:"…"` tags here would suggest persistence semantics
 // that don't exist.
 type Payload struct {
-	Title        string            // short title, e.g. "Clonarr: Auto-Sync Applied"
+	Title        string            // short title, e.g. "Resolvarr: Scheduled Run Complete"
 	Message      string            // default provider message body (markdown)
 	TypeMessages map[string]string // optional per-provider body override keyed by provider type (e.g. {"gotify": "..."})
 	Color        int               // embed accent color (hex int) for providers that support it (Discord)

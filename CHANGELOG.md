@@ -2,6 +2,24 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.9-dev — Security baseline + defensive infrastructure (2026-05-25)
+
+A focused security pass — most of this is invisible from the UI but matters when something goes wrong. Safe upgrade from `v0.6.8-dev`; no config changes required.
+
+### What you get
+
+- **Credential masking on rule-listing endpoint.** Per-rule webhook Token + Secret now masked on `GET /api/webhook-rules`. Plain values still reachable via the dedicated `/webhook` endpoint where you copy them into Sonarr/Radarr.
+
+- **Brute-force protection on login.** Rate-limit hardened against bcrypt-DoS via an explicit 72-byte input cap before the password compare.
+
+- **Passphrase-friendly password rule.** Passwords 16+ characters skip the class-diversity requirement, so `correcthorsebatterystaple` is accepted; under 16 still needs 2 of {upper, lower, digit, symbol}.
+
+- **CI gains automated security scans.** `go test -race`, `govulncheck`, and `gosec` now run on every push and PR.
+
+- **Dependabot.** Weekly PRs for Go modules, GitHub Actions, and Dockerfile base-image updates.
+
+- **Alpine.js CDN integrity.** Pinned to `3.15.12` with a SHA-384 SRI hash — the browser refuses to execute a tampered bundle.
+
 ## v0.6.8-dev — Internal comment cleanup (2026-05-25)
 
 Internal-only housekeeping pass on code comments. No functional change vs `v0.6.7-dev` — your config, notifications, and webhooks behave exactly the same. Safe upgrade.
@@ -26,7 +44,7 @@ Footer is now just `Resolvarr {version} by ProphetSe7en` + the timestamp on the 
 
 ### TRUSTED_PROXIES now accepts CIDR ranges
 
-Set `TRUSTED_PROXIES=172.19.0.0/24` to trust any container on a Docker bridge — useful when your reverse proxy (Traefik / Caddy / nginx-proxy-manager / SWAG) sits on a bridge with dynamic container IPs. Literal IPs still work the same. Same fix shipped to **constat** and **vpn-gateway**.
+Set `TRUSTED_PROXIES=172.19.0.0/24` to trust any container on a Docker bridge — useful when your reverse proxy (Traefik / Caddy / nginx-proxy-manager / SWAG) sits on a bridge with dynamic container IPs. Literal IPs still work the same.
 
 ### Why this matters
 
@@ -71,7 +89,7 @@ Set `TRUSTED_PROXIES=172.19.0.0/24` to trust any container on a Docker bridge �
 
 - **Custom tag labels per bucket.** Don't like `dvprofile8`? Click "Customise labels" on the Audio / Video / DV step in any rule and rename it to `profile8`, or rename `2160p` → `uhd`, or `truehd` → `premium`. Cleanup follows your current labels — tags with the old name stay in Radarr until you remove them manually in Tag inventory.
 
-- **qBit webhook URL override.** When qBit and resolvarr aren't on the same Docker network (typical with VPN-gateway setups), qBit's curl back to resolvarr fails silently. The qBit webhook modal now has a **Resolvarr URL** input — set it to your LAN IP or the proxynet container IP (e.g. `http://172.19.0.35:6075`) and Configure writes that into qBit's autorun. Curl preview updates live so you see exactly what gets written.
+- **qBit webhook URL override.** When qBit and resolvarr aren't on the same Docker network (typical when qBit runs in an isolated network), qBit's curl back to resolvarr fails silently. The qBit webhook modal now has a **Resolvarr URL** input — set it to your LAN IP or the proxynet container IP (e.g. `http://172.19.0.35:6075`) and Configure writes that into qBit's autorun. Curl preview updates live so you see exactly what gets written.
 
 - **qBit webhook list-row state badge.** The Webhooks page now shows a green **configured** badge next to qBit instances where the webhook is already set up, and the button reads **Edit webhook** instead of generic "Webhook". Instances without setup show **Set up webhook**.
 
@@ -374,7 +392,7 @@ get clamped to "" at next config Load.
   into your Arr's Settings → Connect, and every event you fire
   lands in the Recent activity panel — full decoded JSON, click
   to expand. Lets you verify Connect setup end-to-end before any
-  per-event tagging features ship in subsequent sessions.
+  per-event tagging features ship in subsequent releases.
 
 - **Tag Audio / Tag Video / Tag DV Details now have their own
   Run wizards.** Click "Run Tag Audio" (or Video / DV Details)
@@ -408,7 +426,7 @@ get clamped to "" at next config Load.
   last time and pre-select it. Cross-tab memory via localStorage.
   Other wizards (Tag Release Groups, Discover, QFA, Webhook)
   still seed from current state — extending memory to those is
-  parked for next session.
+  parked for a later release.
 
 ### Bug fixes
 

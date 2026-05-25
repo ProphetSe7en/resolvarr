@@ -9,7 +9,7 @@ package api
 //   DELETE /api/instances/{id}/webhook/events — clear the per-instance log
 //   POST   /api/instances/{id}/webhook/rotate — generate or regenerate the token
 //
-// Subsequent sessions wire function execution onto the receive path
+// Later releases wire function execution onto the receive path
 // (release-group tag, DV detail, audio/video tags, qBit S/E tag, etc.)
 // gated by per-function flags on Instance.Webhook. Today the receiver
 // just decodes, summarises, persists, and acks.
