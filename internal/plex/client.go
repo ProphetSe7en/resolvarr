@@ -174,7 +174,18 @@ func (c *Client) GetItems(ctx context.Context, libraryKey string) ([]Item, error
 		return nil, fmt.Errorf("plex: library key required")
 	}
 	var resp itemsResponse
-	path := fmt.Sprintf("/library/sections/%s/all", url.PathEscape(libraryKey))
+	// includeMeta=1 + checkFiles=0 + includeChildren=0 — defensive
+	// parameter set asking Plex to include the full per-item metadata
+	// block (Label[], Genre[], Country[], etc.) without the per-file
+	// metadata or per-episode children. Without includeMeta on some
+	// Plex Server versions the Label array is omitted from the
+	// response — items appear unlabelled and the engine would treat
+	// every Arr-tagged item as "needs to add the label" even when
+	// Plex already carries it. includeChildren=0 keeps episode/season
+	// expansion off for show libraries (we only label series-level
+	// per the design).
+	path := fmt.Sprintf("/library/sections/%s/all?includeMeta=1&includeChildren=0&checkFiles=0",
+		url.PathEscape(libraryKey))
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, err
 	}
@@ -186,18 +197,113 @@ func (c *Client) GetItems(ctx context.Context, libraryKey string) ([]Item, error
 		}
 		labels := make([]string, 0, len(m.Label))
 		for _, l := range m.Label {
-			labels = append(labels, l.Tag)
+			// Trim defensively — Plex normally returns clean strings
+			// but trailing whitespace on a label would silently break
+			// the case-insensitive match downstream (lower("FEL ") !=
+			// lower("FEL")).
+			tag := strings.TrimSpace(l.Tag)
+			if tag != "" {
+				labels = append(labels, tag)
+			}
+		}
+		collections := make([]string, 0, len(m.Collection))
+		for _, c := range m.Collection {
+			tag := strings.TrimSpace(c.Tag)
+			if tag != "" {
+				collections = append(collections, tag)
+			}
 		}
 		out = append(out, Item{
-			RatingKey: m.RatingKey,
-			Title:     m.Title,
-			Year:      m.Year,
-			Type:      m.Type,
-			GUIDs:     guids,
-			Labels:    labels,
+			RatingKey:   m.RatingKey,
+			Title:       m.Title,
+			Year:        m.Year,
+			Type:        m.Type,
+			GUIDs:       guids,
+			Labels:      labels,
+			Collections: collections,
 		})
 	}
 	return out, nil
+}
+
+// FetchRawItemMetadata returns the literal JSON response body from
+// /library/metadata/{ratingKey} — for diagnostic purposes only.
+// Lets the inspect endpoint surface exactly what Plex sends so a
+// JSON-shape mismatch in our typed decoder is visible at first
+// glance. Capped at 64KB to keep the response sane.
+func (c *Client) FetchRawItemMetadata(ctx context.Context, ratingKey string) ([]byte, error) {
+	if strings.TrimSpace(ratingKey) == "" {
+		return nil, fmt.Errorf("plex: rating key required")
+	}
+	fullURL := c.baseURL + fmt.Sprintf("/library/metadata/%s?includeMeta=1", url.PathEscape(ratingKey))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Plex-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer drainAndClose(resp)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("plex: HTTP %d on /library/metadata/%s", resp.StatusCode, ratingKey)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+}
+
+// GetItemMetadata fetches the full per-item metadata for one
+// ratingKey. Used to retrieve Label[] for items that came back from
+// /library/sections/{key}/all without it — some Plex Server versions
+// omit labels from the bulk list endpoint regardless of query
+// params, and per-item /library/metadata/{ratingKey} is the only
+// reliable way to read them. plexapi takes this same approach.
+//
+// Returns the populated Item (same shape as GetItems returns), or
+// the zero value + error on miss / fetch failure. Caller decides
+// whether to fall back to the bulk-fetched labels (typically empty)
+// when this fails.
+func (c *Client) GetItemMetadata(ctx context.Context, ratingKey string) (Item, error) {
+	if strings.TrimSpace(ratingKey) == "" {
+		return Item{}, fmt.Errorf("plex: rating key required")
+	}
+	var resp itemsResponse
+	path := fmt.Sprintf("/library/metadata/%s?includeMeta=1", url.PathEscape(ratingKey))
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return Item{}, err
+	}
+	if len(resp.MediaContainer.Metadata) == 0 {
+		return Item{}, fmt.Errorf("plex: no metadata returned for ratingKey %s", ratingKey)
+	}
+	m := resp.MediaContainer.Metadata[0]
+	guids := make([]string, 0, len(m.Guid))
+	for _, g := range m.Guid {
+		guids = append(guids, g.ID)
+	}
+	labels := make([]string, 0, len(m.Label))
+	for _, l := range m.Label {
+		tag := strings.TrimSpace(l.Tag)
+		if tag != "" {
+			labels = append(labels, tag)
+		}
+	}
+	collections := make([]string, 0, len(m.Collection))
+	for _, c := range m.Collection {
+		tag := strings.TrimSpace(c.Tag)
+		if tag != "" {
+			collections = append(collections, tag)
+		}
+	}
+	return Item{
+		RatingKey:   m.RatingKey,
+		Title:       m.Title,
+		Year:        m.Year,
+		Type:        m.Type,
+		GUIDs:       guids,
+		Labels:      labels,
+		Collections: collections,
+	}, nil
 }
 
 // AddLabel applies one label to one item.
@@ -214,7 +320,7 @@ func (c *Client) GetItems(ctx context.Context, libraryKey string) ([]Item, error
 // Returns nil on HTTP 200. The endpoint is idempotent — re-applying
 // an existing label is a no-op (no error).
 func (c *Client) AddLabel(ctx context.Context, libraryKey, ratingKey, itemType, label string) error {
-	return c.updateLabel(ctx, libraryKey, ratingKey, itemType, label, false)
+	return c.updateTag(ctx, libraryKey, ratingKey, itemType, label, "label", false)
 }
 
 // RemoveLabel removes one label from one item. Same endpoint as
@@ -223,10 +329,41 @@ func (c *Client) AddLabel(ctx context.Context, libraryKey, ratingKey, itemType, 
 //
 // Idempotent — removing a label that doesn't exist returns nil.
 func (c *Client) RemoveLabel(ctx context.Context, libraryKey, ratingKey, itemType, label string) error {
-	return c.updateLabel(ctx, libraryKey, ratingKey, itemType, label, true)
+	return c.updateTag(ctx, libraryKey, ratingKey, itemType, label, "label", true)
 }
 
-func (c *Client) updateLabel(ctx context.Context, libraryKey, ratingKey, itemType, label string, remove bool) error {
+// AddCollection adds the item to one Plex Collection. Same endpoint
+// as AddLabel but uses the `collection[0].tag.tag=X` query-param
+// shape. Plex Collections are a separate metadata concept from
+// Labels — visible in Plex Web as proper grouped views ("MEL
+// Edition Movies", "Reference Audio Movies", etc.). Many users
+// prefer Collections for taxonomic groupings; Labels for ad-hoc
+// tagging. Engine targets one or the other per rule.
+//
+// Idempotent — re-adding a collection membership is a no-op.
+func (c *Client) AddCollection(ctx context.Context, libraryKey, ratingKey, itemType, collection string) error {
+	return c.updateTag(ctx, libraryKey, ratingKey, itemType, collection, "collection", false)
+}
+
+// RemoveCollection removes the item from one Plex Collection. Uses
+// the `collection[].tag.tag-=X` trailing-dash subtract syntax.
+//
+// Idempotent — removing a non-existent collection membership is a
+// no-op.
+func (c *Client) RemoveCollection(ctx context.Context, libraryKey, ratingKey, itemType, collection string) error {
+	return c.updateTag(ctx, libraryKey, ratingKey, itemType, collection, "collection", true)
+}
+
+// updateTag is the shared implementation for Add/Remove on both
+// labels and collections. Plex's tag-update endpoint takes the same
+// URL + auth + type+id triple regardless of which collection-type
+// you're touching; only the query-param prefix changes ("label" vs
+// "collection") and the matching ".locked" suffix that prevents the
+// metadata agent from undoing our write on the next refresh.
+//
+// tagKind must be "label" or "collection"; any other value returns
+// an unsupported-type error.
+func (c *Client) updateTag(ctx context.Context, libraryKey, ratingKey, itemType, tagValue, tagKind string, remove bool) error {
 	if strings.TrimSpace(libraryKey) == "" {
 		return fmt.Errorf("plex: library key required")
 	}
@@ -237,23 +374,28 @@ func (c *Client) updateLabel(ctx context.Context, libraryKey, ratingKey, itemTyp
 	if typeCode == 0 {
 		return fmt.Errorf("plex: unsupported item type %q (want movie or show)", itemType)
 	}
-	if strings.TrimSpace(label) == "" {
-		return fmt.Errorf("plex: label cannot be empty")
+	if strings.TrimSpace(tagValue) == "" {
+		return fmt.Errorf("plex: %s cannot be empty", tagKind)
+	}
+	if tagKind != "label" && tagKind != "collection" {
+		return fmt.Errorf("plex: unsupported tag kind %q (want label or collection)", tagKind)
 	}
 
-	// Build the form-encoded query. The label-collection key uses the
-	// `[].tag.tag` (add) or `[].tag.tag-` (remove) suffix per Plex's
-	// undocumented but stable API. label.locked=1 prevents Plex's
-	// metadata agents from overwriting our label on the next refresh.
-	labelKey := "label[0].tag.tag"
+	// Build the form-encoded query. The add path uses the
+	// `[0].tag.tag` array-element notation; the remove path uses
+	// `[].tag.tag-` (trailing dash) per Plex's undocumented but
+	// stable subtract-from-collection notation. The `.locked=1` flag
+	// prevents Plex's metadata agents from overwriting our write on
+	// the next refresh.
+	tagParamKey := tagKind + "[0].tag.tag"
 	if remove {
-		labelKey = "label[].tag.tag-"
+		tagParamKey = tagKind + "[].tag.tag-"
 	}
 	params := url.Values{}
 	params.Set("type", strconv.Itoa(typeCode))
 	params.Set("id", ratingKey)
-	params.Set(labelKey, label)
-	params.Set("label.locked", "1")
+	params.Set(tagParamKey, tagValue)
+	params.Set(tagKind+".locked", "1")
 
 	path := fmt.Sprintf("/library/sections/%s/all?%s",
 		url.PathEscape(libraryKey),

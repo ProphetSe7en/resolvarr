@@ -58,6 +58,13 @@ var canonicalFunctionOrder = []core.WebhookFunction{
 	core.WebhookFnTagVideo,
 	core.WebhookFnTagDvDetail,
 	core.WebhookFnSyncToSecondary,
+	// Plex label sync runs AFTER every Tag* function has written its
+	// changes to Arr — the adapter fetches the item's current tag
+	// state with arr.Client.GetItem so it needs the prior functions
+	// to have committed first. SyncToSecondary writes to the OTHER
+	// Arr, so its placement doesn't matter relative to Plex sync (we
+	// always source tags from rule.InstanceID).
+	core.WebhookFnPlexLabelSync,
 	// WebhookFnFileDeleteClean retired in C7/C8 — per-bucket
 	// StripOnFileDelete flags + dispatchFileDeleteCleanup-via-
 	// FiresPerBucketStripOnDelete-gate replace it. Adapter still
@@ -493,6 +500,14 @@ func (s *Server) dispatchWebhookFunction(
 		// qBit (category swap). Doesn't read or write Arr tags — no
 		// requireTagDetails gate.
 		return s.dispatchQbitCategoryFix(ctx, rule, cfg, env, body)
+	case core.WebhookFnPlexLabelSync:
+		// Plex label sync reads the Arr item's current tag set
+		// (post-Tag-functions on this same rule) and propagates
+		// whitelist labels to Plex. Reads tags but doesn't write
+		// them — no requireTagDetails gate (adapter re-fetches the
+		// item from Arr internally to pick up changes made by the
+		// other functions in this dispatch chain).
+		return s.dispatchPlexLabelSync(ctx, rule, cfg, env, body)
 	}
 	return functionResult{
 		Function: fn,

@@ -220,6 +220,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/plex-instances/{id}/test", s.handleTestPlexInstance)
 	mux.HandleFunc("POST /api/plex-instances/test", s.handleTestPlexInline)
 	mux.HandleFunc("POST /api/plex-instances/{id}/fetch-libraries", s.handleFetchPlexLibraries)
+	// Diagnostic — fetch raw items from a Plex library with optional
+	// title-substring filter. Surfaces GUIDs + Labels so users can
+	// verify what Plex returns when label-sync results look off.
+	mux.HandleFunc("GET /api/plex-instances/{id}/inspect", s.handleInspectPlexLibrary)
 
 	// Plex label rules — saved Arr-tag → Plex-label sync mappings.
 	// CRUD only; engine + triggers (scheduled / webhook / one-off
@@ -229,6 +233,12 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/plex-label-rules/{id}", s.handleGetPlexLabelRule)
 	mux.HandleFunc("PUT /api/plex-label-rules/{id}", s.handleUpdatePlexLabelRule)
 	mux.HandleFunc("DELETE /api/plex-label-rules/{id}", s.handleDeletePlexLabelRule)
+	// One-off "Run now" — fires the engine on demand. Optional body
+	// {runMode: "preview" | "apply"} overrides the rule's stored
+	// mode. Appends the result to the rule's History (capped at
+	// PlexLabelHistoryCap) and returns the run for the UI's result
+	// modal.
+	mux.HandleFunc("POST /api/plex-label-rules/{id}/run", s.handleRunPlexLabelRule)
 }
 
 // RegisterAuthRoutes wires the setup wizard, login/logout, and

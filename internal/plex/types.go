@@ -34,7 +34,12 @@ type Item struct {
 	Year      int      // for match-fallback (year is required for the title+year tier)
 	Type      string   // "movie" | "show" — season + episode types are out of scope for label sync
 	GUIDs     []string // raw GUID URIs from Plex
-	Labels    []string // current Plex labels (the tag.tag values; case preserved as Plex stores them)
+	Labels    []string // current Plex labels (Label[].tag values; case preserved as Plex stores them)
+	// Collections is the parallel set to Labels — Plex stores them
+	// separately under Collection[]. Engine targets one or the other
+	// per rule via PlexLabelRule.TargetType. Same case-preservation +
+	// case-insensitive matching pattern as labels.
+	Collections []string
 }
 
 // itemTypeCode maps Plex's library-type strings to the numeric `type`
@@ -89,8 +94,26 @@ type rawItem struct {
 	Title     string     `json:"title"`
 	Year      int        `json:"year,omitempty"`
 	Type      string     `json:"type"`
-	Guid      []rawGuid  `json:"Guid,omitempty"`
-	Label     []rawLabel `json:"Label,omitempty"`
+	// Plex returns BOTH a capital "Guid" (array of external GUIDs —
+	// TMDB / TVDB / IMDB) AND a lowercase "guid" (Plex's own internal
+	// GUID string, e.g. "plex://movie/abc123"). Go's JSON decoder
+	// matches case-insensitively after exact-match fails, so without
+	// an explicit absorber for the lowercase field, the string value
+	// gets routed into Guid []rawGuid and the decode panics with
+	// "cannot unmarshal string into Go struct field ... of type
+	// []plex.rawGuid". The PlexInternalGUID field below catches the
+	// lowercase one via its exact-match tag so the typed Guid array
+	// stays clean.
+	Guid             []rawGuid  `json:"Guid,omitempty"`
+	PlexInternalGUID string     `json:"guid,omitempty"` // absorbed — Plex's own GUID, unused
+	Label            []rawLabel `json:"Label,omitempty"`
+	// Plex's Collection array has the same shape as Label
+	// ({id, tag, filter}). Many users group movies by quality/release
+	// taxonomy (FEL/MEL, Reference Audio, etc.) via collections
+	// rather than labels — they show up as proper grouped views in
+	// Plex Web. Engine reads both arrays; rule's TargetType decides
+	// which one drives the diff.
+	Collection []rawLabel `json:"Collection,omitempty"`
 }
 
 type rawGuid struct {

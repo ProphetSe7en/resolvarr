@@ -48,9 +48,34 @@ type PlexLabelRule struct {
 	// engine compares case-insensitive at match time.
 	Labels []string `json:"labels"`
 
+	// LabelDisplay overrides the per-label display string written to
+	// Plex. Key is the Arr tag-name as it appears in Labels[]; value
+	// is the Plex-side display string (any case, spaces, punctuation
+	// — Plex is permissive, unlike Radarr's lowercase-kebab tag
+	// validator which enforces `^[a-z0-9-]+$`). Empty value or missing
+	// key falls back to the Arr tag-name verbatim. Lets users render
+	// "Atmos" on Plex even when Radarr forces the tag to "atmos".
+	LabelDisplay map[string]string `json:"labelDisplay,omitempty"`
+
 	// Targets — exactly one entry today. Slice-typed for future
 	// multi-Plex-per-rule relaxation without a schema change.
 	Targets []PlexLabelTarget `json:"targets"`
+
+	// TargetTypes — which Plex metadata set(s) the rule writes to.
+	// Multi-select: can contain "label" and/or "collection". Empty
+	// is treated as ["label"] (backward-compatible default for rules
+	// saved before this field existed).
+	//
+	//   "label"      — Plex Labels (Label[]). Lightweight tags,
+	//                  filterable in the UI.
+	//   "collection" — Plex Collections (Collection[]). Shown as
+	//                  grouped views in Plex Web.
+	//
+	// When both are selected the engine runs two passes — one per
+	// target type — and the result modal aggregates counters
+	// across both. Per-item PerLabel rows carry a Target field so
+	// the details list shows which side each change is for.
+	TargetTypes []string `json:"targetTypes,omitempty"`
 
 	// RunMode — Plex-side write behaviour. "apply" performs the
 	// add/remove calls; "preview" computes the diff but skips the
@@ -102,6 +127,13 @@ type PlexLabelRuleRun struct {
 	Unmatched   int               `json:"unmatched"`            // no match (graceful — logged + skipped)
 	Added       map[string]int    `json:"added,omitempty"`      // label → count of items label was added to
 	Removed     map[string]int    `json:"removed,omitempty"`    // label → count of items label was removed from
+	// InSync counts the per-label items where the whitelist label is
+	// already correctly applied on both sides (Arr has the tag AND
+	// Plex has the label). Lets the result modal show "FEL: +60 add,
+	// 0 remove, 33 in sync" so users can verify against their known
+	// totals without doing the math themselves. Key matches the
+	// DISPLAY label (same key space as Added + Removed).
+	InSync      map[string]int    `json:"inSync,omitempty"`
 	PerLabel    []PlexLabelChange     `json:"perLabel,omitempty"`   // ordered list for the result-modal
 	Errors      []string          `json:"errors,omitempty"`     // aggregated per-item / per-library errors (capped)
 	Summary     string            `json:"summary"`              // one-line for activity row
@@ -112,6 +144,245 @@ type PlexLabelRuleRun struct {
 	Changed bool `json:"changed,omitempty"`
 }
 
+// WebhookPlexLabelSyncConfig is the inline per-rule config for the
+// WebhookFnPlexLabelSync function. Lives on WebhookRule.PlexLabelSync
+// (pointer; nil when the function isn't enabled). Carries everything
+// the engine needs to fire a per-item sync — same fields as a
+// standalone PlexLabelRule minus the rule-level identity (name,
+// enabled, history, runmode, instanceID, appType — those are
+// inherited from the parent WebhookRule).
+//
+// Decoupled from PlexLabelRule by design: each webhook rule is self-
+// contained, like every other inline function-config block
+// (AudioTags / VideoTags / DvDetail / GrabRename / QbitSe). Users
+// configure the Plex side directly in the webhook wizard rather
+// than referencing a rule elsewhere.
+type WebhookPlexLabelSyncConfig struct {
+	// PlexInstanceID picks the Plex Media Server to write to.
+	PlexInstanceID string `json:"plexInstanceId"`
+	// LibraryKeys scopes the writes to specific Plex libraries on
+	// the picked Plex instance. Validator + engine gate by Arr-side
+	// type (Radarr → movie libs, Sonarr → show libs).
+	LibraryKeys []string `json:"libraryKeys"`
+	// Labels is the case-insensitive whitelist of Arr tag-names this
+	// rule manages on Plex. Same semantics as PlexLabelRule.Labels.
+	Labels []string `json:"labels"`
+	// LabelDisplay overrides the per-label display string written to
+	// Plex. Same semantics as PlexLabelRule.LabelDisplay.
+	LabelDisplay map[string]string `json:"labelDisplay,omitempty"`
+	// TargetTypes — "label" and/or "collection". Empty defaults to
+	// "label" via the EffectiveTargetTypes helper.
+	TargetTypes []string `json:"targetTypes,omitempty"`
+}
+
+// EffectiveTargetTypes mirrors PlexLabelRule's method so engine code
+// that takes either type can use the same fallback default.
+func (c *WebhookPlexLabelSyncConfig) EffectiveTargetTypes() []string {
+	if c == nil || len(c.TargetTypes) == 0 {
+		return []string{"label"}
+	}
+	return c.TargetTypes
+}
+
+// DisplayLabel mirrors PlexLabelRule's method — lets engine code
+// look up per-tag display overrides without caring whether the
+// config came from a standalone PlexLabelRule or an inline
+// WebhookPlexLabelSyncConfig.
+func (c *WebhookPlexLabelSyncConfig) DisplayLabel(arrTag string) string {
+	if c == nil || c.LabelDisplay == nil {
+		return arrTag
+	}
+	if v, ok := c.LabelDisplay[arrTag]; ok {
+		trimmed := strings.TrimSpace(v)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return arrTag
+}
+
+// ValidateWebhookPlexLabelSyncConfig rejects malformed inline-config
+// at save-time. Validator parallel to ValidatePlexLabelRule for the
+// Plex-side parts (the parent webhook rule already handles instance +
+// appType validation, so this only re-checks what's specific to the
+// Plex side).
+//
+// appType is the parent webhook rule's app-type — used for the
+// library-type filter (Radarr→movie / Sonarr→show).
+func ValidateWebhookPlexLabelSyncConfig(c *WebhookPlexLabelSyncConfig, plexes []PlexInstance, appType string) error {
+	if c == nil {
+		return fmt.Errorf("Plex sync config is required when the Plex sync function is enabled")
+	}
+	c.PlexInstanceID = strings.TrimSpace(c.PlexInstanceID)
+	if c.PlexInstanceID == "" {
+		return fmt.Errorf("Plex instance is required")
+	}
+	var plex *PlexInstance
+	for i := range plexes {
+		if plexes[i].ID == c.PlexInstanceID {
+			plex = &plexes[i]
+			break
+		}
+	}
+	if plex == nil {
+		return fmt.Errorf("Plex instance %q not found", c.PlexInstanceID)
+	}
+	if len(c.LibraryKeys) == 0 {
+		return fmt.Errorf("at least one Plex library is required")
+	}
+	if len(c.Labels) == 0 {
+		return fmt.Errorf("at least one label is required")
+	}
+	// Dedupe + trim labels (same as standalone PlexLabelRule).
+	seenLabels := make(map[string]struct{}, len(c.Labels))
+	for i, lbl := range c.Labels {
+		trimmed := strings.TrimSpace(lbl)
+		if trimmed == "" {
+			return fmt.Errorf("labels[%d] cannot be empty", i)
+		}
+		key := strings.ToLower(trimmed)
+		if _, dup := seenLabels[key]; dup {
+			return fmt.Errorf("label %q is listed more than once", trimmed)
+		}
+		seenLabels[key] = struct{}{}
+		c.Labels[i] = trimmed
+	}
+	// Library-key dedupe + cache-existence + type filter.
+	cached := make(map[string]string, len(plex.Libraries))
+	for _, lib := range plex.Libraries {
+		cached[lib.Key] = lib.Type
+	}
+	wantType := plexLibraryTypeForApp(appType)
+	seenKeys := make(map[string]struct{}, len(c.LibraryKeys))
+	for _, key := range c.LibraryKeys {
+		if _, dup := seenKeys[key]; dup {
+			return fmt.Errorf("Plex library key %q is listed more than once", key)
+		}
+		seenKeys[key] = struct{}{}
+		libType, ok := cached[key]
+		if !ok {
+			return fmt.Errorf("Plex library key %q not in cache — refresh libraries on the Plex instance and pick again", key)
+		}
+		if wantType != "" && libType != wantType {
+			return fmt.Errorf("library %q is type %q but rule uses %s (need %s libraries)",
+				key, libType, appType, wantType)
+		}
+	}
+	// LabelDisplay cleanup — same in-place mutation as
+	// ValidatePlexLabelRule. Map mutations survive the pass-by-value
+	// boundary because maps are reference types.
+	if len(c.LabelDisplay) > 0 {
+		labelSet := make(map[string]struct{}, len(c.Labels))
+		for _, l := range c.Labels {
+			labelSet[l] = struct{}{}
+		}
+		for k, v := range c.LabelDisplay {
+			trimmedV := strings.TrimSpace(v)
+			if trimmedV == "" || trimmedV == k {
+				delete(c.LabelDisplay, k)
+				continue
+			}
+			if _, ok := labelSet[k]; !ok {
+				delete(c.LabelDisplay, k)
+				continue
+			}
+			if trimmedV != v {
+				c.LabelDisplay[k] = trimmedV
+			}
+		}
+	}
+	// Target-types validation. Same allowlist as standalone rule.
+	if len(c.TargetTypes) > 0 {
+		seenTargets := make(map[string]struct{}, len(c.TargetTypes))
+		for _, t := range c.TargetTypes {
+			if t != "label" && t != "collection" {
+				return fmt.Errorf(`targetTypes entries must be "label" or "collection"; got %q`, t)
+			}
+			if _, dup := seenTargets[t]; dup {
+				return fmt.Errorf("targetTypes %q is listed more than once", t)
+			}
+			seenTargets[t] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// AsPlexLabelRule synthesizes a PlexLabelRule from the inline
+// webhook config so the existing engine entry points
+// (runPlexLabelSync / runPlexLabelSyncForItem) can fire against it
+// without a parallel implementation. Fields that don't apply to the
+// webhook flow (Name, ID, Enabled, History, RunMode) are zero-valued;
+// engine doesn't read them on the per-item path.
+//
+// instanceID + appType come from the parent WebhookRule so the
+// synthesized rule reads as if it were a standalone rule bound to
+// the same Arr.
+func (c *WebhookPlexLabelSyncConfig) AsPlexLabelRule(instanceID, appType string) PlexLabelRule {
+	if c == nil {
+		return PlexLabelRule{}
+	}
+	return PlexLabelRule{
+		InstanceID:   instanceID,
+		AppType:      appType,
+		Labels:       append([]string(nil), c.Labels...),
+		LabelDisplay: cloneLabelDisplay(c.LabelDisplay),
+		Targets: []PlexLabelTarget{
+			{
+				PlexInstanceID: c.PlexInstanceID,
+				LibraryKeys:    append([]string(nil), c.LibraryKeys...),
+			},
+		},
+		TargetTypes: append([]string(nil), c.TargetTypes...),
+		// Webhook-driven flows always apply — the rule's stored
+		// runMode is meaningless here (no UI to flip preview/apply
+		// per webhook event). The adapter overrides runMode at
+		// engine-call time anyway.
+		RunMode: "apply",
+	}
+}
+
+func cloneLabelDisplay(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// EffectiveTargetTypes returns the canonical list of Plex target
+// types this rule writes to. Empty / missing TargetTypes defaults
+// to ["label"] for backward compatibility with rules saved before
+// the field landed.
+func (r *PlexLabelRule) EffectiveTargetTypes() []string {
+	if len(r.TargetTypes) == 0 {
+		return []string{"label"}
+	}
+	return r.TargetTypes
+}
+
+// DisplayLabel returns the Plex-side display string for an Arr tag
+// name. Looks up LabelDisplay first (key matches Labels verbatim);
+// falls back to the Arr tag-name when no override is set or the
+// override is empty/whitespace.
+//
+// Used by the engine when writing labels to Plex AND by the UI's
+// "Manages: …" line on rule cards.
+func (r *PlexLabelRule) DisplayLabel(arrTag string) string {
+	if r.LabelDisplay == nil {
+		return arrTag
+	}
+	if v, ok := r.LabelDisplay[arrTag]; ok {
+		trimmed := strings.TrimSpace(v)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return arrTag
+}
+
 // PlexLabelChange is one (item × label × action) tuple captured by the
 // engine. Action is "add" or "remove". Year may be zero for items
 // where Plex didn't report a year (rare; usually older shows).
@@ -120,6 +391,42 @@ type PlexLabelChange struct {
 	Year   int    `json:"year,omitempty"`
 	Label  string `json:"label"`
 	Action string `json:"action"`
+	// Target is the Plex-side metadata array this change writes to:
+	// "label" or "collection". Lets the per-item detail row in the
+	// result modal show "Add FEL as label on Abigail" vs "Add FEL
+	// as collection on Bee Movie" when a rule targets both.
+	Target string `json:"target,omitempty"`
+}
+
+// PlexLabelRunErrorCap + PlexLabelRunPerLabelCap bound the slices on
+// pathologically large runs so the on-disk JSON shape (and the
+// /api/plex-label-rules response payload) stays reasonable. A
+// completely-broken run shouldn't be allowed to write a 50 MB history
+// entry — we record up to the cap, then emit one cut-off marker.
+const (
+	PlexLabelRunErrorCap    = 50
+	PlexLabelRunPerLabelCap = 500
+)
+
+// AppendError adds an error string to the run's Errors slice, capped
+// at PlexLabelRunErrorCap entries (the last one becomes a cut-off
+// marker so the reader knows there were more).
+func (r *PlexLabelRuleRun) AppendError(s string) {
+	if len(r.Errors) >= PlexLabelRunErrorCap {
+		r.Errors[PlexLabelRunErrorCap-1] = "(more errors omitted — run hit the error cap)"
+		return
+	}
+	r.Errors = append(r.Errors, s)
+}
+
+// AppendPerLabel adds a change to the PerLabel slice, capped at
+// PlexLabelRunPerLabelCap. Counts in Added/Removed maps stay
+// authoritative even after the detail list caps out.
+func (r *PlexLabelRuleRun) AppendPerLabel(c PlexLabelChange) {
+	if len(r.PerLabel) >= PlexLabelRunPerLabelCap {
+		return
+	}
+	r.PerLabel = append(r.PerLabel, c)
 }
 
 // ValidatePlexLabelRule rejects malformed rules at save-time. Returns
@@ -129,7 +436,10 @@ type PlexLabelChange struct {
 // existing is the rest of the rule list (for name-uniqueness checks);
 // ignoreID = the ID being updated (so a PUT of the same rule doesn't
 // trip its own name).
-func ValidatePlexLabelRule(rule PlexLabelRule, instances []Instance, plexes []PlexInstance, existing []PlexLabelRule, ignoreID string) error {
+func ValidatePlexLabelRule(rule *PlexLabelRule, instances []Instance, plexes []PlexInstance, existing []PlexLabelRule, ignoreID string) error {
+	if rule == nil {
+		return fmt.Errorf("rule is nil")
+	}
 	rule.Name = strings.TrimSpace(rule.Name)
 	if rule.Name == "" {
 		return fmt.Errorf("name is required")
@@ -234,6 +544,52 @@ func ValidatePlexLabelRule(rule PlexLabelRule, instances []Instance, plexes []Pl
 	}
 	if rule.RunMode != "apply" && rule.RunMode != "preview" {
 		return fmt.Errorf(`runMode must be "apply" or "preview"`)
+	}
+
+	// Target-types validation. Multi-select: when explicitly set,
+	// each entry must be "label" or "collection" and duplicates are
+	// rejected. Empty / missing is allowed at the validator boundary
+	// — EffectiveTargetTypes() defaults to ["label"] at read time
+	// for backward-compat with rules saved before this field landed.
+	if len(rule.TargetTypes) > 0 {
+		seenTargets := make(map[string]struct{}, len(rule.TargetTypes))
+		for _, t := range rule.TargetTypes {
+			if t != "label" && t != "collection" {
+				return fmt.Errorf(`targetTypes entries must be "label" or "collection"; got %q`, t)
+			}
+			if _, dup := seenTargets[t]; dup {
+				return fmt.Errorf("targetTypes %q is listed more than once", t)
+			}
+			seenTargets[t] = struct{}{}
+		}
+	}
+
+	// LabelDisplay cleanup — drop any orphan keys (display set for a
+	// tag that's no longer in Labels), drop empty values, drop
+	// identity entries (display string equals the Arr tag-name, so it
+	// adds no value). Mutate in place so the caller's map sees the
+	// cleanup — `rule` is pass-by-value but maps are reference types.
+	// Empty post-cleanup leaves an empty map which JSON omits via
+	// the omitempty tag.
+	if len(rule.LabelDisplay) > 0 {
+		labelSet := make(map[string]struct{}, len(rule.Labels))
+		for _, l := range rule.Labels {
+			labelSet[l] = struct{}{}
+		}
+		for k, v := range rule.LabelDisplay {
+			trimmedV := strings.TrimSpace(v)
+			if trimmedV == "" || trimmedV == k {
+				delete(rule.LabelDisplay, k)
+				continue
+			}
+			if _, ok := labelSet[k]; !ok {
+				delete(rule.LabelDisplay, k)
+				continue
+			}
+			if trimmedV != v {
+				rule.LabelDisplay[k] = trimmedV
+			}
+		}
 	}
 
 	// Name uniqueness (case-insensitive) across the rule set.

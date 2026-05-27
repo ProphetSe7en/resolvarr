@@ -45,6 +45,14 @@ const (
 	WebhookFnGrabRename       WebhookFunction = "grabRename"       // Both Arrs — qBit torrent rename on Grab
 	WebhookFnQbitSeTag        WebhookFunction = "qbitSeTag"        // Sonarr only — qBit S/E tagging on Grab
 	WebhookFnQbitCategoryFix  WebhookFunction = "qbitCategoryFix"  // Both Arrs — reconcile pre→post-import category on qBit if Arr's update silently failed
+	// WebhookFnPlexLabelSync propagates whitelist tag changes on the
+	// fired item out to Plex. Runs AFTER the Tag* functions on the
+	// same rule have finished mutating Arr tags so the engine sees
+	// the final Arr-side state. Auto-matches any enabled Plex label
+	// rule bound to the same Arr instance — no manual ID wiring
+	// required. Fires on Download + *FileDelete events so additions
+	// (post-import) and removals (file gone) both propagate.
+	WebhookFnPlexLabelSync WebhookFunction = "plexLabelSync" // Both Arrs
 )
 
 // allWebhookFunctions enumerates every defined function. Used by the
@@ -71,6 +79,7 @@ var allWebhookFunctions = []WebhookFunction{
 	WebhookFnGrabRename,
 	WebhookFnQbitSeTag,
 	WebhookFnQbitCategoryFix,
+	WebhookFnPlexLabelSync,
 }
 
 // ValidWebhookFunction returns true when fn is one of the canonical
@@ -82,6 +91,15 @@ func ValidWebhookFunction(fn WebhookFunction) bool {
 		}
 	}
 	return false
+}
+
+// AllWebhookFunctions returns a defensive copy of the canonical
+// function list. Used by callers that need to iterate every defined
+// function (e.g. /api/webhook-rules/_meta) without hardcoding their
+// own — keeps the list a single source of truth so a new function
+// landing here is automatically picked up everywhere.
+func AllWebhookFunctions() []WebhookFunction {
+	return append([]WebhookFunction(nil), allWebhookFunctions...)
 }
 
 // WebhookFunctionAppliesTo gates a function against an Arr type. Drives
@@ -98,7 +116,7 @@ func WebhookFunctionAppliesTo(fn WebhookFunction, appType string) bool {
 		return appType == "radarr"
 	case WebhookFnQbitSeTag:
 		return appType == "sonarr"
-	case WebhookFnTagAudio, WebhookFnTagVideo, WebhookFnRecover, WebhookFnFileDeleteClean, WebhookFnGrabRename, WebhookFnQbitCategoryFix:
+	case WebhookFnTagAudio, WebhookFnTagVideo, WebhookFnRecover, WebhookFnFileDeleteClean, WebhookFnGrabRename, WebhookFnQbitCategoryFix, WebhookFnPlexLabelSync:
 		return appType == "radarr" || appType == "sonarr"
 	}
 	return false
@@ -151,6 +169,23 @@ func EventsForFunction(fn WebhookFunction, appType string) []WebhookConnectEvent
 	case WebhookFnTagReleaseGroups, WebhookFnDiscover, WebhookFnTagAudio, WebhookFnTagVideo,
 		WebhookFnTagDvDetail, WebhookFnRecover, WebhookFnSyncToSecondary, WebhookFnQbitCategoryFix:
 		return []WebhookConnectEvent{WebhookEventDownload}
+	case WebhookFnPlexLabelSync:
+		// Fires on Download (post-import — Tag* functions on the
+		// same rule have set the item's final Arr-side tag state)
+		// AND on FileDelete events (catches strip-on-delete behaviour
+		// from the per-bucket flags — Plex labels need to drop too).
+		// Both appTypes — engine handles movie/show targeting per the
+		// Plex label rule's library type.
+		if appType == "radarr" {
+			return []WebhookConnectEvent{
+				WebhookEventDownload,
+				WebhookEventMovieFileDelete, WebhookEventMovieFileDeleteForUpgrade,
+			}
+		}
+		return []WebhookConnectEvent{
+			WebhookEventDownload,
+			WebhookEventEpisodeFileDelete, WebhookEventEpisodeFileDeleteForUpgrade,
+		}
 	case WebhookFnFileDeleteClean:
 		if appType == "radarr" {
 			return []WebhookConnectEvent{WebhookEventMovieFileDelete, WebhookEventMovieFileDeleteForUpgrade}
@@ -617,6 +652,16 @@ type WebhookRule struct {
 	GrabRename      *GrabRenameCriteria   `json:"grabRename,omitempty"`
 	QbitSe          *QbitSeRules          `json:"qbitSe,omitempty"`
 	QbitCategoryFix *QbitCategoryFixRules `json:"qbitCategoryFix,omitempty"`
+
+	// PlexLabelSync — inline per-rule config for the WebhookFnPlexLabelSync
+	// function. Populated only when the function is enabled on this
+	// rule; nil otherwise (JSON omits the field). Same architectural
+	// pattern as AudioTags / VideoTags / DvDetail / GrabRename /
+	// QbitSe — each webhook function carries its own config block on
+	// the rule rather than referencing a separately-configured rule
+	// elsewhere in the app. Keeps the webhook wizard as the single
+	// source of truth for everything the rule does.
+	PlexLabelSync *WebhookPlexLabelSyncConfig `json:"plexLabelSync,omitempty"`
 
 	// NotifyOnFire — master toggle for sending notifications when this
 	// rule fires. When false, no notification is sent regardless of how

@@ -98,7 +98,7 @@ function app() {
       // Wizard-step help panels — same toggle pattern as the Library
       // scan fanes. Each wizard step renders its own collapsible
       // "How it works" panel so the inline form copy can stay short.
-      ruleBasics: false, ruleRG: false, ruleFilters: false, ruleAudio: false, ruleVideo: false, ruleDvDetail: false, ruleMissingEpisodes: false, ruleGrabRename: false, ruleQbitSe: false, ruleQbitCategoryFix: false, ruleSchedule: false },
+      ruleBasics: false, ruleRG: false, ruleFilters: false, ruleAudio: false, ruleVideo: false, ruleDvDetail: false, ruleMissingEpisodes: false, ruleGrabRename: false, ruleQbitSe: false, ruleQbitCategoryFix: false, rulePlexLabelSync: false, ruleSchedule: false },
 
     // Single source of truth for short function descriptions. Used by:
     // - Rule editor Basics step (schedule + webhook modes) to render
@@ -177,6 +177,21 @@ function app() {
         summaryWebhook: 'Reads inside the imported Dolby Vision file to figure out which kind of DV it is (profile 5 / 7 / 8, FEL / MEL, CM2 / CM4) and tags it accordingly.',
         triggers: ['On File Import', 'On File Upgrade'],
         appliesTo: 'radarr',
+      },
+      plexLabelSync: {
+        id: 'plexLabelSync',
+        optionFlag: 'fnPlexLabelSync',
+        label: 'Sync to Plex',
+        summary: 'After the other tag steps have written their changes to Radarr/Sonarr, propagate the whitelist tags out to Plex — as labels, collections, or both — for the imported item. Configure the Plex side directly on this rule (Plex instance, libraries, whitelist tags, target mode) in the Plex label sync wizard step. Per-event, single-item scope — no full library scan.',
+        summaryWebhook: 'After the other tag steps run on this rule, propagate the whitelist tags out to Plex — as labels, collections, or both — for the imported item. Use the Plex label sync wizard step to pick the target Plex instance, libraries, and which tag-names should travel. Per-event, single-item scope.',
+        triggers: ['On File Import', 'On File Upgrade', 'On File Delete'],
+        appliesTo: 'both',
+        // Webhook-only function. Scheduled rules use the dedicated
+        // Plex label-sync sub-tab + its own scheduler reference
+        // (Approach A — not yet wired). Excluded from the schedule
+        // checkbox list to avoid confusing the user with a duplicate
+        // entry point.
+        webhookOnly: true,
       },
       cleanup: {
         id: 'cleanup',
@@ -457,6 +472,71 @@ function app() {
     plexLibrariesBusy: {},
     deletePlexTarget: null,
     deletePlexBusy: false,
+
+    // Plex label-sync rules — list + Add/Edit modal state. Each rule
+    // binds one Arr instance + label whitelist to one Plex instance +
+    // library list. Loaded on Library scan → Plex sync sub-tab visit
+    // and after every CRUD action.
+    plexLabelRules: [],
+    plexLabelRuleModal: {
+      open: false,
+      id: '',
+      name: '',
+      enabled: true,
+      instanceId: '',
+      appType: '',
+      // labels is the array of whitelisted tag-names — populated by
+      // ticking checkboxes in the Arr-tag picker. The chip strip
+      // above the picker is read-only display + × to drop entries.
+      labels: [],
+      // labelDisplay maps Arr tag-name (key in Labels) → Plex-side
+      // display string. Empty / missing entries fall back to the Arr
+      // tag verbatim. Lets users render "Atmos" / "FEL" / "Dolby
+      // Vision" on Plex even when Radarr's strict lowercase-kebab tag
+      // validator only accepts the lower-case form. UI shows an
+      // inline input next to each ticked checkbox; validator on the
+      // backend drops orphan + identity + empty entries at save-time.
+      labelDisplay: {},
+      plexInstanceId: '',
+      libraryKeys: [],
+      runMode: 'apply',
+      // targetTypes — array of Plex metadata targets. Multi-select:
+      // can contain "label" and/or "collection". Engine runs one
+      // diff + apply pass per target type. Default ["label"] for
+      // new rules.
+      targetTypes: ['label'],
+      busy: false,
+    },
+    deletePlexLabelRuleTarget: null,
+    deletePlexLabelRuleBusy: false,
+
+    // Plex label-sync run modal — drives the "Run now" flow. Three
+    // states the same modal cycles through:
+    //   1. confirm — user picks Preview / Apply
+    //   2. busy    — request in flight; spinner + disable buttons
+    //   3. result  — render the PlexLabelRuleRun returned by the
+    //                backend (summary + counts + per-label detail)
+    plexLabelRunModal: {
+      open: false,
+      stage: 'confirm', // 'confirm' | 'busy' | 'result'
+      rule: null,       // the rule being run (full object, for header display)
+      runMode: 'apply', // user's pick — defaults to the rule's runMode on open
+      result: null,     // PlexLabelRuleRun returned by /run endpoint
+      error: '',        // top-level error (network / 4xx / 5xx)
+      detailsFilter: '', // result stage: filter the per-item details list to one label (empty = show all)
+    },
+    // Live tag list from the rule's picked Arr instance — populated by
+    // plexLabelRuleLoadAvailableTags() when the modal opens or the Arr
+    // dropdown changes. Drives the "Pick from your tags" checkbox
+    // section in the rule modal so the user doesn't have to remember
+    // exact tag-names from Radarr/Sonarr.
+    plexLabelRuleAvailableTags: [],
+    plexLabelRuleTagsLoading: false,
+    plexLabelRuleTagsError: '',
+    // Case-insensitive substring filter on the tag checkbox list.
+    // Lets users with many tags narrow down without scrolling.
+    // Empty = show everything. Reset every time the modal opens.
+    plexLabelRuleTagFilter: '',
 
     // M-qBit-add Slice 5 — per-instance webhook hook modal state.
     qbitWebhookOpen: false,
@@ -965,6 +1045,7 @@ function app() {
       { id: 'grabrename', label: 'qBit Grab Rename' },
       { id: 'qbitse',     label: 'qBit S/E tag' },
       { id: 'qbitcategoryfix', label: 'qBit category fix' },
+      { id: 'plexlabelsync', label: 'Plex label sync' },
       // Schedule tab is visible only when the rule fires on a cron
       // (not Manual run only). Hidden in quickfix mode entirely.
       { id: 'schedule', label: 'Schedule' },
@@ -1026,7 +1107,7 @@ function app() {
     // and schedule. Visibility (ruleEditorTabVisible) gates them off
     // for schedule rules entirely, and for webhook rules they only
     // surface when the matching fn flag is ticked on Basics.
-    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'grabrename', 'qbitse', 'qbitcategoryfix', 'schedule', 'review'],
+    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'grabrename', 'qbitse', 'qbitcategoryfix', 'plexlabelsync', 'schedule', 'review'],
 
     // instance UI state
     instStatus: {},
@@ -1289,6 +1370,14 @@ function app() {
       if (this.currentPage === 'scan') {
         this.initScan();
         if (this.scanSection === 'groups') this.loadGroups();
+        // Direct-hash landing on the Plex-sync sub-tab — load rules +
+        // Plex instances so the rule cards + "Add rule" gate render
+        // with current data without waiting for the user to click the
+        // sub-nav.
+        if (this.scanSection === 'plex-sync') {
+          this.loadPlexLabelRules();
+          this.loadPlexInstances();
+        }
       }
       // Load notification agents when landing on Settings → Notifications.
       if (this.currentPage === 'settings' && this.section === 'notifications') {
@@ -1317,6 +1406,9 @@ function app() {
         // visiting Settings → qBit leaves both dropdowns empty and the
         // Next-button gate stuck on "Pick a qBit instance".
         this.loadQbitInstances();
+        // Plex instances feed the Plex label sync step's dropdown.
+        // Same reasoning as the qBit case above.
+        this.loadPlexInstances();
       }
       // Kick off initial status check for all instances, then poll every 60s.
       // Same cadence applies to qBit + Plex so the row pills reflect live
@@ -1358,6 +1450,8 @@ function app() {
         // Mirror init() — qBit instances feed Grab Rename + qBit S/E
         // tag dropdowns. Idempotent (loadQbitInstances just refetches).
         this.loadQbitInstances();
+        // Plex instances feed the Plex label sync step's dropdown.
+        this.loadPlexInstances();
       } else {
         this.stopWebhookEventStream();
       }
@@ -1876,6 +1970,530 @@ function app() {
       }
     },
 
+    // ---- Plex label-sync rules (Library scan → Plex sync sub-tab) -----
+    // CRUD for the user-managed rule list. Each rule binds one Arr
+    // instance's tag-names (whitelist) to one Plex instance + library
+    // list. AppType is derived from the picked Arr at save-time; the
+    // validator on the backend re-derives + enforces it too.
+
+    async loadPlexLabelRules() {
+      try {
+        const r = await this.apiFetch('/api/plex-label-rules');
+        if (r.ok) {
+          const d = await r.json();
+          this.plexLabelRules = Array.isArray(d) ? d : [];
+        }
+      } catch (e) {
+        // Silent — page renders empty state until next refresh.
+      }
+    },
+
+    // plexLabelRulesForCurrentAppType filters the rule list to only
+    // rules bound to an instance of the page-level scanAppType. Same
+    // convention as every other sub-tab under Library scan — picking
+    // Radarr at the top scopes everything below to Radarr.
+    plexLabelRulesForCurrentAppType() {
+      const want = this.scanAppType;
+      if (!want) return this.plexLabelRules || [];
+      return (this.plexLabelRules || []).filter(r => r.appType === want);
+    },
+
+    // plexLabelRuleOtherTypeCount surfaces the count of rules bound to
+    // the OTHER Arr type so the empty-state can hint "you have N
+    // rules under the other app type — switch pill to see them".
+    plexLabelRuleOtherTypeCount() {
+      const want = this.scanAppType;
+      if (!want) return 0;
+      return (this.plexLabelRules || []).filter(r => r.appType !== want).length;
+    },
+
+    // plexLabelRuleAvailableInstances filters the Add/Edit modal's
+    // Arr-instance dropdown to instances matching the page-level
+    // scanAppType. Defensive default: when scanAppType is unset
+    // (rare) returns the full list.
+    plexLabelRuleAvailableInstances() {
+      const want = this.scanAppType;
+      if (!want) return this.instances || [];
+      return (this.instances || []).filter(i => i.type === want);
+    },
+
+    openPlexLabelRuleModal(rule) {
+      const editing = !!rule;
+      // Pull AppType from the linked instance so the library picker
+      // can filter immediately, without waiting for the user to
+      // re-pick the instance dropdown.
+      let appType = '';
+      if (editing) {
+        appType = rule.appType || '';
+      }
+      this.plexLabelRuleModal = {
+        open: true,
+        id: editing ? rule.id : '',
+        name: editing ? rule.name : '',
+        enabled: editing ? !!rule.enabled : true,
+        instanceId: editing ? rule.instanceId : '',
+        appType: appType,
+        labels: editing ? [...(rule.labels || [])] : [],
+        labelDisplay: editing && rule.labelDisplay ? { ...rule.labelDisplay } : {},
+        plexInstanceId: editing && rule.targets && rule.targets[0] ? rule.targets[0].plexInstanceId : '',
+        libraryKeys: editing && rule.targets && rule.targets[0] ? [...(rule.targets[0].libraryKeys || [])] : [],
+        runMode: editing && rule.runMode ? rule.runMode : 'apply',
+        // Empty array treated as ["label"] by the backend for
+        // backward compatibility — surfaced explicitly here so the
+        // UI checkboxes show the selected state on edit.
+        targetTypes: (editing && Array.isArray(rule.targetTypes) && rule.targetTypes.length > 0)
+          ? [...rule.targetTypes]
+          : ['label'],
+        busy: false,
+      };
+      // Pre-fetch the picked Arr's tag list so the checkbox picker has
+      // data immediately. Edit flow has instanceId from the start;
+      // Add flow fires the fetch later via onInstanceChange.
+      this.plexLabelRuleAvailableTags = [];
+      this.plexLabelRuleTagsError = '';
+      this.plexLabelRuleTagFilter = '';
+      if (this.plexLabelRuleModal.instanceId) {
+        this.plexLabelRuleLoadAvailableTags();
+      }
+    },
+
+    // plexLabelRuleFilteredAvailableTags applies the search filter
+    // (case-insensitive substring on the tag-name) to the available-
+    // tags list. Empty filter returns the full list. Used by the
+    // tag-picker template — selected tags that no longer match the
+    // filter remain visible in the chip strip above, so the user
+    // never loses sight of what's selected.
+    plexLabelRuleFilteredAvailableTags() {
+      const filter = (this.plexLabelRuleTagFilter || '').trim().toLowerCase();
+      if (!filter) return this.plexLabelRuleAvailableTags;
+      return this.plexLabelRuleAvailableTags.filter(t => t.label.toLowerCase().includes(filter));
+    },
+
+    // plexLabelRuleLoadAvailableTags fetches the live tag list from the
+    // currently-picked Arr instance (uses the same /api/instances/{id}/tags
+    // endpoint that Tag inventory / Compare use). Drops on AppType
+    // change so the picker always reflects the current Arr's tag set.
+    async plexLabelRuleLoadAvailableTags() {
+      const m = this.plexLabelRuleModal;
+      if (!m.instanceId) {
+        this.plexLabelRuleAvailableTags = [];
+        return;
+      }
+      this.plexLabelRuleTagsLoading = true;
+      this.plexLabelRuleTagsError = '';
+      try {
+        const r = await this.apiFetch('/api/instances/' + m.instanceId + '/tags');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const list = await r.json();
+        // Normalise + sort alphabetically so the checkbox order is
+        // predictable across page-reloads.
+        const out = (Array.isArray(list) ? list : [])
+          .map(t => ({ label: (t.label || '').trim(), usageCount: t.usageCount || 0 }))
+          .filter(t => t.label);
+        out.sort((a, b) => a.label.localeCompare(b.label));
+        this.plexLabelRuleAvailableTags = out;
+      } catch (e) {
+        this.plexLabelRuleTagsError = e.message;
+        this.plexLabelRuleAvailableTags = [];
+      } finally {
+        this.plexLabelRuleTagsLoading = false;
+      }
+    },
+
+    // onPlexLabelRuleInstanceChange — fires when the user picks a
+    // different Arr instance from the dropdown. Refreshes AppType +
+    // tag list; resets library selection (since the new instance's
+    // type may differ and library-keys would no longer match).
+    onPlexLabelRuleInstanceChange() {
+      const m = this.plexLabelRuleModal;
+      const inst = (this.instances || []).find(i => i.id === m.instanceId);
+      m.appType = inst ? inst.type : '';
+      // Library keys are appType-gated; force re-pick on Arr change.
+      m.libraryKeys = [];
+      this.plexLabelRuleLoadAvailableTags();
+    },
+
+    // plexLabelRuleHasLabel — case-insensitive membership check for the
+    // checkbox-row's :checked binding. Lets the user see at a glance
+    // which available tags are already part of the rule's whitelist.
+    plexLabelRuleHasLabel(label) {
+      return (this.plexLabelRuleModal.labels || []).some(l => l.toLowerCase() === label.toLowerCase());
+    },
+
+    // plexLabelRuleToggleAvailableTag — checkbox click handler. Adds
+    // or removes the tag from the rule's labels list, preserving the
+    // exact case as stored on the Arr. Drops the matching
+    // labelDisplay entry on untick so an unchecked tag doesn't leave
+    // a stale override hanging around (backend would drop it on save
+    // anyway, but keeping in-modal state tidy avoids confusion if
+    // the user re-ticks the tag and expects a fresh slate).
+    plexLabelRuleToggleAvailableTag(label) {
+      const m = this.plexLabelRuleModal;
+      const idx = m.labels.findIndex(l => l.toLowerCase() === label.toLowerCase());
+      if (idx === -1) {
+        m.labels.push(label);
+      } else {
+        const removed = m.labels[idx];
+        m.labels.splice(idx, 1);
+        if (m.labelDisplay && removed in m.labelDisplay) {
+          delete m.labelDisplay[removed];
+        }
+      }
+    },
+
+    // plexLabelRuleSetDisplay — write a per-tag override into the
+    // labelDisplay map. Empty value deletes the entry so JSON
+    // round-trips cleanly (the backend treats empty + missing as
+    // equivalent, but we keep client state tidy).
+    plexLabelRuleSetDisplay(arrTag, value) {
+      const m = this.plexLabelRuleModal;
+      if (!m.labelDisplay) m.labelDisplay = {};
+      const trimmed = (value || '').trim();
+      if (!trimmed || trimmed === arrTag) {
+        delete m.labelDisplay[arrTag];
+      } else {
+        m.labelDisplay[arrTag] = trimmed;
+      }
+    },
+
+    // plexLabelRuleEffectiveLabel — what the engine will write to Plex
+    // for a given Arr tag. Drives the chip-strip badge + the rule-
+    // card "Manages:" line so the user can see at a glance what the
+    // Plex side will look like.
+    plexLabelRuleEffectiveLabel(arrTag, displayMap) {
+      const m = displayMap || this.plexLabelRuleModal.labelDisplay || {};
+      const v = m[arrTag];
+      if (v && v.trim() && v.trim() !== arrTag) return v.trim();
+      return arrTag;
+    },
+
+    // plexLabelRuleIsCustomLabel — returns true when a label on the
+    // rule is NOT in the current Arr's tag list. Either the user typed
+    // it manually (preempt-config for a tag they'll create later), or
+    // the Arr tag was deleted after the rule was saved. Either way,
+    // it's surfaced in the UI with a "not in Arr" hint so the user
+    // knows the rule won't match anything until the tag exists.
+    plexLabelRuleIsCustomLabel(label) {
+      if (this.plexLabelRuleTagsLoading) return false;
+      if (!this.plexLabelRuleAvailableTags || this.plexLabelRuleAvailableTags.length === 0) return false;
+      return !this.plexLabelRuleAvailableTags.some(t => t.label.toLowerCase() === label.toLowerCase());
+    },
+
+    closePlexLabelRuleModal() {
+      if (this.plexLabelRuleModal.busy) return;
+      this.plexLabelRuleModal.open = false;
+    },
+
+    // togglePlexLabelRuleLibraryKey — multi-select checkbox handler.
+    // Keeps libraryKeys as a clean string array (no dupes).
+    togglePlexLabelRuleLibraryKey(key) {
+      const m = this.plexLabelRuleModal;
+      const idx = m.libraryKeys.indexOf(key);
+      if (idx === -1) {
+        m.libraryKeys.push(key);
+      } else {
+        m.libraryKeys.splice(idx, 1);
+      }
+    },
+
+    // plexLabelRuleSelectedPlexLibraries — list of libraries on the
+    // currently-picked Plex instance, filtered by Arr type (Radarr →
+    // movie libs, Sonarr → show libs). Returns the FULL list (no type
+    // filter) when AppType isn't picked yet so the user can see what
+    // would appear once they finish the form.
+    plexLabelRuleSelectedPlexLibraries() {
+      const m = this.plexLabelRuleModal;
+      if (!m.plexInstanceId) return [];
+      const pi = (this.plexInstances || []).find(p => p.id === m.plexInstanceId);
+      if (!pi) return [];
+      return pi.libraries || [];
+    },
+
+    // plexLabelRuleVisibleLibraryCount — count of libraries matching
+    // the rule's app-type (drives the "no movie libs available"
+    // empty-state message inside the picker).
+    plexLabelRuleVisibleLibraryCount() {
+      const libs = this.plexLabelRuleSelectedPlexLibraries();
+      const want = this.plexLabelRuleWantedLibraryType();
+      if (!want) return libs.length;
+      return libs.filter(l => l.type === want).length;
+    },
+
+    plexLabelRuleWantedLibraryType() {
+      // AppType comes from the linked Arr instance. Derive on the fly
+      // when the modal hasn't pre-populated it yet (Add-flow before the
+      // user picks the Arr).
+      const m = this.plexLabelRuleModal;
+      let appType = m.appType;
+      if (!appType && m.instanceId) {
+        const inst = (this.instances || []).find(i => i.id === m.instanceId);
+        if (inst) appType = inst.type;
+      }
+      if (appType === 'radarr') return 'movie';
+      if (appType === 'sonarr') return 'show';
+      return '';
+    },
+
+    plexLabelRuleNoLibrariesMessage() {
+      const want = this.plexLabelRuleWantedLibraryType();
+      if (!want) return 'Pick an Arr instance above so the library picker can filter to the matching type.';
+      if (want === 'movie') return 'No movie libraries cached on this Plex instance. Add a Movies library in Plex, then click Fetch libraries on the Plex row in Settings.';
+      return 'No show libraries cached on this Plex instance. Add a TV Shows library in Plex, then click Fetch libraries on the Plex row in Settings.';
+    },
+
+    plexLabelRuleLibraryHint() {
+      const want = this.plexLabelRuleWantedLibraryType();
+      if (!want) return 'Pick the Plex libraries this rule will sync labels into. Multi-select supported.';
+      if (want === 'movie') return 'Only movie libraries shown — Radarr instances can only manage labels on movie libraries.';
+      return 'Only show libraries shown — Sonarr instances can only manage labels on show libraries.';
+    },
+
+    // plexLabelRuleModalValid — UI-side gate for the Save button. Mirrors
+    // the backend validator's core checks (server still re-validates).
+    plexLabelRuleModalValid() {
+      const m = this.plexLabelRuleModal;
+      if (!m.name || !m.name.trim()) return false;
+      if (!m.instanceId) return false;
+      if (!m.labels || m.labels.length === 0) return false;
+      if (!m.plexInstanceId) return false;
+      if (!m.libraryKeys || m.libraryKeys.length === 0) return false;
+      if (m.runMode !== 'apply' && m.runMode !== 'preview') return false;
+      if (!m.targetTypes || m.targetTypes.length === 0) return false;
+      return true;
+    },
+
+    // plexLabelRuleToggleTargetType — checkbox click handler for the
+    // Plex-target picker. Toggles "label" / "collection" on the
+    // targetTypes array; preserves order so the UI's read-back of
+    // selected state is stable.
+    plexLabelRuleToggleTargetType(t) {
+      const m = this.plexLabelRuleModal;
+      const idx = m.targetTypes.indexOf(t);
+      if (idx === -1) {
+        m.targetTypes.push(t);
+      } else {
+        m.targetTypes.splice(idx, 1);
+      }
+    },
+
+    plexLabelRuleHasTargetType(t) {
+      return (this.plexLabelRuleModal.targetTypes || []).includes(t);
+    },
+
+    // describePlexLabelRuleTargets — one-line summary for the rule card.
+    // "Radarr (Main) → Main Plex / Movies + Movies 4K"
+    describePlexLabelRuleTargets(rule) {
+      const inst = (this.instances || []).find(i => i.id === rule.instanceId);
+      const arrLabel = inst ? inst.name : '(unknown Arr)';
+      if (!rule.targets || rule.targets.length === 0) return arrLabel + ' → (no target)';
+      const tgt = rule.targets[0];
+      const plex = (this.plexInstances || []).find(p => p.id === tgt.plexInstanceId);
+      const plexLabel = plex ? plex.name : '(unknown Plex)';
+      // Map library keys to titles via the cached library list on the
+      // Plex instance. Falls back to the key if the cache hasn't been
+      // refreshed.
+      const libs = plex ? (plex.libraries || []) : [];
+      const libNames = (tgt.libraryKeys || []).map(k => {
+        const l = libs.find(x => x.key === k);
+        return l ? l.title : k;
+      });
+      return arrLabel + ' → ' + plexLabel + ' / ' + libNames.join(' + ');
+    },
+
+    async savePlexLabelRuleModal() {
+      const m = this.plexLabelRuleModal;
+      if (!this.plexLabelRuleModalValid()) return;
+      m.busy = true;
+      try {
+        // Derive AppType from the picked Arr instance — backend re-
+        // derives but a hint speeds up the validator error path on
+        // missing-instance edge cases.
+        const inst = (this.instances || []).find(i => i.id === m.instanceId);
+        const appType = inst ? inst.type : '';
+        // Build LabelDisplay payload from the per-tag inline overrides.
+        // Filter out empty / identity entries client-side too — the
+        // backend re-cleans, but a tidy POST body matches what's
+        // actually stored after save.
+        const labelDisplay = {};
+        for (const k of Object.keys(m.labelDisplay || {})) {
+          const v = (m.labelDisplay[k] || '').trim();
+          if (!v || v === k) continue;
+          if (!m.labels.some(l => l === k)) continue;
+          labelDisplay[k] = v;
+        }
+        const body = {
+          name: m.name.trim(),
+          enabled: !!m.enabled,
+          instanceId: m.instanceId,
+          appType: appType,
+          labels: m.labels,
+          labelDisplay: labelDisplay,
+          targets: [
+            {
+              plexInstanceId: m.plexInstanceId,
+              libraryKeys: m.libraryKeys,
+            },
+          ],
+          runMode: m.runMode || 'apply',
+          targetTypes: (m.targetTypes && m.targetTypes.length > 0) ? m.targetTypes : ['label'],
+        };
+        const path = m.id ? '/api/plex-label-rules/' + m.id : '/api/plex-label-rules';
+        const method = m.id ? 'PUT' : 'POST';
+        const r = await this.apiFetch(path, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        await this.loadPlexLabelRules();
+        m.open = false;
+        this.showToast('Label-sync rule saved', 'success');
+      } catch (e) {
+        this.showToast('Save failed: ' + e.message, 'error');
+      } finally {
+        m.busy = false;
+      }
+    },
+
+    confirmDeletePlexLabelRule(rule) {
+      this.deletePlexLabelRuleTarget = rule;
+    },
+
+    // ---- Plex label-sync — one-off Run ----------------------------
+    // Opens the run modal with the rule's stored runMode pre-selected.
+    // User can flip between Preview / Apply before firing.
+    openPlexLabelRunModal(rule) {
+      this.plexLabelRunModal = {
+        open: true,
+        stage: 'confirm',
+        rule: rule,
+        runMode: rule.runMode || 'apply',
+        result: null,
+        error: '',
+        detailsFilter: '',
+      };
+    },
+
+    closePlexLabelRunModal() {
+      if (this.plexLabelRunModal.stage === 'busy') return;
+      this.plexLabelRunModal.open = false;
+    },
+
+    // Fires the run. Switches stage to 'busy' for the spinner, then
+    // 'result' on success or surfaces an error banner. After a real
+    // run we also re-load the rules list so the rule-card history
+    // pill updates without a manual refresh.
+    async firePlexLabelRunModal() {
+      const m = this.plexLabelRunModal;
+      if (!m.rule) return;
+      m.stage = 'busy';
+      m.error = '';
+      try {
+        const r = await this.apiFetch('/api/plex-label-rules/' + m.rule.id + '/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ runMode: m.runMode }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        m.result = d;
+        m.stage = 'result';
+        // Reload rules so the parent page picks up the appended
+        // history entry (used later when the Recent Activity table
+        // integration lands).
+        await this.loadPlexLabelRules();
+      } catch (e) {
+        m.error = e.message;
+        m.stage = 'confirm';
+      }
+    },
+
+    // Helpers for the result modal — keep the template tidy by
+    // hoisting the count math out of x-text expressions.
+    plexLabelRunAddedTotal(result) {
+      if (!result || !result.added) return 0;
+      return Object.values(result.added).reduce((a, b) => a + b, 0);
+    },
+
+    plexLabelRunRemovedTotal(result) {
+      if (!result || !result.removed) return 0;
+      return Object.values(result.removed).reduce((a, b) => a + b, 0);
+    },
+
+    plexLabelRunInSyncTotal(result) {
+      if (!result || !result.inSync) return 0;
+      return Object.values(result.inSync).reduce((a, b) => a + b, 0);
+    },
+
+    // plexLabelRunLabelSummary — flattens Added / Removed / InSync
+    // maps into one sorted per-label table for the result modal. Each
+    // entry: { label, added, removed, inSync }. Includes labels that
+    // appear in ANY of the three maps so the user sees all four
+    // numbers per label even when one bucket is zero.
+    plexLabelRunLabelSummary(result) {
+      if (!result) return [];
+      const labels = new Set();
+      for (const k of Object.keys(result.added || {})) labels.add(k);
+      for (const k of Object.keys(result.removed || {})) labels.add(k);
+      for (const k of Object.keys(result.inSync || {})) labels.add(k);
+      const out = [];
+      for (const lbl of labels) {
+        out.push({
+          label: lbl,
+          added: (result.added && result.added[lbl]) || 0,
+          removed: (result.removed && result.removed[lbl]) || 0,
+          inSync: (result.inSync && result.inSync[lbl]) || 0,
+        });
+      }
+      out.sort((a, b) => a.label.localeCompare(b.label));
+      return out;
+    },
+
+    // plexLabelRunFilteredPerLabel — applies the detailsFilter (label
+    // name) to the per-item change list so the user can drill into a
+    // single label at a time.
+    plexLabelRunFilteredPerLabel(result) {
+      if (!result || !result.perLabel) return [];
+      const filter = (this.plexLabelRunModal.detailsFilter || '').trim().toLowerCase();
+      if (!filter) return result.perLabel;
+      return result.perLabel.filter(c => (c.label || '').toLowerCase() === filter);
+    },
+
+    // Status pill colour mapping — same legend the engine returns:
+    //   "ok"      every library + every item synced cleanly
+    //   "partial" something went wrong on a subset (per-item errors)
+    //   "error"   couldn't fire at all (Plex unreachable, missing
+    //             instance, etc.)
+    plexLabelRunStatusStyle(status) {
+      if (status === 'ok')      return 'background:var(--alpha-green);color:var(--accent-green)';
+      if (status === 'partial') return 'background:var(--alpha-orange,rgba(255,165,0,0.15));color:var(--accent-orange,#ff9800)';
+      if (status === 'error')   return 'background:var(--accent-red-bg);color:var(--accent-red)';
+      return 'background:var(--bg-muted);color:var(--text-muted)';
+    },
+
+    async deletePlexLabelRule() {
+      const target = this.deletePlexLabelRuleTarget;
+      if (!target) return;
+      this.deletePlexLabelRuleBusy = true;
+      try {
+        const r = await this.apiFetch('/api/plex-label-rules/' + target.id, {
+          method: 'DELETE',
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
+        await this.loadPlexLabelRules();
+        this.deletePlexLabelRuleTarget = null;
+        this.showToast('Label-sync rule deleted', 'success');
+      } catch (e) {
+        this.showToast('Delete failed: ' + e.message, 'error');
+      } finally {
+        this.deletePlexLabelRuleBusy = false;
+      }
+    },
+
     // ---- qBit webhook hook (M-qBit-add Slice 5) -------------------
     //
     // Per-instance modal showing the curl ready to paste into qBit's
@@ -2215,6 +2833,13 @@ function app() {
         // another tab. loadConfig fires this once on app boot, but
         // background scans can happen any time after.
         this.loadDvCacheStats();
+      }
+      if (section === 'plex-sync') {
+        // Refresh both rules + Plex instances so the rule cards render
+        // current state. Plex instances also drive the "Add rule" gate
+        // (button disabled when no Plex instances configured).
+        this.loadPlexLabelRules();
+        this.loadPlexInstances();
       }
       this.pushNav();
     },
@@ -6331,6 +6956,12 @@ function app() {
       // their sidebar entries on every app type. Filter persistence
       // moves to the wizard; Cleanup moves under Active groups.
       if (section === 'tag' || section === 'recover' || section === 'filters') return false;
+      // Plex label sync rules bind to one specific Arr instance — so the
+      // sub-tab respects the page-level app-type pill (showing the user
+      // only rules + instances of the picked type). Consistent with how
+      // every other sub-tab (Tag library / Audio / Video / DV) is gated
+      // by scanAppType.
+      if (section === 'plex-sync') return true;
       if (this.scanAppType === 'sonarr') {
         // Sonarr's "Tag quality releases" tab carries the Recover action
         // + stubbed Tag/Discover for naming consistency with Radarr.
@@ -11479,6 +12110,7 @@ function app() {
       if (tabId === 'grabrename') return isWebhook && this.ruleAffectsGrabRename();
       if (tabId === 'qbitse')     return isWebhook && this.ruleAffectsQbitSe();
       if (tabId === 'qbitcategoryfix') return isWebhook && this.ruleAffectsQbitCategoryFix();
+      if (tabId === 'plexlabelsync') return isWebhook && this.ruleAffectsPlexLabelSync();
       // Schedule step: schedule rules only (cron-driven, not Manual
       // and not quickfix). Webhook rules trigger on Connect events,
       // not cron — the step hides entirely for kind='webhook'.
@@ -11505,7 +12137,8 @@ function app() {
       const o = (this.editingRule && this.editingRule.options) || {};
       if (o.fnTagReleaseGroups || o.fnDiscover || o.fnTagAudio || o.fnTagVideo
           || o.fnTagDvDetail || o.fnRecover || o.fnSyncToSecondary
-          || o.fnGrabRename || o.fnQbitSeTag || o.fnQbitCategoryFix) {
+          || o.fnGrabRename || o.fnQbitSeTag || o.fnQbitCategoryFix
+          || o.fnPlexLabelSync) {
         return true;
       }
       // Per-bucket strip-on-delete also counts as a rule action — a
@@ -11572,6 +12205,7 @@ function app() {
           fnGrabRename:       false,
           fnQbitSeTag:        false,
           fnQbitCategoryFix:  false,
+          fnPlexLabelSync:    false,
           // Per-action shared options the schedule editor seeds —
           // mirrored here so the per-step UIs (RG / Filters / Audio /
           // Video / DV) read the same shape and don't NaN on undefined.
@@ -11697,6 +12331,7 @@ function app() {
         fnGrabRename:       false,
         fnQbitSeTag:        false,
         fnQbitCategoryFix:  false,
+        fnPlexLabelSync:    false,
         // Per-action shared options.
         tagSource: '',
         filterOnlyTag: 'lossless-web',
@@ -11726,6 +12361,7 @@ function app() {
       copy.options.fnGrabRename       = fnSet.has('grabRename');
       copy.options.fnQbitSeTag        = fnSet.has('qbitSeTag');
       copy.options.fnQbitCategoryFix  = fnSet.has('qbitCategoryFix');
+      copy.options.fnPlexLabelSync    = fnSet.has('plexLabelSync');
       // Hoist top-level rule fields that the wizard binds via
       // options.*. The save flow re-emits these as top-level keys
       // on PUT (saveWebhookRuleEditor handles the inverse mapping
@@ -11815,6 +12451,18 @@ function app() {
           preImportCategorySnapshot: '',
           postImportCategorySnapshot: '',
         },
+        // Plex label sync — inline per-rule config. Same field shape
+        // as standalone PlexLabelRule's Plex-side bits (instance +
+        // libraries + labels + display + targetTypes). Seeded empty;
+        // user populates via the Plex sync wizard step when the
+        // function is enabled.
+        plexLabelSync: {
+          plexInstanceId: '',
+          libraryKeys: [],
+          labels: [],
+          labelDisplay: {},
+          targetTypes: ['label'],
+        },
       };
     },
 
@@ -11862,6 +12510,124 @@ function app() {
     ruleAffectsQbitCategoryFix() {
       const o = (this.editingRule && this.editingRule.options) || {};
       return !!o.fnQbitCategoryFix;
+    },
+    ruleAffectsPlexLabelSync() {
+      const o = (this.editingRule && this.editingRule.options) || {};
+      return !!o.fnPlexLabelSync;
+    },
+
+    // ---- Plex label sync wizard step helpers ----
+    // Mirror the standalone PlexLabelRule modal helpers but operate
+    // on editingRule.plexLabelSync (the inline webhook-rule config)
+    // instead of plexLabelRuleModal. Tag-list state
+    // (plexLabelRuleAvailableTags + filter + loading + error) is
+    // shared with the standalone modal since the two surfaces are
+    // mutually exclusive (you can't have both open at once).
+
+    plexLabelSyncWizardLoadTags() {
+      // Reuse the standalone modal's fetch state — repoint
+      // plexLabelRuleModal.instanceId so plexLabelRuleLoadAvailableTags
+      // hits the right Arr. The modal isn't open; we're piggybacking
+      // on its tag-list state holders.
+      this.plexLabelRuleModal.instanceId = (this.editingRule && this.editingRule.instanceId) || '';
+      this.plexLabelRuleAvailableTags = [];
+      this.plexLabelRuleTagsError = '';
+      this.plexLabelRuleTagFilter = '';
+      if (this.plexLabelRuleModal.instanceId) {
+        this.plexLabelRuleLoadAvailableTags();
+      }
+    },
+
+    plexLabelSyncWizardSelectedPlexLibraries() {
+      const r = this.editingRule;
+      if (!r || !r.plexLabelSync || !r.plexLabelSync.plexInstanceId) return [];
+      const pi = (this.plexInstances || []).find(p => p.id === r.plexLabelSync.plexInstanceId);
+      if (!pi) return [];
+      return pi.libraries || [];
+    },
+
+    plexLabelSyncWizardWantedLibraryType() {
+      const r = this.editingRule;
+      if (!r) return '';
+      if (r.appType === 'radarr') return 'movie';
+      if (r.appType === 'sonarr') return 'show';
+      // Fallback — read off the parent rule's linked Arr instance
+      // (in case appType wasn't denormalised yet).
+      const inst = (this.instances || []).find(i => i.id === (r && r.instanceId));
+      if (inst) {
+        if (inst.type === 'radarr') return 'movie';
+        if (inst.type === 'sonarr') return 'show';
+      }
+      return '';
+    },
+
+    plexLabelSyncWizardVisibleLibraryCount() {
+      const libs = this.plexLabelSyncWizardSelectedPlexLibraries();
+      const want = this.plexLabelSyncWizardWantedLibraryType();
+      if (!want) return libs.length;
+      return libs.filter(l => l.type === want).length;
+    },
+
+    plexLabelSyncWizardNoLibrariesMessage() {
+      const want = this.plexLabelSyncWizardWantedLibraryType();
+      if (!want) return 'Pick an Arr instance on the Basics step so the library picker can filter to the matching type.';
+      if (want === 'movie') return 'No movie libraries cached on this Plex instance. Add a Movies library in Plex, then click Fetch libraries on the Plex row in Settings.';
+      return 'No show libraries cached on this Plex instance. Add a TV Shows library in Plex, then click Fetch libraries on the Plex row in Settings.';
+    },
+
+    plexLabelSyncWizardLibraryHint() {
+      const want = this.plexLabelSyncWizardWantedLibraryType();
+      if (want === 'movie') return 'Only movie libraries shown — Radarr rules can only manage Plex labels on movie libraries.';
+      if (want === 'show') return 'Only show libraries shown — Sonarr rules can only manage Plex labels on show libraries.';
+      return 'Pick the Plex libraries this rule will sync labels into.';
+    },
+
+    plexLabelSyncWizardToggleLibrary(key) {
+      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+      if (!cfg) return;
+      if (!Array.isArray(cfg.libraryKeys)) cfg.libraryKeys = [];
+      const idx = cfg.libraryKeys.indexOf(key);
+      if (idx === -1) cfg.libraryKeys.push(key);
+      else cfg.libraryKeys.splice(idx, 1);
+    },
+
+    plexLabelSyncWizardToggleTag(label) {
+      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+      if (!cfg) return;
+      if (!Array.isArray(cfg.labels)) cfg.labels = [];
+      const idx = cfg.labels.findIndex(l => l.toLowerCase() === label.toLowerCase());
+      if (idx === -1) {
+        cfg.labels.push(label);
+      } else {
+        const removed = cfg.labels[idx];
+        cfg.labels.splice(idx, 1);
+        // Drop matching display override so unchecking + re-checking
+        // gives a clean slate (consistent with standalone modal).
+        if (cfg.labelDisplay && removed in cfg.labelDisplay) {
+          delete cfg.labelDisplay[removed];
+        }
+      }
+    },
+
+    plexLabelSyncWizardSetDisplay(arrTag, value) {
+      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+      if (!cfg) return;
+      if (!cfg.labelDisplay) cfg.labelDisplay = {};
+      const trimmed = (value || '').trim();
+      if (!trimmed || trimmed === arrTag) {
+        delete cfg.labelDisplay[arrTag];
+      } else {
+        cfg.labelDisplay[arrTag] = trimmed;
+      }
+    },
+
+    plexLabelSyncWizardToggleTargetType(t) {
+      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+      if (!cfg) return;
+      if (!Array.isArray(cfg.targetTypes)) cfg.targetTypes = [];
+      const idx = cfg.targetTypes.indexOf(t);
+      if (idx === -1) cfg.targetTypes.push(t);
+      else cfg.targetTypes.splice(idx, 1);
     },
 
     // ---- qBit Category Fix helpers ----
@@ -12189,6 +12955,24 @@ function app() {
       if (step === 'qbitcategoryfix' && this.ruleAffectsQbitCategoryFix()) {
         const w = this.qbitCategoryFixWarning();
         if (w) return w;
+      }
+      // Plex label sync — backend rejects on missing Plex instance,
+      // empty library list, empty label whitelist, or library-type
+      // mismatch with the rule's appType.
+      if (step === 'plexlabelsync' && this.ruleAffectsPlexLabelSync()) {
+        const p = r.plexLabelSync || {};
+        if (!p.plexInstanceId) {
+          return 'Pick a Plex instance before continuing.';
+        }
+        if (!p.libraryKeys || p.libraryKeys.length === 0) {
+          return 'Pick at least one Plex library before continuing.';
+        }
+        if (!p.labels || p.labels.length === 0) {
+          return 'Add at least one tag to the whitelist before continuing.';
+        }
+        if (!p.targetTypes || p.targetTypes.length === 0) {
+          return 'Pick at least one Plex target (Labels or Collections).';
+        }
       }
       // qBit S/E tag — backend (webhook_rules.go) rejects with empty
       // qbit instance OR no rule enabled OR an enabled rule's tag name
@@ -12539,6 +13323,7 @@ function app() {
       if (o.fnGrabRename)       fnList.push('grabRename');
       if (o.fnQbitSeTag)        fnList.push('qbitSeTag');
       if (o.fnQbitCategoryFix)  fnList.push('qbitCategoryFix');
+      if (o.fnPlexLabelSync)    fnList.push('plexLabelSync');
       const body = {
         name: r.name.trim(),
         enabled: r.enabled !== false,
@@ -12594,6 +13379,15 @@ function app() {
       }
       if (o.fnQbitCategoryFix && r.qbitCategoryFix) {
         body.qbitCategoryFix = JSON.parse(JSON.stringify(r.qbitCategoryFix));
+      }
+      if (o.fnPlexLabelSync && r.plexLabelSync) {
+        // Drop empty labelDisplay map for clean JSON over the wire —
+        // backend tolerates either shape but tidy is better.
+        const ps = JSON.parse(JSON.stringify(r.plexLabelSync));
+        if (ps.labelDisplay && Object.keys(ps.labelDisplay).length === 0) {
+          delete ps.labelDisplay;
+        }
+        body.plexLabelSync = ps;
       }
       this.ruleEditor.busy = true;
       try {

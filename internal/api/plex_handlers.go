@@ -347,6 +347,129 @@ func (s *Server) handleFetchPlexLibraries(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// handleInspectPlexLibrary is a diagnostic helper for verifying what
+// Plex actually returns for a library. Used when label-sync results
+// look wrong — lets the user pick a known-labelled movie title and
+// see the raw GUIDs + Labels Plex sends back. Query params:
+//
+//	libraryKey  — required, Plex section ID
+//	title       — optional substring filter (case-insensitive); empty
+//	              returns the first 10 items as a sample
+//	limit       — optional cap on results, default 10, max 50
+//
+// Returns: { ok, items: [{title, year, ratingKey, type, guids[], labels[]}] }
+func (s *Server) handleInspectPlexLibrary(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, 400, "id required")
+		return
+	}
+	libraryKey := r.URL.Query().Get("libraryKey")
+	if libraryKey == "" {
+		writeError(w, 400, "libraryKey query param required")
+		return
+	}
+	titleFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("title")))
+	limit := 10
+	if v := r.URL.Query().Get("limit"); v != "" {
+		// Best-effort parse; ignore bad values.
+		var parsed int
+		if _, err := fmt.Sscanf(v, "%d", &parsed); err == nil && parsed > 0 {
+			if parsed > 50 {
+				parsed = 50
+			}
+			limit = parsed
+		}
+	}
+
+	cfg := s.App.Config.Get()
+	var pi *core.PlexInstance
+	for i := range cfg.PlexInstances {
+		if cfg.PlexInstances[i].ID == id {
+			pi = &cfg.PlexInstances[i]
+			break
+		}
+	}
+	if pi == nil {
+		writeError(w, 404, "Plex instance not found")
+		return
+	}
+	client, err := plex.New(plex.Config{
+		URL:          pi.URL,
+		Token:        pi.Token,
+		TrustedCerts: pi.TrustedCerts,
+		Timeout:      plexTestTimeout,
+	})
+	if err != nil {
+		writeError(w, 500, "build client: "+err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), plexTestTimeout)
+	defer cancel()
+	items, err := client.GetItems(ctx, libraryKey)
+	if err != nil {
+		writeError(w, 502, "fetch items: "+err.Error())
+		return
+	}
+
+	type inspectItem struct {
+		Title       string   `json:"title"`
+		Year        int      `json:"year,omitempty"`
+		RatingKey   string   `json:"ratingKey"`
+		Type        string   `json:"type"`
+		GUIDs       []string `json:"guids"`
+		Labels      []string `json:"labels"`
+		Collections []string `json:"collections"`
+	}
+	// Per-item metadata fetch — the bulk /all endpoint omits labels
+	// on many Plex Server versions, so for diagnostic inspection we
+	// hit /library/metadata/{ratingKey} for each matched item to get
+	// the authoritative label list. Same path the engine uses now.
+	out := make([]inspectItem, 0, limit)
+	var rawSample string
+	for _, it := range items {
+		if titleFilter != "" && !strings.Contains(strings.ToLower(it.Title), titleFilter) {
+			continue
+		}
+		labels := it.Labels
+		collections := it.Collections
+		guids := it.GUIDs
+		if full, err := client.GetItemMetadata(ctx, it.RatingKey); err == nil {
+			labels = full.Labels
+			collections = full.Collections
+			guids = full.GUIDs
+		}
+		// Capture the raw Plex JSON for the FIRST matched item so the
+		// caller can see exactly what shape Plex is returning. If our
+		// typed decoder is missing fields (e.g. they're under a
+		// different JSON key than expected), this surfaces it.
+		if rawSample == "" {
+			if raw, err := client.FetchRawItemMetadata(ctx, it.RatingKey); err == nil {
+				rawSample = string(raw)
+			}
+		}
+		out = append(out, inspectItem{
+			Title:       it.Title,
+			Year:        it.Year,
+			RatingKey:   it.RatingKey,
+			Type:        it.Type,
+			GUIDs:       guids,
+			Labels:      labels,
+			Collections: collections,
+		})
+		if len(out) >= limit {
+			break
+		}
+	}
+	writeJSON(w, map[string]any{
+		"ok":             true,
+		"total":          len(items),
+		"shown":          len(out),
+		"items":          out,
+		"rawFirstSample": rawSample,
+	})
+}
+
 // runPlexTest is the shared probe path: build a Client, hit /identity,
 // surface the friendly server name on success. Capped via
 // plexTestTimeout to avoid stalls on misconfigured URLs.

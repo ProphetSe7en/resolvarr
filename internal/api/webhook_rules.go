@@ -81,6 +81,7 @@ type webhookRuleRequest struct {
 	GrabRename            *core.GrabRenameCriteria  `json:"grabRename,omitempty"`
 	QbitSe                *core.QbitSeRules         `json:"qbitSe,omitempty"`
 	QbitCategoryFix       *core.QbitCategoryFixRules `json:"qbitCategoryFix,omitempty"`
+	PlexLabelSync         *core.WebhookPlexLabelSyncConfig `json:"plexLabelSync,omitempty"`
 	// NotifyOnFire — master per-rule kill-switch. Which agents receive
 	// the notification + which functions each renders is per-agent
 	// config (agents.Agent.Events + .Functions), not per-rule.
@@ -266,6 +267,24 @@ func (req *webhookRuleRequest) validate(cfg core.Config) *apiError {
 		// stored.
 		req.QbitCategoryFix.PreImportCategorySnapshot = preCat
 		req.QbitCategoryFix.PostImportCategorySnapshot = postCat
+	}
+	// Plex label sync — required inline config + Plex-side validation.
+	// Same pattern as the other function-config blocks above. Per-Plex-
+	// instance + library + label whitelist validation lives in
+	// ValidateWebhookPlexLabelSyncConfig so the engine + scheduled-flow
+	// path can re-use it later.
+	if seen[core.WebhookFnPlexLabelSync] {
+		if req.PlexLabelSync == nil {
+			return newAPIError(400, "plexLabelSync config required when the Sync to Plex function is enabled")
+		}
+		if err := core.ValidateWebhookPlexLabelSyncConfig(req.PlexLabelSync, cfg.PlexInstances, appType); err != nil {
+			return newAPIError(400, "plexLabelSync: "+err.Error())
+		}
+	}
+	if !seen[core.WebhookFnPlexLabelSync] && req.PlexLabelSync != nil {
+		// User unticked the function but left the config block in the
+		// payload — drop it so the persisted rule stays clean.
+		req.PlexLabelSync = nil
 	}
 	// TagSource + FilterOnlyTag — symmetric with the schedule path's
 	// validator at schedules.go (and scan.go for live HTTP scan calls).
@@ -511,6 +530,9 @@ func (req *webhookRuleRequest) applyTo(rule *core.WebhookRule, isUpdate bool) {
 	if !isUpdate || req.QbitCategoryFix != nil {
 		rule.QbitCategoryFix = req.QbitCategoryFix
 	}
+	if !isUpdate || req.PlexLabelSync != nil {
+		rule.PlexLabelSync = req.PlexLabelSync
+	}
 	rule.NotifyOnFire = req.NotifyOnFire
 	core.NormalizeWebhookRule(rule)
 }
@@ -545,19 +567,11 @@ func (s *Server) handleWebhookRulesMeta(w http.ResponseWriter, r *http.Request) 
 
 // collectApplicableFunctions returns the canonical-order list of
 // functions that apply to a given Arr type. Used by the meta endpoint.
+// Reads from core.AllWebhookFunctions() so new functions landing in
+// the core list are automatically picked up — avoids the silent-drop
+// trap a hardcoded list would create.
 func collectApplicableFunctions(appType string) []core.WebhookFunction {
-	all := []core.WebhookFunction{
-		core.WebhookFnTagReleaseGroups,
-		core.WebhookFnDiscover,
-		core.WebhookFnTagAudio,
-		core.WebhookFnTagVideo,
-		core.WebhookFnTagDvDetail,
-		core.WebhookFnRecover,
-		core.WebhookFnSyncToSecondary,
-		core.WebhookFnGrabRename,
-		core.WebhookFnQbitSeTag,
-		core.WebhookFnQbitCategoryFix,
-	}
+	all := core.AllWebhookFunctions()
 	out := []core.WebhookFunction{}
 	for _, fn := range all {
 		if core.WebhookFunctionAppliesTo(fn, appType) {

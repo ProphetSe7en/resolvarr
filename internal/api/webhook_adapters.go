@@ -59,6 +59,7 @@ import (
 	"resolvarr/internal/core"
 	"resolvarr/internal/core/dvdetect"
 	"resolvarr/internal/core/engine"
+	"resolvarr/internal/plex"
 )
 
 // downloadEventPayload captures the Radarr Download / Sonarr Download
@@ -1784,16 +1785,194 @@ func (s *Server) dispatchTagVideo(
 // we just can't tell yet. Library scan parallel: scan_dv_detail.go
 // guards on `item.MovieFile.MediaInfo != nil` for the same reason.
 type extractedDownload struct {
-	OK              bool
-	ItemID          int
-	MediaInfo       engine.MediaInfo
-	HasMediaInfo    bool
+	OK                bool
+	ItemID            int
+	MediaInfo         engine.MediaInfo
+	HasMediaInfo      bool
 	QualityResolution int
-	ReleaseGroup    string // movieFile.releaseGroup or episodeFile.releaseGroup — empty when the release didn't carry one
-	FileID          int    // movieFile.id / episodeFile.id — for adapters that PUT to /api/v3/moviefile/{id}
-	FilePath        string // absolute path Arr reports — translated through Instance.PathMappings by adapters that open the file (Tag DV Details)
-	DownloadID      string // event-level download_id — Recover pins history-walk to the exact Grab event that produced this import
-	TmdbID          int    // movie.tmdbId from event — Sync-to-secondary uses to find the matching movie on the target instance
+	ReleaseGroup      string // movieFile.releaseGroup or episodeFile.releaseGroup — empty when the release didn't carry one
+	FileID            int    // movieFile.id / episodeFile.id — for adapters that PUT to /api/v3/moviefile/{id}
+	FilePath          string // absolute path Arr reports — translated through Instance.PathMappings by adapters that open the file (Tag DV Details)
+	DownloadID        string // event-level download_id — Recover pins history-walk to the exact Grab event that produced this import
+	TmdbID            int    // movie.tmdbId from event — Sync-to-secondary uses to find the matching movie on the target instance
+}
+
+// dispatchPlexLabelSync propagates the just-applied Arr-side tag
+// changes out to Plex labels / collections for the single fired item.
+// Runs AFTER the Tag* functions on the same rule have mutated Arr
+// tags so the engine sees the final state.
+//
+// Uses the inline rule.PlexLabelSync config — Plex instance +
+// libraries + whitelist + display overrides + target types are all
+// configured on the webhook rule itself (same pattern as AudioTags /
+// VideoTags / DvDetail / GrabRename / QbitSe). Standalone Plex label
+// rules under Library scan → Plex label sync are a SEPARATE surface
+// for scheduled + manual-run flows; the webhook config doesn't
+// reference them.
+//
+// Fires on Download (post-import additions) AND FileDelete events
+// (covers strip-on-delete cleanup). Other event types short-circuit.
+func (s *Server) dispatchPlexLabelSync(
+	ctx context.Context,
+	rule *core.WebhookRule,
+	cfg core.Config,
+	env *connectEventEnvelope,
+	body []byte,
+) functionResult {
+	// Filter the event-type set. Webhook EventsForFunction already
+	// guards the dispatcher's outer match, but defence-in-depth here
+	// keeps the adapter safe if dispatch routing drifts.
+	switch core.WebhookConnectEvent(env.EventType) {
+	case core.WebhookEventDownload,
+		core.WebhookEventMovieFileDelete, core.WebhookEventMovieFileDeleteForUpgrade,
+		core.WebhookEventEpisodeFileDelete, core.WebhookEventEpisodeFileDeleteForUpgrade:
+		// ok
+	default:
+		return functionResult{Function: core.WebhookFnPlexLabelSync, OK: true, Summary: "skipped (not a Download/FileDelete event)"}
+	}
+
+	// Inline config required. Validator gates this at save-time when
+	// the function flag is set; defensive check here for tampered or
+	// upgraded-from-legacy rules.
+	syncCfg := rule.PlexLabelSync
+	if syncCfg == nil {
+		return functionResult{
+			Function: core.WebhookFnPlexLabelSync, OK: false,
+			Summary: "Plex sync config missing — re-edit the rule to configure target Plex + libraries + labels",
+		}
+	}
+
+	// Pull the item's CURRENT tag set from Arr — fresh fetch picks up
+	// changes the upstream Tag* functions on this same dispatch chain
+	// just wrote.
+	inst := findInstanceByID(cfg, rule.InstanceID)
+	if inst == nil {
+		return functionResult{
+			Function: core.WebhookFnPlexLabelSync, OK: false,
+			Summary: "instance vanished between event receive and dispatch",
+		}
+	}
+
+	// Extract the Arr item ID from the event. Both Download and
+	// FileDelete event types are supported; both carry the Movie.ID
+	// or Series.ID on the typed payload.
+	var itemID int
+	{
+		var payload downloadEventPayload
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return functionResult{Function: core.WebhookFnPlexLabelSync, OK: false, Summary: "decode payload failed", Err: err}
+		}
+		switch rule.AppType {
+		case "radarr":
+			if payload.Movie != nil {
+				itemID = payload.Movie.ID
+			}
+		case "sonarr":
+			if payload.Series != nil {
+				itemID = payload.Series.ID
+			}
+		}
+	}
+	if itemID == 0 {
+		return functionResult{Function: core.WebhookFnPlexLabelSync, OK: true, Summary: "skipped (event payload missing item ID)"}
+	}
+
+	// Resolve the Plex instance the inline config points at.
+	var plexInst core.PlexInstance
+	plexFound := false
+	for _, p := range cfg.PlexInstances {
+		if p.ID == syncCfg.PlexInstanceID {
+			plexInst = p
+			plexFound = true
+			break
+		}
+	}
+	if !plexFound {
+		return functionResult{
+			Function: core.WebhookFnPlexLabelSync, OK: false,
+			Summary: fmt.Sprintf("Plex instance %q not found — re-configure the rule's Plex target", syncCfg.PlexInstanceID),
+		}
+	}
+	plexClient, err := plex.New(plex.Config{
+		URL:          plexInst.URL,
+		Token:        plexInst.Token,
+		TrustedCerts: plexInst.TrustedCerts,
+		Timeout:      plexRunTimeout,
+	})
+	if err != nil {
+		return functionResult{
+			Function: core.WebhookFnPlexLabelSync, OK: false,
+			Summary: "build Plex client",
+			Err:     err,
+		}
+	}
+
+	arrClient := s.arrClientFor(inst)
+	arrItem, err := arrClient.GetItem(ctx, rule.AppType, itemID)
+	if err != nil {
+		return functionResult{
+			Function: core.WebhookFnPlexLabelSync, OK: false,
+			Summary: "fetch Arr item",
+			Err:     err,
+		}
+	}
+
+	// Synthesize a PlexLabelRule from the inline config so the
+	// engine entry point can fire against it without a parallel
+	// implementation. Webhook always applies (the stored RunMode on
+	// a synthesized rule isn't user-facing).
+	syntheticRule := syncCfg.AsPlexLabelRule(rule.InstanceID, rule.AppType)
+	run := s.runPlexLabelSyncForItem(ctx, syntheticRule, arrItem, arrClient, plexClient, plexInst, "webhook", "apply")
+
+	totalAdded, totalRemoved, totalInSync := 0, 0, 0
+	for _, v := range run.Added {
+		totalAdded += v
+	}
+	for _, v := range run.Removed {
+		totalRemoved += v
+	}
+	for _, v := range run.InSync {
+		totalInSync += v
+	}
+
+	// Build the typed PlexSyncDetail payload so the notify subsystem's
+	// section builder can render per-label add/remove counts in the
+	// embed body. Maps copied so subsequent run mutations (none today,
+	// defensive) don't leak into the rendered detail.
+	detail := PlexSyncDetail{
+		PlexInstanceName: plexInst.Name,
+		TargetTypes:      append([]string(nil), syncCfg.TargetTypes...),
+	}
+	if len(run.Added) > 0 {
+		detail.Added = make(map[string]int, len(run.Added))
+		for k, v := range run.Added {
+			detail.Added[k] = v
+		}
+	}
+	if len(run.Removed) > 0 {
+		detail.Removed = make(map[string]int, len(run.Removed))
+		for k, v := range run.Removed {
+			detail.Removed[k] = v
+		}
+	}
+
+	summary := fmt.Sprintf("+%d / -%d / %d in sync", totalAdded, totalRemoved, totalInSync)
+	if run.Status != "ok" {
+		return functionResult{
+			Function: core.WebhookFnPlexLabelSync,
+			OK:       false,
+			Summary:  summary + " (" + run.Summary + ")",
+			Changed:  totalAdded > 0 || totalRemoved > 0,
+			Detail:   detail,
+		}
+	}
+	return functionResult{
+		Function: core.WebhookFnPlexLabelSync,
+		OK:       true,
+		Summary:  summary,
+		Changed:  totalAdded > 0 || totalRemoved > 0,
+		Detail:   detail,
+	}
 }
 
 // extractDownload pulls the file-aware shape from the typed Connect

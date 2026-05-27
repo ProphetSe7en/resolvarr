@@ -7,19 +7,28 @@ package api
 // validator owns all error wording).
 //
 // Endpoints:
-//   GET    /api/plex-label-rules         list
-//   POST   /api/plex-label-rules         create
-//   GET    /api/plex-label-rules/{id}    get one
-//   PUT    /api/plex-label-rules/{id}    update (history preserved)
-//   DELETE /api/plex-label-rules/{id}    delete
+//   GET    /api/plex-label-rules           list
+//   POST   /api/plex-label-rules           create
+//   GET    /api/plex-label-rules/{id}      get one
+//   PUT    /api/plex-label-rules/{id}      update (history preserved)
+//   DELETE /api/plex-label-rules/{id}      delete
+//   POST   /api/plex-label-rules/{id}/run  manual one-off run (Phase D-1)
 
 import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"resolvarr/internal/core"
+	"resolvarr/internal/plex"
 )
+
+// plexRunTimeout caps a single rule-fire. Generous — a full label
+// sync on a multi-thousand-item Plex library plus Arr round-trips
+// can run for a minute or two on a busy server. Caller's request
+// context can still cancel earlier.
+const plexRunTimeout = 5 * time.Minute
 
 // handleListPlexLabelRules returns every configured rule. No credential
 // fields on the rule (the Arr API key + Plex token live on their
@@ -72,7 +81,7 @@ func (s *Server) handleCreatePlexLabelRule(w http.ResponseWriter, r *http.Reques
 			break
 		}
 	}
-	if err := core.ValidatePlexLabelRule(req, cfg.Instances, cfg.PlexInstances, cfg.PlexLabelRules, ""); err != nil {
+	if err := core.ValidatePlexLabelRule(&req, cfg.Instances, cfg.PlexInstances, cfg.PlexLabelRules, ""); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
@@ -137,7 +146,7 @@ func (s *Server) handleUpdatePlexLabelRule(w http.ResponseWriter, r *http.Reques
 			break
 		}
 	}
-	if err := core.ValidatePlexLabelRule(req, cfg.Instances, cfg.PlexInstances, cfg.PlexLabelRules, id); err != nil {
+	if err := core.ValidatePlexLabelRule(&req, cfg.Instances, cfg.PlexInstances, cfg.PlexLabelRules, id); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
@@ -166,6 +175,143 @@ func (s *Server) handleUpdatePlexLabelRule(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, req)
+}
+
+// handleRunPlexLabelRule fires the engine for a single saved rule on
+// demand. The caller (one-off wizard / "Run now" button in the UI)
+// can override the rule's stored RunMode via a {runMode: "preview" |
+// "apply"} body — empty body keeps the rule's stored mode.
+//
+// The handler resolves the Arr + Plex instances from the rule, builds
+// clients, calls runPlexLabelSync, appends the result to the rule's
+// History (capped at PlexLabelHistoryCap), and returns the result. A
+// disabled rule rejects with 400; engine errors surface via the run's
+// Status field (response is still 200 — engine status is the
+// authoritative outcome).
+func (s *Server) handleRunPlexLabelRule(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, 400, "id required")
+		return
+	}
+
+	// Optional body — only field is the run-mode override.
+	var req struct {
+		RunMode string `json:"runMode,omitempty"`
+	}
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+			writeError(w, 400, "invalid body: "+err.Error())
+			return
+		}
+	}
+	if req.RunMode != "" && req.RunMode != "apply" && req.RunMode != "preview" {
+		writeError(w, 400, `runMode must be "apply" or "preview"`)
+		return
+	}
+
+	cfg := s.App.Config.Get()
+
+	// Find the rule. We need a snapshot — not a pointer into the
+	// store — so concurrent config edits don't mutate the rule
+	// mid-fire.
+	var ruleSnap core.PlexLabelRule
+	found := false
+	for _, r := range cfg.PlexLabelRules {
+		if r.ID == id {
+			ruleSnap = r
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeError(w, 404, "Plex label rule not found")
+		return
+	}
+	if !ruleSnap.Enabled {
+		writeError(w, 400, "rule is disabled — enable it before running")
+		return
+	}
+
+	// Resolve linked Arr instance.
+	var arrInst *core.Instance
+	for i := range cfg.Instances {
+		if cfg.Instances[i].ID == ruleSnap.InstanceID {
+			arrInst = &cfg.Instances[i]
+			break
+		}
+	}
+	if arrInst == nil {
+		writeError(w, 404, "linked Arr instance not found")
+		return
+	}
+
+	// Resolve linked Plex instance from the rule's first (and only)
+	// target. Multi-target rules are out of scope today; engine
+	// would need to fan out across targets.
+	if len(ruleSnap.Targets) == 0 {
+		writeError(w, 400, "rule has no targets")
+		return
+	}
+	var plexInst core.PlexInstance
+	plexFound := false
+	for _, p := range cfg.PlexInstances {
+		if p.ID == ruleSnap.Targets[0].PlexInstanceID {
+			plexInst = p
+			plexFound = true
+			break
+		}
+	}
+	if !plexFound {
+		writeError(w, 404, "linked Plex instance not found")
+		return
+	}
+
+	// Build clients. Plex timeout is generous — a full library
+	// walk + label-write pass on a 10k-item library can take a
+	// minute or two on busy servers.
+	arrClient := s.arrClientFor(arrInst)
+	plexClient, err := plex.New(plex.Config{
+		URL:          plexInst.URL,
+		Token:        plexInst.Token,
+		TrustedCerts: plexInst.TrustedCerts,
+		Timeout:      plexRunTimeout,
+	})
+	if err != nil {
+		writeError(w, 500, "build Plex client: "+err.Error())
+		return
+	}
+
+	// Execute the engine. Returns the PlexLabelRuleRun — caller
+	// decides what to do with it (persist + respond).
+	run := s.runPlexLabelSync(r.Context(), ruleSnap, arrClient, plexClient, plexInst, "manual", req.RunMode)
+
+	// Append to rule history. Cap at PlexLabelHistoryCap. Persist
+	// failure is non-fatal — log, return the run anyway so the user
+	// sees what happened. The history miss is a soft loss; the run
+	// already executed against Plex (or was a no-op preview).
+	if err := s.App.Config.Update(func(c *core.Config) {
+		for i := range c.PlexLabelRules {
+			if c.PlexLabelRules[i].ID == id {
+				hist := append(c.PlexLabelRules[i].History, run)
+				if len(hist) > core.PlexLabelHistoryCap {
+					hist = hist[len(hist)-core.PlexLabelHistoryCap:]
+				}
+				c.PlexLabelRules[i].History = hist
+				return
+			}
+		}
+	}); err != nil {
+		// History persistence failed — the run still happened, the
+		// user already sees the result in the response, so this is a
+		// soft loss. Audited so it surfaces in runs.log for the user
+		// to investigate if it recurs.
+		if s.App != nil && s.App.RunLog != nil {
+			s.App.RunLog.Audit("plex-label-sync", "history append failed", "ruleId="+id, "err="+err.Error())
+		}
+	}
+
+	writeJSON(w, run)
 }
 
 // handleDeletePlexLabelRule removes a rule by ID.

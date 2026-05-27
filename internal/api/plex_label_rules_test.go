@@ -272,6 +272,86 @@ func TestPlexLabelRule_RejectsDuplicateLabels(t *testing.T) {
 	}
 }
 
+// TestPlexLabelRule_RejectsInvalidTargetType locks the validator's
+// targetType allowlist — anything other than "label" or "collection"
+// is rejected at save-time.
+func TestPlexLabelRule_RejectsInvalidTargetType(t *testing.T) {
+	s, store := newTestServerWithPlex(t)
+	seedPlexLabelRuleFixture(t, store)
+	req := core.PlexLabelRule{
+		Name:       "Bad target",
+		Enabled:    true,
+		InstanceID: "arr-r",
+		Labels:     []string{"4k"},
+		Targets: []core.PlexLabelTarget{
+			{PlexInstanceID: "plex-1", LibraryKeys: []string{"1"}},
+		},
+		TargetTypes: []string{"label", "tag"}, // "tag" not in allowlist
+	}
+	body, _ := json.Marshal(req)
+	rr := httptest.NewRecorder()
+	s.handleCreatePlexLabelRule(rr, httptest.NewRequest(http.MethodPost, "/api/plex-label-rules", bytes.NewReader(body)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid targetType; got %d body %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPlexLabelRule_RejectsDuplicateTargetTypes locks dedupe — a rule
+// listing "label" twice is rejected (would be a no-op double-write
+// per item per pass otherwise).
+func TestPlexLabelRule_RejectsDuplicateTargetTypes(t *testing.T) {
+	s, store := newTestServerWithPlex(t)
+	seedPlexLabelRuleFixture(t, store)
+	req := core.PlexLabelRule{
+		Name:       "Dup target",
+		Enabled:    true,
+		InstanceID: "arr-r",
+		Labels:     []string{"4k"},
+		Targets: []core.PlexLabelTarget{
+			{PlexInstanceID: "plex-1", LibraryKeys: []string{"1"}},
+		},
+		TargetTypes: []string{"label", "label"},
+	}
+	body, _ := json.Marshal(req)
+	rr := httptest.NewRecorder()
+	s.handleCreatePlexLabelRule(rr, httptest.NewRequest(http.MethodPost, "/api/plex-label-rules", bytes.NewReader(body)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for duplicate targetType; got %d", rr.Code)
+	}
+}
+
+// TestPlexLabelRule_EffectiveTargetTypes_DefaultsToLabel locks the
+// backward-compat read-side default — rules saved before the
+// TargetTypes field existed (empty slice) should be treated as
+// label-targeted by EffectiveTargetTypes().
+func TestPlexLabelRule_EffectiveTargetTypes_DefaultsToLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"nil", nil, []string{"label"}},
+		{"empty", []string{}, []string{"label"}},
+		{"label only", []string{"label"}, []string{"label"}},
+		{"collection only", []string{"collection"}, []string{"collection"}},
+		{"both", []string{"label", "collection"}, []string{"label", "collection"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := core.PlexLabelRule{TargetTypes: tc.in}
+			got := r.EffectiveTargetTypes()
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("entry %d: got %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 // TestPlexLabelRule_RejectsDuplicateLibraryKeys locks the same dedupe
 // rule for library keys — same engine-waste argument.
 func TestPlexLabelRule_RejectsDuplicateLibraryKeys(t *testing.T) {
@@ -291,6 +371,90 @@ func TestPlexLabelRule_RejectsDuplicateLibraryKeys(t *testing.T) {
 	s.handleCreatePlexLabelRule(rr, httptest.NewRequest(http.MethodPost, "/api/plex-label-rules", bytes.NewReader(body)))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for duplicate library key; got %d body %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPlexLabelRule_LabelDisplay_Cleanup locks the validator's
+// LabelDisplay cleanup pass — drops orphan keys (display set for a
+// tag no longer in Labels), empty values, and identity entries
+// (display equals the Arr tag-name).
+func TestPlexLabelRule_LabelDisplay_Cleanup(t *testing.T) {
+	s, store := newTestServerWithPlex(t)
+	seedPlexLabelRuleFixture(t, store)
+	req := core.PlexLabelRule{
+		Name:       "Display overrides",
+		Enabled:    true,
+		InstanceID: "arr-r",
+		Labels:     []string{"4k", "hdr"},
+		LabelDisplay: map[string]string{
+			"4k":      "4K",      // valid override — kept
+			"hdr":     "  HDR  ", // valid but needs trim — kept as "HDR"
+			"atmos":   "Atmos",   // orphan — atmos not in Labels — dropped
+			"missing": "MISS",    // orphan — dropped
+			"identity": "identity", // value equals key — would be dropped if "identity" were in Labels
+		},
+		Targets: []core.PlexLabelTarget{
+			{PlexInstanceID: "plex-1", LibraryKeys: []string{"1"}},
+		},
+		RunMode: "apply",
+	}
+	body, _ := json.Marshal(req)
+	rr := httptest.NewRecorder()
+	s.handleCreatePlexLabelRule(rr, httptest.NewRequest(http.MethodPost, "/api/plex-label-rules", bytes.NewReader(body)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Create status %d, body %s", rr.Code, rr.Body.String())
+	}
+	stored := store.Get().PlexLabelRules
+	if len(stored) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(stored))
+	}
+	disp := stored[0].LabelDisplay
+	if disp == nil {
+		t.Fatal("LabelDisplay should be present after save")
+	}
+	if disp["4k"] != "4K" {
+		t.Errorf(`expected disp["4k"] = "4K", got %q`, disp["4k"])
+	}
+	if disp["hdr"] != "HDR" {
+		t.Errorf(`expected disp["hdr"] = "HDR" (trimmed), got %q`, disp["hdr"])
+	}
+	if _, ok := disp["atmos"]; ok {
+		t.Errorf("orphan key 'atmos' should be dropped, still present: %q", disp["atmos"])
+	}
+	if _, ok := disp["missing"]; ok {
+		t.Errorf("orphan key 'missing' should be dropped")
+	}
+}
+
+// TestPlexLabelRule_LabelDisplay_NilWhenAllOrphan — when every entry
+// in the override map is invalid, the map is fully cleared so JSON
+// omits it via the omitempty tag.
+func TestPlexLabelRule_LabelDisplay_NilWhenAllOrphan(t *testing.T) {
+	s, store := newTestServerWithPlex(t)
+	seedPlexLabelRuleFixture(t, store)
+	req := core.PlexLabelRule{
+		Name:       "All orphans",
+		Enabled:    true,
+		InstanceID: "arr-r",
+		Labels:     []string{"4k"},
+		LabelDisplay: map[string]string{
+			"missing-a": "X",
+			"missing-b": "Y",
+		},
+		Targets: []core.PlexLabelTarget{
+			{PlexInstanceID: "plex-1", LibraryKeys: []string{"1"}},
+		},
+		RunMode: "apply",
+	}
+	body, _ := json.Marshal(req)
+	rr := httptest.NewRecorder()
+	s.handleCreatePlexLabelRule(rr, httptest.NewRequest(http.MethodPost, "/api/plex-label-rules", bytes.NewReader(body)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Create status %d, body %s", rr.Code, rr.Body.String())
+	}
+	stored := store.Get().PlexLabelRules
+	if len(stored[0].LabelDisplay) != 0 {
+		t.Errorf("expected empty LabelDisplay map after orphan cleanup, got %+v", stored[0].LabelDisplay)
 	}
 }
 

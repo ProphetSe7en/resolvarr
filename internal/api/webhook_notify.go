@@ -118,6 +118,29 @@ type DvDetail struct {
 	PlainSummary string // e.g. "Dolby Vision · Profile 7 · Layer 7.1"
 }
 
+// PlexSyncDetail is the typed payload for WebhookFnPlexLabelSync
+// results. Surfaces per-label counters from the per-item engine fire
+// so the notification can render "+12 labels, -3 labels on Movies" or
+// "Movies: +FEL, MEL — Movies 4K: −Atmos" depending on what changed.
+//
+// Added / Removed are keyed by display label (post LabelDisplay
+// override) — same keys as agents see on the Plex Web side. Empty
+// maps when nothing actually changed (Changed=false on the parent
+// functionResult; section builder skips entirely).
+//
+// TargetTypes mirrors the rule's pick ("label" / "collection" / both)
+// so the section can say "as Plex labels" vs "as Plex collections" vs
+// "as Plex labels and collections".
+//
+// PlexInstanceName surfaces in the section header so users with
+// multiple Plex servers can tell which one the changes applied to.
+type PlexSyncDetail struct {
+	Added            map[string]int
+	Removed          map[string]int
+	TargetTypes      []string // "label" / "collection"
+	PlexInstanceName string   // human-readable name from PlexInstance.Name
+}
+
 // DiscoverDetail is the typed payload for WebhookFnDiscover results.
 // Populated when a new release-group landed in Config.ReleaseGroups.
 type DiscoverDetail struct {
@@ -257,6 +280,11 @@ var titleDisplayOrder = map[core.WebhookFunction]int{
 	core.WebhookFnGrabRename:      50, // qBit-side
 	core.WebhookFnQbitSeTag:       60,
 	core.WebhookFnQbitCategoryFix: 70,
+	// Plex label sync surfaces AFTER all the Arr-side tagging functions
+	// (it's downstream of them) but BEFORE the qBit-side functions —
+	// it's the "and the tags propagated to Plex too" half of an
+	// import-event story.
+	core.WebhookFnPlexLabelSync: 45,
 	// SyncToSecondary has no standalone label (titleLabelForFunction
 	// returns ""), so this entry is dead today. Kept defensive: if a
 	// future change gives Sync its own visible label, the order is
@@ -380,6 +408,10 @@ func titleLabelForFunctionAndEvent(fn core.WebhookFunction, event core.WebhookCo
 			core.WebhookFnTagVideo,
 			core.WebhookFnTagDvDetail:
 			return "Cleaned up tags"
+		case core.WebhookFnPlexLabelSync:
+			// On delete events Plex sync removes labels/collections
+			// for the deleted item. Surface that explicitly.
+			return "Cleared from Plex"
 		case core.WebhookFnSyncToSecondary:
 			return "" // folded into the Cleaned-up label, never solo
 		}
@@ -403,6 +435,8 @@ func titleLabelForFunctionAndEvent(fn core.WebhookFunction, event core.WebhookCo
 		return "Episode tagged"
 	case core.WebhookFnQbitCategoryFix:
 		return "Category fixed"
+	case core.WebhookFnPlexLabelSync:
+		return "Synced to Plex"
 	case core.WebhookFnSyncToSecondary:
 		return "" // folded into the Tag/Auto-tag label, never solo
 	}
@@ -447,7 +481,12 @@ func pickColor(event core.WebhookConnectEvent, results []functionResult, allowed
 			core.WebhookFnTagAudio,
 			core.WebhookFnTagVideo,
 			core.WebhookFnTagDvDetail,
-			core.WebhookFnSyncToSecondary:
+			core.WebhookFnSyncToSecondary,
+			core.WebhookFnPlexLabelSync:
+			// Plex sync is the downstream half of a tag-event chain —
+			// the user perceives it as "the tag changes propagated" so
+			// it pulls the embed color into the tag bucket alongside
+			// the Arr-side mutations.
 			sawTag = true
 		case core.WebhookFnGrabRename,
 			core.WebhookFnQbitSeTag,

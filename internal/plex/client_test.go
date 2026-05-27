@@ -165,6 +165,65 @@ func TestGetLibraries_HappyPath(t *testing.T) {
 	}
 }
 
+// TestGetItems_HandlesPlexInternalGuidField locks the fix for the
+// real-world quirk where Plex returns BOTH a lowercase "guid" string
+// (Plex's internal GUID) AND a capital "Guid" array (external GUIDs)
+// on the same item. Without an explicit absorber for the lowercase
+// field, Go's case-insensitive JSON matching routes the string into
+// the typed array and the decode fails with "cannot unmarshal string
+// into Go struct field ... of type []plex.rawGuid".
+func TestGetItems_HandlesPlexInternalGuidField(t *testing.T) {
+	srv := newMockPlex(t, map[string]http.HandlerFunc{
+		"GET /library/sections/7/all": func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintln(w, `{
+				"MediaContainer": {
+					"Metadata": [
+						{
+							"ratingKey": "100",
+							"title": "Item with both guid fields",
+							"year": 2024,
+							"type": "movie",
+							"guid": "plex://movie/abcdef01234567890",
+							"Guid": [
+								{"id": "imdb://tt12345678"},
+								{"id": "tmdb://12345"}
+							]
+						},
+						{
+							"ratingKey": "101",
+							"title": "Item with only Plex internal GUID",
+							"year": 2010,
+							"type": "movie",
+							"guid": "plex://movie/onlyinternal"
+						}
+					]
+				}
+			}`)
+		},
+	})
+	defer srv.Close()
+
+	c, _ := New(Config{URL: srv.URL, Token: testToken})
+	items, err := c.GetItems(context.Background(), "7")
+	if err != nil {
+		t.Fatalf("GetItems: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	first := items[0]
+	if len(first.GUIDs) != 2 {
+		t.Errorf("first item GUIDs lost: %+v", first.GUIDs)
+	}
+	// Second item has lowercase "guid" only, no capital "Guid" array
+	// — GUIDs should be empty (we intentionally don't surface the
+	// Plex-internal GUID since it doesn't match TMDB/TVDB/IMDB).
+	second := items[1]
+	if len(second.GUIDs) != 0 {
+		t.Errorf("second item should have empty GUIDs, got %+v", second.GUIDs)
+	}
+}
+
 func TestGetItems_HappyPath_WithGuidsAndLabels(t *testing.T) {
 	srv := newMockPlex(t, map[string]http.HandlerFunc{
 		"GET /library/sections/1/all": func(w http.ResponseWriter, r *http.Request) {

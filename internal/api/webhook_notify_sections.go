@@ -35,6 +35,8 @@
 package api
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 
 	"resolvarr/internal/core"
@@ -121,6 +123,7 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 	var qbitSe *QbitSeDetail
 	var qbitCat *QbitCategoryFixDetail
 	var fileDel *FileDeleteDetail
+	var plexSync *PlexSyncDetail
 
 	for _, r := range results {
 		if !r.Changed {
@@ -162,6 +165,10 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 		case core.WebhookFnQbitCategoryFix:
 			if d, ok := r.Detail.(QbitCategoryFixDetail); ok {
 				qbitCat = &d
+			}
+		case core.WebhookFnPlexLabelSync:
+			if d, ok := r.Detail.(PlexSyncDetail); ok {
+				plexSync = &d
 			}
 		}
 		// File-delete details: TWO dispatchers fire on the same
@@ -284,6 +291,10 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 		// per EventsForFunction — but defence-in-depth: skip them
 		// here too if they somehow arrived.
 		detail = appendFileDeleteSection(detail, fileDel)
+		// Plex sync fires on delete events too — surface the
+		// label/collection removal as its own section so the user
+		// sees the Plex-side cleanup, not just the Arr-side strip.
+		detail = appendPlexSyncSection(detail, plexSync)
 	} else {
 		// Non-delete events: build detail sections in user-scan
 		// order. Tag section now emits only the Quality tag
@@ -292,6 +303,7 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 		detail = appendAutoTagsSection(detail, audio, video, dv)
 		detail = appendDiscoverSection(detail, discover)
 		detail = appendRecoverSection(detail, rec)
+		detail = appendPlexSyncSection(detail, plexSync)
 		detail = appendGrabRenameSection(detail, grab)
 		detail = appendQbitSeSection(detail, qbitSe)
 		detail = appendQbitCategoryFixSection(detail, qbitCat)
@@ -605,6 +617,102 @@ func appendEventFilenameSection(fields []agents.PayloadField, event core.Webhook
 		})
 	}
 	return fields
+}
+
+// appendPlexSyncSection renders the Plex label-sync outcome. Mirrors
+// the user's mental model "labels (and/or collections) on Plex now
+// match the Arr-side tags for this item":
+//
+//	Plex          Main Plex (labels)
+//	Added on Plex +1 FEL, +1 MEL
+//	Removed on Plex −1 hdr
+//
+// "Target" disambiguates label vs collection writes when the rule
+// targets one of them; "labels and collections" appears when both
+// are checked. Counts are per display label (post LabelDisplay
+// override) so the user sees what shows up in Plex Web.
+func appendPlexSyncSection(fields []agents.PayloadField, d *PlexSyncDetail) []agents.PayloadField {
+	if d == nil {
+		return fields
+	}
+	addedTotal := 0
+	for _, v := range d.Added {
+		addedTotal += v
+	}
+	removedTotal := 0
+	for _, v := range d.Removed {
+		removedTotal += v
+	}
+	if addedTotal == 0 && removedTotal == 0 {
+		return fields
+	}
+	// Plex instance header — includes target-type description so
+	// the user can see at a glance which side was written.
+	targetDesc := ""
+	hasLabel := false
+	hasCollection := false
+	for _, t := range d.TargetTypes {
+		if t == "label" {
+			hasLabel = true
+		}
+		if t == "collection" {
+			hasCollection = true
+		}
+	}
+	switch {
+	case hasLabel && hasCollection:
+		targetDesc = "labels and collections"
+	case hasCollection:
+		targetDesc = "collections"
+	case hasLabel:
+		targetDesc = "labels"
+	}
+	plexHeader := strings.TrimSpace(d.PlexInstanceName)
+	if plexHeader == "" {
+		plexHeader = "Plex"
+	}
+	if targetDesc != "" {
+		plexHeader = plexHeader + " (" + targetDesc + ")"
+	}
+	fields = append(fields, agents.PayloadField{
+		Name:   "Plex",
+		Value:  plexHeader,
+		Inline: true,
+	})
+	if addedTotal > 0 {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Added on Plex",
+			Value:  formatPlexCountMap(d.Added, "+"),
+			Inline: false,
+		})
+	}
+	if removedTotal > 0 {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Removed on Plex",
+			Value:  formatPlexCountMap(d.Removed, "−"),
+			Inline: false,
+		})
+	}
+	return fields
+}
+
+// formatPlexCountMap turns {"FEL":1,"MEL":1} into "+1 FEL, +1 MEL"
+// (or "−1 hdr" with the unicode minus). Sorted by label so the
+// output is deterministic across runs.
+func formatPlexCountMap(m map[string]int, sign string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s%d %s", sign, m[k], k))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // appendQbitSeSection renders the qBittorrent Season/Episode

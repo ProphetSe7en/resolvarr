@@ -2,6 +2,40 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.12-dev — Plex label sync, now actually usable (2026-05-27)
+
+`v0.6.11-dev` shipped the setup pieces (a Plex server registration page + the backend). This release builds it out the rest of the way — rule editor, the bit that does the actual work, and a way to fire it. You can now make Radarr and Sonarr tags show up as labels (or collections) on the matching Plex movies and series.
+
+### What's new
+
+- **A new page to set up the rules.** Under Library scan, look for **Plex label sync**. Pick the Radarr or Sonarr instance, pick which tags should travel, pick the Plex server and which libraries, and you're done. Each rule shows up as a card you can edit, delete, or run from.
+
+- **The tag picker reads your real tag list.** Pick an Arr instance and resolvarr fetches the tags you actually have. Tick the ones you want synced — no guessing the spelling, no typos. Search field at the top for when you have a lot of tags.
+
+- **You can pretty up the Plex side.** Radarr forces tag names to lowercase-with-dashes (so it's `atmos` and `dolby-vision`). Plex doesn't have that rule. Next to each ticked tag there's a little "Plex label" field — leave it blank to use the Arr name as-is, or type `Atmos` and `Dolby Vision` for prettier display on Plex.
+
+- **Labels, Collections, or both.** Plex has two ways to tag a movie. **Labels** are like sticky-notes — filterable in the Plex UI, light-touch. **Collections** are full grouped views in Plex Web (people who use Kometa typically pick this). The rule lets you write to either or both — separate target choice per rule.
+
+- **Run a rule on demand to see what it would do.** Every rule has a Run button with two modes. **Preview** does all the comparison work but doesn't touch Plex — it just shows you what would change. **Apply** does the writes for real. Preview first whenever you're not sure.
+
+- **The result is shown in a readable table.** After a run you see a per-label breakdown: how many movies would get this tag added, how many would get it removed, how many already match. Click a label row to drill into the per-movie list.
+
+- **Live sync the moment a movie is imported.** New checkbox on webhook rules: **Sync to Plex**. After the import-time tagging functions finish writing tags to Radarr/Sonarr, the Plex side gets updated for that one movie. No waiting for a schedule, no full library walk — within seconds of import, the Plex label appears.
+
+- **Notifications cover the Plex side too.** Discord (and Gotify / NTFY / Pushover / Apprise) embeds now include a "Synced to Plex" line on import events and a "Cleared from Plex" line on delete events, with the per-label counts so you see what actually changed.
+
+### A few details worth knowing
+
+- **Manual labels you added in Plex yourself are never touched.** The rule only manages the tags you put in its whitelist. If you've added a `favourite` label in Plex manually, it stays.
+
+- **Re-running a rule is safe.** If nothing changed in your Arr tags since last run, the second run does nothing — no duplicate writes, no flapping.
+
+- **Matching is tolerant.** Resolvarr tries to match Plex movies to Arr movies four ways in order — TMDB+IMDB both matching is strongest, falling back to single IDs, and finally normalised title-plus-year as a last resort.
+
+### Still cooking
+
+- **Scheduled full-library reconciliation.** The webhook flow catches everything that happens during import/delete events, which covers the vast majority of cases. If you edit Radarr tags by hand, or another tool changes tags outside of resolvarr, a scheduled run will catch up the drift. That ships in the next dev release.
+
 ## v0.6.11-dev — Plex label sync (foundation) (2026-05-25)
 
 Foundation for a new feature: syncing Arr tags to Plex labels. This release lands the backend + the Settings UI to configure Plex instances. The actual sync engine ships in the next dev release; nothing fires yet on the new rules side, and there's no Add rule UI today.

@@ -276,6 +276,13 @@ type Item struct {
 	Year      int        `json:"year,omitempty"`    // release year — used for UI display, not decisions
 	TmdbID    int        `json:"tmdbId,omitempty"`  // for cross-instance matching (M3e Secondary sync, Tag inventory cross-compare)
 	TvdbID    int        `json:"tvdbId,omitempty"`  // Sonarr equivalent of TmdbID — same role for cross-Sonarr compares
+	// ImdbID is the optional IMDb identifier ("tt1234567"). Both
+	// Radarr and Sonarr return it when their metadata source has it.
+	// Used by the Plex label-sync engine's 4-tier match strategy
+	// (compound TMDB+IMDB / TVDB+IMDB keys for high-confidence
+	// matches, plus single-ID IMDB fallback). Empty string when the
+	// Arr's metadata source didn't supply one.
+	ImdbID    string     `json:"imdbId,omitempty"`
 	Tags      []int      `json:"tags"`
 	MovieFile *MovieFile `json:"movieFile,omitempty"`
 	// Sonarr-only — series statistics. Used by M-Sonarr Audio/Video
@@ -481,6 +488,43 @@ func (c *Client) GetItemTags(ctx context.Context, arrType string, itemID int) ([
 		row.Tags = []int{}
 	}
 	return row.Tags, nil
+}
+
+// GetItem fetches the full Item by ID. Used by the Plex label-sync
+// webhook adapter (and other per-item flows) that need the item's
+// current tag set + cross-reference IDs (TMDB/TVDB/IMDB/Year/Title)
+// without paying for a full /movie or /series listing. Returns
+// ErrItemNotFound on 404 so callers can distinguish "gone" from
+// real server errors.
+func (c *Client) GetItem(ctx context.Context, arrType string, itemID int) (Item, error) {
+	var path string
+	switch arrType {
+	case "radarr":
+		path = fmt.Sprintf("/api/v3/movie/%d", itemID)
+	case "sonarr":
+		path = fmt.Sprintf("/api/v3/series/%d", itemID)
+	default:
+		return Item{}, fmt.Errorf("unknown arr type: %s", arrType)
+	}
+	resp, err := c.do(ctx, "GET", path, nil)
+	if err != nil {
+		return Item{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return Item{}, ErrItemNotFound
+	}
+	if resp.StatusCode != 200 {
+		return Item{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var it Item
+	if err := json.NewDecoder(resp.Body).Decode(&it); err != nil {
+		return Item{}, fmt.Errorf("parse item: %w", err)
+	}
+	if it.Tags == nil {
+		it.Tags = []int{}
+	}
+	return it, nil
 }
 
 // ErrItemNotFound is returned by GetItemTags when the Arr returns 404

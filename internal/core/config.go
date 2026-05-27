@@ -1419,6 +1419,27 @@ func (s *ConfigStore) Get() Config {
 				w := *r.Webhook
 				out.WebhookRules[i].Webhook = &w
 			}
+			// PlexLabelSync — inline Plex sync config. Deep-copy
+			// every nested slice + the LabelDisplay map so a caller
+			// mutating the returned snapshot (e.g. a future health-
+			// scan or a webhook adapter that decided to normalise
+			// the config in-place) doesn't corrupt the store. Same
+			// class of defensive copy as the standalone
+			// PlexLabelRule's deep-copy block earlier in this
+			// function.
+			if r.PlexLabelSync != nil {
+				ps := *r.PlexLabelSync
+				ps.Labels = append([]string(nil), r.PlexLabelSync.Labels...)
+				ps.LibraryKeys = append([]string(nil), r.PlexLabelSync.LibraryKeys...)
+				ps.TargetTypes = append([]string(nil), r.PlexLabelSync.TargetTypes...)
+				if len(r.PlexLabelSync.LabelDisplay) > 0 {
+					ps.LabelDisplay = make(map[string]string, len(r.PlexLabelSync.LabelDisplay))
+					for k, v := range r.PlexLabelSync.LabelDisplay {
+						ps.LabelDisplay[k] = v
+					}
+				}
+				out.WebhookRules[i].PlexLabelSync = &ps
+			}
 		}
 	}
 	// Deep-copy NotificationAgents — each agent's Config struct embeds
@@ -1485,6 +1506,15 @@ func (s *ConfigStore) Get() Config {
 		for i, r := range s.cfg.PlexLabelRules {
 			out.PlexLabelRules[i] = r
 			out.PlexLabelRules[i].Labels = append([]string(nil), r.Labels...)
+			if len(r.TargetTypes) > 0 {
+				out.PlexLabelRules[i].TargetTypes = append([]string(nil), r.TargetTypes...)
+			}
+			if len(r.LabelDisplay) > 0 {
+				out.PlexLabelRules[i].LabelDisplay = make(map[string]string, len(r.LabelDisplay))
+				for k, v := range r.LabelDisplay {
+					out.PlexLabelRules[i].LabelDisplay[k] = v
+				}
+			}
 			if len(r.Targets) > 0 {
 				out.PlexLabelRules[i].Targets = make([]PlexLabelTarget, len(r.Targets))
 				for j, t := range r.Targets {
@@ -1506,6 +1536,12 @@ func (s *ConfigStore) Get() Config {
 						out.PlexLabelRules[i].History[j].Removed = make(map[string]int, len(h.Removed))
 						for k, v := range h.Removed {
 							out.PlexLabelRules[i].History[j].Removed[k] = v
+						}
+					}
+					if len(h.InSync) > 0 {
+						out.PlexLabelRules[i].History[j].InSync = make(map[string]int, len(h.InSync))
+						for k, v := range h.InSync {
+							out.PlexLabelRules[i].History[j].InSync[k] = v
 						}
 					}
 					if len(h.PerLabel) > 0 {
