@@ -53,6 +53,9 @@ Every scan dumps its decisions to a JSON file under `/config/logs/`. Browse them
 ### Multi-agent notifications
 Configure one or more notification agents — Discord, Gotify, NTFY, Pushover, Apprise — and pick which events fire to each. Per-agent test buttons. Discord embeds carry a coloured sidebar matching event severity and auto-chunk long detail messages.
 
+### Plex label sync
+Push selected Radarr/Sonarr tags onto matching Plex movies and series as **Labels** or **Collections** (or both). Whitelist-strict by design — manual Plex labels outside the whitelist are never touched. Per-tag display override lets you render Radarr's `atmos` as Plex's `Atmos`. Real-time per-item sync on webhook import / delete events, plus on-demand Run with Preview / Apply mode. Inspired by [DAPS labelarr](https://github.com/Drazzilb08/daps/blob/dev/modules/labelarr.py) — same idea, rewritten in Go with per-event triggers, dual Label/Collection target, and inline webhook integration.
+
 ### Multi-instance
 Connect any number of Radarr and Sonarr instances. Per-instance feature visibility — Radarr-only features (DV detail, TMDb-based sync) don't show for Sonarr instances and vice-versa, so each picker presents only what's relevant for the selected instance type.
 
@@ -201,6 +204,7 @@ Resolvarr is built on top of:
 - **[MediaInfo](https://mediaarea.net/en/MediaInfo)** — Source of the codec, audio, channel-layout, and HDR information surfaced through Radarr/Sonarr.
 - **[dovi_tool](https://github.com/quietvoid/dovi_tool)** — When `ENABLE_DV_TOOLS=true` is set, dovi_tool extracts Dolby Vision RPU details (profile / layer / CM version) from the file. The tagging concept for codec / audio / Dolby Vision detail is inspired by similar community tagging tools.
 - **[tagarr (bash)](https://github.com/prophetse7en/tagarr)** — Origin of the matching, recovery, and discovery logic. The Go engine in resolvarr is a direct port of `tagarr.sh` and `tagarr_recover.sh` with byte-for-byte parity on tag decisions.
+- **[DAPS](https://github.com/Drazzilb08/daps)** — The Plex label sync feature is inspired by DAPS' `labelarr` module. Resolvarr's implementation is an independent rewrite in Go with the same core idea (Arr tags → Plex labels) plus real-time per-event triggers, dual Label/Collection targets, per-tag display overrides, and inline webhook integration.
 
 ## Disclaimer
 

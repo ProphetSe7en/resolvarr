@@ -10,6 +10,8 @@ Small follow-up: when you create a webhook rule with Sync to Plex turned on, the
 
 `v0.6.11-dev` shipped the setup pieces (a Plex server registration page + the backend). This release builds it out the rest of the way — rule editor, the bit that does the actual work, and a way to fire it. You can now make Radarr and Sonarr tags show up as labels (or collections) on the matching Plex movies and series.
 
+The feature is inspired by [DAPS' `labelarr` module](https://github.com/Drazzilb08/daps/blob/dev/modules/labelarr.py) — the same core idea (push Arr tags onto Plex as labels) rewritten in Go with real-time per-event triggers, dual Label/Collection targets, per-tag display overrides, and inline webhook integration.
+
 ### What's new
 
 - **A new page to set up the rules.** Under Library scan, look for **Plex label sync**. Pick the Radarr or Sonarr instance, pick which tags should travel, pick the Plex server and which libraries, and you're done. Each rule shows up as a card you can edit, delete, or run from.
