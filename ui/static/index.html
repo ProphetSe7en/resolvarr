@@ -9537,6 +9537,35 @@
             </div>
           </template>
 
+          <!-- ===== Plex label sync section =====
+               Shown when the Sync to Plex function is ticked. Mirrors
+               the structure of the auto-tag sections — labelled header
+               + per-config-piece bullet rows. Bound to
+               editingRule.plexLabelSync inline config. -->
+          <template x-if="ruleAffectsPlexLabelSync() && editingRule.plexLabelSync">
+            <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
+              <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">Plex label sync</div>
+              <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
+                <div>
+                  <strong style="color:var(--text-body)">Plex instance:</strong>
+                  <span x-text="reviewPlexInstanceName()"></span>
+                </div>
+                <div>
+                  <strong style="color:var(--text-body)">Libraries:</strong>
+                  <span x-text="reviewPlexLibraryTitles()"></span>
+                </div>
+                <div>
+                  <strong style="color:var(--text-body)">Tags to sync:</strong>
+                  <span x-text="reviewPlexTagsSummary()"></span>
+                </div>
+                <div>
+                  <strong style="color:var(--text-body)">Write to Plex as:</strong>
+                  <span x-text="reviewPlexTargetTypesLabel()"></span>
+                </div>
+              </div>
+            </div>
+          </template>
+
           <!-- ===== Missing Episodes section =====
                Editable card — no dedicated wizard step for this phase.
                Compact config (threshold + buffer + 3 includes + 2

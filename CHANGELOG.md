@@ -2,6 +2,10 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.13-dev — Plex sync shows up on the Review step (2026-05-27)
+
+Small follow-up: when you create a webhook rule with Sync to Plex turned on, the **Review step** (the last page in the wizard before saving) now has its own Plex label sync block showing what you've picked — the Plex server, libraries, tags to sync with their Plex-side display labels, and whether you're writing labels, collections, or both. Previously the Plex side was invisible at Review even when configured. No behaviour change beyond the Review-page summary.
+
 ## v0.6.12-dev — Plex label sync, now actually usable (2026-05-27)
 
 `v0.6.11-dev` shipped the setup pieces (a Plex server registration page + the backend). This release builds it out the rest of the way — rule editor, the bit that does the actual work, and a way to fire it. You can now make Radarr and Sonarr tags show up as labels (or collections) on the matching Plex movies and series.

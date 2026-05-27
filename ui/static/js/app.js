@@ -8142,6 +8142,52 @@ function app() {
     //   "Disabled"
     //   "Enabled — bare values, all allowed"
     //   "Enabled — prefix `audio-`, 4 of 12 values"
+    // Plex label sync review helpers — render the inline
+    // editingRule.plexLabelSync config as four readable lines for the
+    // Review step. Defensive against partially-filled state (user
+    // opens Review without finishing the Plex sync tab) — returns
+    // "(none picked)" rather than crashing.
+
+    reviewPlexInstanceName() {
+      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+      if (!cfg || !cfg.plexInstanceId) return '(none picked)';
+      const pi = (this.plexInstances || []).find(p => p.id === cfg.plexInstanceId);
+      return pi ? pi.name : cfg.plexInstanceId;
+    },
+
+    reviewPlexLibraryTitles() {
+      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+      if (!cfg || !cfg.libraryKeys || cfg.libraryKeys.length === 0) return '(none picked)';
+      const pi = (this.plexInstances || []).find(p => p.id === cfg.plexInstanceId);
+      const libs = pi ? (pi.libraries || []) : [];
+      const titles = cfg.libraryKeys.map(k => {
+        const l = libs.find(x => x.key === k);
+        return l ? l.title : k;
+      });
+      return titles.join(', ');
+    },
+
+    reviewPlexTagsSummary() {
+      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+      if (!cfg || !cfg.labels || cfg.labels.length === 0) return '(none picked)';
+      const display = cfg.labelDisplay || {};
+      const parts = cfg.labels.map(lbl => {
+        const override = (display[lbl] || '').trim();
+        return override && override !== lbl ? `${lbl} → ${override}` : lbl;
+      });
+      return parts.join(', ');
+    },
+
+    reviewPlexTargetTypesLabel() {
+      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+      const types = (cfg && cfg.targetTypes && cfg.targetTypes.length > 0) ? cfg.targetTypes : ['label'];
+      const hasLabel = types.includes('label');
+      const hasCollection = types.includes('collection');
+      if (hasLabel && hasCollection) return 'Plex labels and collections';
+      if (hasCollection) return 'Plex collections only';
+      return 'Plex labels';
+    },
+
     reviewBucketSummary(bucket, vocabSize) {
       if (!bucket || !bucket.enabled) return 'Disabled';
       const parts = ['Enabled'];
