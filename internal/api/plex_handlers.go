@@ -175,11 +175,12 @@ func (s *Server) handleUpdatePlexInstance(w http.ResponseWriter, r *http.Request
 	writeJSON(w, maskPlexInstance(updated))
 }
 
-// handleDeletePlexInstance removes an entry and cleans up any
-// PlexLabelRule.Targets references pointing at it. Cleanup approach:
-// drop the rule if the deleted Plex was its only target. A future
-// multi-target shape would drop just the matching target entry
-// instead of the whole rule.
+// handleDeletePlexInstance removes a Plex instance entry. Inline
+// Plex-sync configs that referenced it (a schedule's PlexSync or a
+// webhook rule's PlexLabelSync) are left as-is; the engine resolves
+// the Plex instance at run-time and returns a "Plex instance not
+// found" error rather than writing anywhere, so a dangling reference
+// fails safe instead of needing an eager cascade.
 func (s *Server) handleDeletePlexInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -187,7 +188,6 @@ func (s *Server) handleDeletePlexInstance(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := s.App.Config.Update(func(c *core.Config) {
-		// Remove the instance itself.
 		outInst := make([]core.PlexInstance, 0, len(c.PlexInstances))
 		for _, pi := range c.PlexInstances {
 			if pi.ID != id {
@@ -195,18 +195,6 @@ func (s *Server) handleDeletePlexInstance(w http.ResponseWriter, r *http.Request
 			}
 		}
 		c.PlexInstances = outInst
-		// Drop any PlexLabelRule whose single target was this Plex.
-		// We don't half-disable the rule — once the Plex is gone the
-		// rule has nothing to write to, and silently saving a broken
-		// rule is worse than removing it.
-		outRules := make([]core.PlexLabelRule, 0, len(c.PlexLabelRules))
-		for _, rule := range c.PlexLabelRules {
-			if len(rule.Targets) == 1 && rule.Targets[0].PlexInstanceID == id {
-				continue
-			}
-			outRules = append(outRules, rule)
-		}
-		c.PlexLabelRules = outRules
 	}); err != nil {
 		writeError(w, 500, "save: "+err.Error())
 		return

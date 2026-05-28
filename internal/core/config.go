@@ -367,12 +367,6 @@ type Config struct {
 	// Standalone (not paired 1:1 with Arr) so a single Plex can be the
 	// target of multiple sync rules — same shape as QbitInstances.
 	PlexInstances []PlexInstance `json:"plexInstances,omitempty"`
-
-	// PlexLabelRules is the user-configured list of Arr-tag → Plex-label
-	// sync mappings. Each rule pairs ONE Arr instance + label-whitelist
-	// + ONE Plex instance + library-list. Triggered via schedule,
-	// webhook function, or one-off wizard.
-	PlexLabelRules []PlexLabelRule `json:"plexLabelRules,omitempty"`
 }
 
 // QbitInstance is one user-configured qBittorrent connection.
@@ -1499,71 +1493,6 @@ func (s *ConfigStore) Get() Config {
 			out.PlexInstances[i] = p
 			if len(p.Libraries) > 0 {
 				out.PlexInstances[i].Libraries = append([]PlexLibrary(nil), p.Libraries...)
-			}
-		}
-	}
-	// Deep-copy PlexLabelRules — outer slice plus per-rule Labels +
-	// Targets[].LibraryKeys + History + History[].PerLabel +
-	// History[].Added/Removed maps. Engine takes *PlexLabelRule
-	// pointers during a sync; without this copy a concurrent
-	// PUT/DELETE on the rule list would mutate the in-flight scan's
-	// view of the rule.
-	//
-	// Scalar string fields (RunMode, Status, Trigger, Summary, etc.)
-	// are deliberately left shallow — Go strings are immutable, so
-	// the slice-of-struct assignment already gives each reader an
-	// independent value. Only nested slices/maps need explicit deep
-	// copies.
-	if len(s.cfg.PlexLabelRules) > 0 {
-		out.PlexLabelRules = make([]PlexLabelRule, len(s.cfg.PlexLabelRules))
-		for i, r := range s.cfg.PlexLabelRules {
-			out.PlexLabelRules[i] = r
-			out.PlexLabelRules[i].Labels = append([]string(nil), r.Labels...)
-			if len(r.TargetTypes) > 0 {
-				out.PlexLabelRules[i].TargetTypes = append([]string(nil), r.TargetTypes...)
-			}
-			if len(r.LabelDisplay) > 0 {
-				out.PlexLabelRules[i].LabelDisplay = make(map[string]string, len(r.LabelDisplay))
-				for k, v := range r.LabelDisplay {
-					out.PlexLabelRules[i].LabelDisplay[k] = v
-				}
-			}
-			if len(r.Targets) > 0 {
-				out.PlexLabelRules[i].Targets = make([]PlexLabelTarget, len(r.Targets))
-				for j, t := range r.Targets {
-					out.PlexLabelRules[i].Targets[j] = t
-					out.PlexLabelRules[i].Targets[j].LibraryKeys = append([]string(nil), t.LibraryKeys...)
-				}
-			}
-			if len(r.History) > 0 {
-				out.PlexLabelRules[i].History = make([]PlexLabelRuleRun, len(r.History))
-				for j, h := range r.History {
-					out.PlexLabelRules[i].History[j] = h
-					if len(h.Added) > 0 {
-						out.PlexLabelRules[i].History[j].Added = make(map[string]int, len(h.Added))
-						for k, v := range h.Added {
-							out.PlexLabelRules[i].History[j].Added[k] = v
-						}
-					}
-					if len(h.Removed) > 0 {
-						out.PlexLabelRules[i].History[j].Removed = make(map[string]int, len(h.Removed))
-						for k, v := range h.Removed {
-							out.PlexLabelRules[i].History[j].Removed[k] = v
-						}
-					}
-					if len(h.InSync) > 0 {
-						out.PlexLabelRules[i].History[j].InSync = make(map[string]int, len(h.InSync))
-						for k, v := range h.InSync {
-							out.PlexLabelRules[i].History[j].InSync[k] = v
-						}
-					}
-					if len(h.PerLabel) > 0 {
-						out.PlexLabelRules[i].History[j].PerLabel = append([]PlexLabelChange(nil), h.PerLabel...)
-					}
-					if len(h.Errors) > 0 {
-						out.PlexLabelRules[i].History[j].Errors = append([]string(nil), h.Errors...)
-					}
-				}
 			}
 		}
 	}

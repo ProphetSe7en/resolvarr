@@ -6241,40 +6241,11 @@
                  x-text="'Failed: ' + plexLabelRunModal.error"></div>
           </template>
 
-          <!-- ========== CONFIRM stage ========== -->
-          <template x-if="plexLabelRunModal.stage === 'confirm'">
-            <div>
-              <div class="form-group">
-                <label class="label">Run mode</label>
-                <div style="display:flex;flex-direction:column;gap:6px">
-                  <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px">
-                    <input type="radio" value="preview" x-model="plexLabelRunModal.runMode" style="accent-color:var(--accent-blue);margin-top:3px">
-                    <span><strong>Preview</strong> <span style="color:var(--text-secondary)">— compute the diff but skip the Plex writes. Useful for the first run when you want to see what would change.</span></span>
-                  </label>
-                  <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px">
-                    <input type="radio" value="apply" x-model="plexLabelRunModal.runMode" style="accent-color:var(--accent-blue);margin-top:3px">
-                    <span><strong>Apply</strong> <span style="color:var(--text-secondary)">— write the label add / removes to Plex. Idempotent — re-running with no Arr changes is a no-op.</span></span>
-                  </label>
-                </div>
-              </div>
-              <div class="modal-actions">
-                <button class="btn" @click="closePlexLabelRunModal()">Cancel</button>
-                <div style="flex:1"></div>
-                <button class="btn btn-primary" @click="firePlexLabelRunModal()">
-                  <span x-text="plexLabelRunModal.runMode === 'preview' ? 'Run preview' : 'Run sync'"></span>
-                </button>
-              </div>
-            </div>
-          </template>
-
-          <!-- ========== BUSY stage ========== -->
-          <template x-if="plexLabelRunModal.stage === 'busy'">
-            <div style="padding:32px;text-align:center;color:var(--text-secondary);font-size:13px">
-              <div style="font-size:24px;margin-bottom:12px"><span class="spinner"></span></div>
-              <div>Walking the Plex library, comparing labels…</div>
-              <div style="margin-top:6px;font-size:11px;color:var(--text-muted)">Large libraries can take a minute or two. The run won't time out below 5 minutes.</div>
-            </div>
-          </template>
+          <!-- The run modal is opened directly in the RESULT stage by
+               the one-off run form (runOneOffPlexSync) and by the QFA
+               result drill-in. There is no confirm/busy stage here:
+               the one-off form's footer is where preview/apply is
+               picked and the run is fired. -->
 
           <!-- ========== RESULT stage ========== -->
           <template x-if="plexLabelRunModal.stage === 'result' && plexLabelRunModal.result">
@@ -6408,24 +6379,6 @@
     </div>
   </div>
 
-  <!-- ===== Plex label-sync rule delete-confirm modal ===== -->
-  <div class="modal-overlay" x-show="deletePlexLabelRuleTarget" x-cloak @click.self="deletePlexLabelRuleTarget = null" @keydown.escape.window="deletePlexLabelRuleTarget = null">
-    <div class="modal" style="width:480px">
-      <div class="modal-title">Delete label-sync rule</div>
-      <div style="font-size:13px;color:var(--text-body);line-height:1.5;margin-bottom:14px">
-        Remove <code style="background:var(--bg-muted);padding:1px 6px;border-radius:3px" x-text="deletePlexLabelRuleTarget && deletePlexLabelRuleTarget.name"></code>?
-        <div style="margin-top:6px;color:var(--text-secondary)">The rule's history is dropped along with it. Labels already on Plex stay where they are — the rule going away doesn't trigger a cleanup pass.</div>
-      </div>
-      <div class="modal-actions">
-        <div style="flex:1"></div>
-        <button class="btn" @click="deletePlexLabelRuleTarget = null" :disabled="deletePlexLabelRuleBusy">Cancel</button>
-        <button class="btn btn-danger" @click="deletePlexLabelRule()" :disabled="deletePlexLabelRuleBusy">
-          <span x-show="!deletePlexLabelRuleBusy">Delete</span>
-          <span x-show="deletePlexLabelRuleBusy">Deleting…</span>
-        </button>
-      </div>
-    </div>
-  </div>
 
   <!-- ===== Plex instance delete-confirm modal =====
        Same shape as the qBit delete modal — names the target so the

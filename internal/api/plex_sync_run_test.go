@@ -10,6 +10,31 @@ import (
 	"resolvarr/internal/core"
 )
 
+// seedPlexLabelRuleFixture seeds synthetic Arr + Plex instances used by
+// the Plex-sync tests. No network traffic. (newTestServerWithPlex +
+// the synthetic tokens live in plex_handlers_test.go.)
+func seedPlexLabelRuleFixture(t *testing.T, store *core.ConfigStore) {
+	t.Helper()
+	if err := store.Update(func(c *core.Config) {
+		c.Instances = []core.Instance{
+			{ID: "arr-r", Name: "Radarr Main", URL: "http://radarr.lan:7878", APIKey: "synth-arr-api-key", Type: "radarr"},
+			{ID: "arr-s", Name: "Sonarr Main", URL: "http://sonarr.lan:8989", APIKey: "synth-arr-api-key", Type: "sonarr"},
+		}
+		c.PlexInstances = []core.PlexInstance{
+			{
+				ID: "plex-1", Name: "Main Plex", URL: "http://plex.lan:32400", Token: syntheticPlexToken,
+				Libraries: []core.PlexLibrary{
+					{Key: "1", Title: "Movies", Type: "movie"},
+					{Key: "2", Title: "Movies 4K", Type: "movie"},
+					{Key: "3", Title: "TV Shows", Type: "show"},
+				},
+			},
+		}
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+}
+
 // postPlexSyncRun is a tiny helper that marshals a request body and
 // drives handleRunPlexSync, returning the recorder.
 func postPlexSyncRun(t *testing.T, s *Server, body any) *httptest.ResponseRecorder {

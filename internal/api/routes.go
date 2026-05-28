@@ -225,21 +225,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// verify what Plex returns when label-sync results look off.
 	mux.HandleFunc("GET /api/plex-instances/{id}/inspect", s.handleInspectPlexLibrary)
 
-	// Plex label rules — saved Arr-tag → Plex-label sync mappings.
-	// CRUD only; engine + triggers (scheduled / webhook / one-off
-	// wizard) wire in Phase C + D.
-	mux.HandleFunc("GET /api/plex-label-rules", s.handleListPlexLabelRules)
-	mux.HandleFunc("POST /api/plex-label-rules", s.handleCreatePlexLabelRule)
-	mux.HandleFunc("GET /api/plex-label-rules/{id}", s.handleGetPlexLabelRule)
-	mux.HandleFunc("PUT /api/plex-label-rules/{id}", s.handleUpdatePlexLabelRule)
-	mux.HandleFunc("DELETE /api/plex-label-rules/{id}", s.handleDeletePlexLabelRule)
-	// One-off "Run now" — fires the engine on demand. Optional body
-	// {runMode: "preview" | "apply"} overrides the rule's stored
-	// mode. Appends the result to the rule's History (capped at
-	// PlexLabelHistoryCap) and returns the run for the UI's result
-	// modal.
-	mux.HandleFunc("POST /api/plex-label-rules/{id}/run", s.handleRunPlexLabelRule)
-
 	// One-off Plex label sync from inline config — no saved rule. Body
 	// {arrInstanceId, runMode, plexLabelSync:{...}}. Nothing persisted;
 	// the Tag Library / Plex label sync tab's run form posts here. The

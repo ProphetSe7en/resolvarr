@@ -2,6 +2,10 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.15-dev — internal cleanup (2026-05-28)
+
+Housekeeping only, no user-facing changes. Removed the unused standalone Plex-label-rule storage and its API endpoints, now that Plex label sync is configured directly on each run, schedule, or webhook (v0.6.14-dev).
+
 ## v0.6.14-dev — Plex label sync (2026-05-28)
 
 New feature: sync your Radarr and Sonarr tags onto matching Plex movies and series, as Plex **labels** or **collections**. Pick which tags travel, and resolvarr keeps Plex in step with your Arr tags. Inspired by [DAPS' `labelarr` module](https://github.com/Drazzilb08/daps/blob/dev/modules/labelarr.py), rebuilt here in Go and wired into the ways you already run things in resolvarr.

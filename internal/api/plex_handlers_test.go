@@ -233,11 +233,11 @@ func TestPlexInstance_CreateRequiresToken(t *testing.T) {
 	}
 }
 
-// TestPlexInstance_DeleteCascadesToPlexLabelRules locks the cleanup
-// invariant: deleting a Plex instance drops any PlexLabelRule whose
-// single target was that Plex. Half-broken rules are worse than no
-// rules — the engine has nothing to write to once the target is gone.
-func TestPlexInstance_DeleteCascadesToPlexLabelRules(t *testing.T) {
+// TestPlexInstance_DeleteRemovesInstance verifies a Plex instance is
+// removed cleanly. Inline Plex-sync configs that referenced it are not
+// cascaded; they fail safe at run-time (engine returns "Plex instance
+// not found").
+func TestPlexInstance_DeleteRemovesInstance(t *testing.T) {
 	s, store := newTestServerWithPlex(t)
 	if err := store.Update(func(c *core.Config) {
 		c.PlexInstances = []core.PlexInstance{
@@ -245,14 +245,6 @@ func TestPlexInstance_DeleteCascadesToPlexLabelRules(t *testing.T) {
 				Libraries: []core.PlexLibrary{{Key: "1", Title: "Movies", Type: "movie"}}},
 			{ID: "plex-2", Name: "Other", URL: "http://plex2.lan:32400", Token: syntheticPlexTokenAlt,
 				Libraries: []core.PlexLibrary{{Key: "1", Title: "Movies", Type: "movie"}}},
-		}
-		c.PlexLabelRules = []core.PlexLabelRule{
-			{ID: "rule-targets-plex-1", Name: "r1", Enabled: true, InstanceID: "i1", AppType: "radarr",
-				Labels:  []string{"4k"},
-				Targets: []core.PlexLabelTarget{{PlexInstanceID: "plex-1", LibraryKeys: []string{"1"}}}},
-			{ID: "rule-targets-plex-2", Name: "r2", Enabled: true, InstanceID: "i1", AppType: "radarr",
-				Labels:  []string{"4k"},
-				Targets: []core.PlexLabelTarget{{PlexInstanceID: "plex-2", LibraryKeys: []string{"1"}}}},
 		}
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -269,8 +261,5 @@ func TestPlexInstance_DeleteCascadesToPlexLabelRules(t *testing.T) {
 	cfg := store.Get()
 	if len(cfg.PlexInstances) != 1 || cfg.PlexInstances[0].ID != "plex-2" {
 		t.Errorf("PlexInstance not deleted cleanly: %+v", cfg.PlexInstances)
-	}
-	if len(cfg.PlexLabelRules) != 1 || cfg.PlexLabelRules[0].ID != "rule-targets-plex-2" {
-		t.Errorf("PlexLabelRule cleanup didn't run: %+v", cfg.PlexLabelRules)
 	}
 }

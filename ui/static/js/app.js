@@ -473,11 +473,10 @@ function app() {
     deletePlexTarget: null,
     deletePlexBusy: false,
 
-    // Plex label-sync rules — list + Add/Edit modal state. Each rule
-    // binds one Arr instance + label whitelist to one Plex instance +
-    // library list. Loaded on Library scan → Plex sync sub-tab visit
-    // and after every CRUD action.
-    plexLabelRules: [],
+    // Plex label-sync one-off run form state. Backs the "Configure and
+    // run Plex label sync" form on the Library scan → Plex sync sub-tab
+    // (no saved rule — the form POSTs to /api/plex-sync/run). The
+    // webhook + schedule wizards use their own config objects.
     plexLabelRuleModal: {
       open: false,
       id: '',
@@ -507,8 +506,6 @@ function app() {
       targetTypes: ['label'],
       busy: false,
     },
-    deletePlexLabelRuleTarget: null,
-    deletePlexLabelRuleBusy: false,
 
     // Plex label-sync run modal — drives the "Run now" flow. Three
     // states the same modal cycles through:
@@ -1383,12 +1380,10 @@ function app() {
       if (this.currentPage === 'scan') {
         this.initScan();
         if (this.scanSection === 'groups') this.loadGroups();
-        // Direct-hash landing on the Plex-sync sub-tab — load rules +
-        // Plex instances so the rule cards + "Add rule" gate render
-        // with current data without waiting for the user to click the
-        // sub-nav.
+        // Direct-hash landing on the Plex-sync sub-tab — load the Plex
+        // server list so the one-off run form's picker + pre-flight
+        // banner render with current data.
         if (this.scanSection === 'plex-sync') {
-          this.loadPlexLabelRules();
           this.loadPlexInstances();
         }
       }
@@ -1984,42 +1979,6 @@ function app() {
     },
 
     // ---- Plex label-sync rules (Library scan → Plex sync sub-tab) -----
-    // CRUD for the user-managed rule list. Each rule binds one Arr
-    // instance's tag-names (whitelist) to one Plex instance + library
-    // list. AppType is derived from the picked Arr at save-time; the
-    // validator on the backend re-derives + enforces it too.
-
-    async loadPlexLabelRules() {
-      try {
-        const r = await this.apiFetch('/api/plex-label-rules');
-        if (r.ok) {
-          const d = await r.json();
-          this.plexLabelRules = Array.isArray(d) ? d : [];
-        }
-      } catch (e) {
-        // Silent — page renders empty state until next refresh.
-      }
-    },
-
-    // plexLabelRulesForCurrentAppType filters the rule list to only
-    // rules bound to an instance of the page-level scanAppType. Same
-    // convention as every other sub-tab under Library scan — picking
-    // Radarr at the top scopes everything below to Radarr.
-    plexLabelRulesForCurrentAppType() {
-      const want = this.scanAppType;
-      if (!want) return this.plexLabelRules || [];
-      return (this.plexLabelRules || []).filter(r => r.appType === want);
-    },
-
-    // plexLabelRuleOtherTypeCount surfaces the count of rules bound to
-    // the OTHER Arr type so the empty-state can hint "you have N
-    // rules under the other app type — switch pill to see them".
-    plexLabelRuleOtherTypeCount() {
-      const want = this.scanAppType;
-      if (!want) return 0;
-      return (this.plexLabelRules || []).filter(r => r.appType !== want).length;
-    },
-
     // plexLabelRuleAvailableInstances filters the Add/Edit modal's
     // Arr-instance dropdown to instances matching the page-level
     // scanAppType. Defensive default: when scanAppType is unset
@@ -2325,72 +2284,13 @@ function app() {
       return arrLabel + ' → ' + plexLabel + ' / ' + libNames.join(' + ');
     },
 
-    async savePlexLabelRuleModal() {
-      const m = this.plexLabelRuleModal;
-      if (!this.plexLabelRuleModalValid()) return;
-      m.busy = true;
-      try {
-        // Derive AppType from the picked Arr instance — backend re-
-        // derives but a hint speeds up the validator error path on
-        // missing-instance edge cases.
-        const inst = (this.instances || []).find(i => i.id === m.instanceId);
-        const appType = inst ? inst.type : '';
-        // Build LabelDisplay payload from the per-tag inline overrides.
-        // Filter out empty / identity entries client-side too — the
-        // backend re-cleans, but a tidy POST body matches what's
-        // actually stored after save.
-        const labelDisplay = {};
-        for (const k of Object.keys(m.labelDisplay || {})) {
-          const v = (m.labelDisplay[k] || '').trim();
-          if (!v || v === k) continue;
-          if (!m.labels.some(l => l === k)) continue;
-          labelDisplay[k] = v;
-        }
-        const body = {
-          name: m.name.trim(),
-          enabled: !!m.enabled,
-          instanceId: m.instanceId,
-          appType: appType,
-          labels: m.labels,
-          labelDisplay: labelDisplay,
-          targets: [
-            {
-              plexInstanceId: m.plexInstanceId,
-              libraryKeys: m.libraryKeys,
-            },
-          ],
-          runMode: m.runMode || 'apply',
-          targetTypes: (m.targetTypes && m.targetTypes.length > 0) ? m.targetTypes : ['label'],
-        };
-        const path = m.id ? '/api/plex-label-rules/' + m.id : '/api/plex-label-rules';
-        const method = m.id ? 'PUT' : 'POST';
-        const r = await this.apiFetch(path, {
-          method,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const d = await r.json();
-        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
-        await this.loadPlexLabelRules();
-        m.open = false;
-        this.showToast('Label-sync rule saved', 'success');
-      } catch (e) {
-        this.showToast('Save failed: ' + e.message, 'error');
-      } finally {
-        m.busy = false;
-      }
-    },
-
-    confirmDeletePlexLabelRule(rule) {
-      this.deletePlexLabelRuleTarget = rule;
-    },
-
     // ---- One-off Plex label sync run ------------------------------
     // Builds the inline PlexLabelSyncConfig from the form state and
     // POSTs it to /api/plex-sync/run — no saved rule, nothing
     // persisted (matches every other Tag Library sub-tab). On success
     // the form modal closes and the result is shown in the run modal's
-    // result stage (rule: null — the run modal is null-safe).
+    // result stage via a synthetic rule (the run-modal markup is
+    // wrapped in x-if="rule").
     async runOneOffPlexSync() {
       const m = this.plexLabelRuleModal;
       if (!this.plexLabelRuleModalValid()) return;
@@ -2457,53 +2357,10 @@ function app() {
       }
     },
 
-    // ---- Plex label-sync — one-off Run ----------------------------
-    // Opens the run modal with the rule's stored runMode pre-selected.
-    // User can flip between Preview / Apply before firing.
-    openPlexLabelRunModal(rule) {
-      this.plexLabelRunModal = {
-        open: true,
-        stage: 'confirm',
-        rule: rule,
-        runMode: rule.runMode || 'apply',
-        result: null,
-        error: '',
-        detailsFilter: '',
-      };
-    },
-
+    // The run modal is opened directly in the result stage by
+    // runOneOffPlexSync + the QFA result drill-in (viewPhaseDetails).
     closePlexLabelRunModal() {
-      if (this.plexLabelRunModal.stage === 'busy') return;
       this.plexLabelRunModal.open = false;
-    },
-
-    // Fires the run. Switches stage to 'busy' for the spinner, then
-    // 'result' on success or surfaces an error banner. After a real
-    // run we also re-load the rules list so the rule-card history
-    // pill updates without a manual refresh.
-    async firePlexLabelRunModal() {
-      const m = this.plexLabelRunModal;
-      if (!m.rule) return;
-      m.stage = 'busy';
-      m.error = '';
-      try {
-        const r = await this.apiFetch('/api/plex-label-rules/' + m.rule.id + '/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ runMode: m.runMode }),
-        });
-        const d = await r.json();
-        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
-        m.result = d;
-        m.stage = 'result';
-        // Reload rules so the parent page picks up the appended
-        // history entry (used later when the Recent Activity table
-        // integration lands).
-        await this.loadPlexLabelRules();
-      } catch (e) {
-        m.error = e.message;
-        m.stage = 'confirm';
-      }
     },
 
     // Helpers for the result modal — keep the template tidy by
@@ -2567,28 +2424,6 @@ function app() {
       if (status === 'partial') return 'background:var(--alpha-orange,rgba(255,165,0,0.15));color:var(--accent-orange,#ff9800)';
       if (status === 'error')   return 'background:var(--accent-red-bg);color:var(--accent-red)';
       return 'background:var(--bg-muted);color:var(--text-muted)';
-    },
-
-    async deletePlexLabelRule() {
-      const target = this.deletePlexLabelRuleTarget;
-      if (!target) return;
-      this.deletePlexLabelRuleBusy = true;
-      try {
-        const r = await this.apiFetch('/api/plex-label-rules/' + target.id, {
-          method: 'DELETE',
-        });
-        if (!r.ok) {
-          const d = await r.json().catch(() => ({}));
-          throw new Error(d.error || 'HTTP ' + r.status);
-        }
-        await this.loadPlexLabelRules();
-        this.deletePlexLabelRuleTarget = null;
-        this.showToast('Label-sync rule deleted', 'success');
-      } catch (e) {
-        this.showToast('Delete failed: ' + e.message, 'error');
-      } finally {
-        this.deletePlexLabelRuleBusy = false;
-      }
     },
 
     // ---- qBit webhook hook (M-qBit-add Slice 5) -------------------
@@ -2932,10 +2767,8 @@ function app() {
         this.loadDvCacheStats();
       }
       if (section === 'plex-sync') {
-        // Refresh both rules + Plex instances so the rule cards render
-        // current state. Plex instances also drive the "Add rule" gate
-        // (button disabled when no Plex instances configured).
-        this.loadPlexLabelRules();
+        // Plex server list drives the one-off run form's picker + the
+        // pre-flight banner (shown when no Plex server is configured).
         this.loadPlexInstances();
       }
       this.pushNav();
