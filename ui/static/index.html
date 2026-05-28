@@ -3237,15 +3237,9 @@
              Rules don't fire on their own yet — the engine + triggers
              ship in later phases. This is CRUD-only today. -->
         <div x-show="scanSection === 'plex-sync'" x-cloak>
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-            <div>
-              <div class="settings-section-title">Plex label sync</div>
-              <div class="settings-section-desc">Sync Arr tags to Plex labels — pick which tag-names should travel from Radarr/Sonarr to a Plex library as labels. Only labels in the rule's whitelist are touched; manual Plex labels you've added yourself are left alone.</div>
-            </div>
-            <button class="btn btn-primary"
-                    @click="openPlexLabelRuleModal()"
-                    :disabled="plexInstances.length === 0 || plexLabelRuleAvailableInstances().length === 0"
-                    :title="plexInstances.length === 0 ? 'Add a Plex instance under Settings → Plex first' : (plexLabelRuleAvailableInstances().length === 0 ? 'No ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instances configured — add one under Settings → Instances first' : '')">+ Add label-sync rule</button>
+          <div style="margin-bottom:14px">
+            <div class="settings-section-title">Plex label sync</div>
+            <div class="settings-section-desc">Sync Arr tags to Plex as labels or collections — pick which tag-names travel from Radarr/Sonarr to a Plex library, then run it. This is a one-off run: nothing is saved here. To run it automatically, add a <strong>Sync to Plex</strong> step on a Schedule or a Webhook rule. Only the tags you pick are touched; manual Plex labels you've added yourself are left alone.</div>
           </div>
 
           <!-- Pre-flight banner — both lists must be populated before any
@@ -3263,76 +3257,21 @@
             </div>
           </template>
 
-          <!-- Empty state — scoped to the page-level app-type. If
-               rules exist under the other type, hint that they're
-               visible by switching the Radarr/Sonarr pill above. -->
-          <template x-if="plexInstances.length > 0 && instances.length > 0 && plexLabelRulesForCurrentAppType().length === 0">
-            <div style="background:var(--bg-card);border:1px dashed var(--border-subtle);border-radius:8px;padding:24px;text-align:center;color:var(--text-muted-secondary);font-size:13px">
-              No <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> label-sync rules yet. Click <strong>+ Add label-sync rule</strong> to pair this Arr's tags with a Plex library.
-              <template x-if="plexLabelRuleOtherTypeCount() > 0">
-                <div style="margin-top:8px;font-size:12px;color:var(--text-muted)">
-                  You have <span x-text="plexLabelRuleOtherTypeCount()"></span> rule<span x-text="plexLabelRuleOtherTypeCount() === 1 ? '' : 's'"></span> under <span x-text="scanAppType === 'sonarr' ? 'Radarr' : 'Sonarr'"></span> — switch the app-type pill above to view them.
-                </div>
-              </template>
+          <!-- One-off launcher. Mirrors how the other Tag Library
+               sub-tabs work: configure inline + run, nothing saved.
+               The form (and the run result) live in the
+               plexLabelRuleModal / plexLabelRunModal modals. -->
+          <template x-if="plexInstances.length > 0 && instances.length > 0">
+            <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:24px;text-align:center">
+              <div style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;line-height:1.5">
+                Run a sync for your <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> library now — pick the instance, the tags to mirror, and the Plex libraries, then run preview or apply.
+              </div>
+              <button class="btn btn-primary"
+                      @click="openPlexLabelRuleModal()"
+                      :disabled="plexLabelRuleAvailableInstances().length === 0"
+                      :title="plexLabelRuleAvailableInstances().length === 0 ? 'No ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instances configured — add one under Settings → Instances first' : ''">Configure and run Plex label sync</button>
             </div>
           </template>
-
-          <!-- Rule list. Filtered to rules bound to the current
-               page-level app-type — consistent with how other sub-
-               tabs (Tag library / Audio / Video / DV) are scoped by
-               scanAppType. Each card shows name + Arr badge + target
-               type pills + the "Manages:" label list. Edit / Delete /
-               Run actions on the right. -->
-          <div style="display:flex;flex-direction:column;gap:10px">
-            <template x-for="rule in plexLabelRulesForCurrentAppType()" :key="rule.id">
-              <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 16px;display:flex;align-items:flex-start;gap:14px">
-                <div style="flex:1;min-width:0">
-                  <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
-                    <span style="font-size:14px;font-weight:600" x-text="rule.name"></span>
-                    <span :style="rule.appType === 'radarr' ? 'background:var(--alpha-blue);color:var(--accent-sky)' : 'background:var(--alpha-green);color:var(--accent-green)'"
-                          style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:8px;text-transform:uppercase;letter-spacing:0.4px"
-                          x-text="rule.appType"></span>
-                    <template x-if="!rule.enabled">
-                      <span style="font-size:11px;font-weight:500;background:var(--bg-muted);color:var(--text-muted);padding:2px 8px;border-radius:8px">Disabled</span>
-                    </template>
-                    <template x-if="rule.runMode === 'preview'">
-                      <span style="font-size:11px;font-weight:500;background:var(--alpha-orange,rgba(255,165,0,0.15));color:var(--accent-orange,#ff9800);padding:2px 8px;border-radius:8px">Preview mode</span>
-                    </template>
-                    <template x-for="t in (rule.targetTypes && rule.targetTypes.length > 0 ? rule.targetTypes : ['label'])" :key="t">
-                      <span style="font-size:11px;font-weight:500;background:var(--bg-muted);color:var(--text-body);padding:2px 8px;border-radius:8px"
-                            :title="t === 'collection' ? 'Writes to Plex Collection[]' : 'Writes to Plex Label[]'"
-                            x-text="t === 'collection' ? 'Collections' : 'Labels'"></span>
-                    </template>
-                  </div>
-                  <!-- Source → target one-liner -->
-                  <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px" x-text="describePlexLabelRuleTargets(rule)"></div>
-                  <!-- Manages: <label list>. At-a-glance which tag-
-                       names this rule owns on Plex. Renders the
-                       display-as override too, so users see exactly
-                       what Plex will show. -->
-                  <div style="font-size:12px;color:var(--text-body);line-height:1.5">
-                    <span style="color:var(--text-secondary)">Manages:</span>
-                    <template x-for="(lbl, idx) in (rule.labels || [])" :key="lbl">
-                      <span style="margin-right:4px;display:inline-flex;align-items:center;gap:4px">
-                        <code style="background:var(--bg-muted);padding:1px 6px;border-radius:3px" x-text="lbl"></code>
-                        <template x-if="plexLabelRuleEffectiveLabel(lbl, rule.labelDisplay) !== lbl">
-                          <span style="color:var(--text-secondary);font-size:11px">→ <code x-text="plexLabelRuleEffectiveLabel(lbl, rule.labelDisplay)"></code></span>
-                        </template>
-                      </span>
-                    </template>
-                  </div>
-                </div>
-                <div style="display:flex;gap:6px;white-space:nowrap">
-                  <button class="btn btn-sm btn-primary"
-                          @click="openPlexLabelRunModal(rule)"
-                          :disabled="!rule.enabled"
-                          :title="rule.enabled ? 'Run this rule now (preview or apply)' : 'Enable the rule before running'">Run</button>
-                  <button class="btn btn-sm" @click="openPlexLabelRuleModal(rule)">Edit</button>
-                  <button class="btn btn-sm btn-danger" @click="confirmDeletePlexLabelRule(rule)">Delete</button>
-                </div>
-              </div>
-            </template>
-          </div>
         </div>
 
         <!-- ===== History sub-tab =====
@@ -6041,10 +5980,11 @@
        Cancel button or Escape only. -->
   <div class="modal-overlay" x-show="plexLabelRuleModal.open" x-cloak @keydown.escape.window="if (plexLabelRuleModal.open) closePlexLabelRuleModal()">
     <div class="modal" style="width:640px;max-width:96vw;max-height:90vh;overflow-y:auto">
-      <div class="modal-title" x-text="plexLabelRuleModal.id ? 'Edit label-sync rule' : 'Add label-sync rule'"></div>
-      <div class="form-group">
-        <label class="label">Rule name</label>
-        <input class="input" x-model="plexLabelRuleModal.name" placeholder="Sync 4K + HDR to Plex" autocomplete="off">
+      <div class="modal-title">Run Plex label sync</div>
+      <div style="font-size:12px;color:var(--text-secondary);margin:-4px 0 14px;line-height:1.5">
+        Pick what to sync and run it once. Nothing is saved here — to run this
+        automatically, add a <strong>Sync to Plex</strong> step on a Schedule or
+        a Webhook rule.
       </div>
 
       <div class="form-group">
@@ -6125,7 +6065,7 @@
                      class="input"
                      style="flex:1;padding:4px 10px;font-size:12px"
                      x-model="plexLabelRuleTagFilter"
-                     placeholder="Search tags…">
+                     placeholder="Search tags — space-separate for several, e.g. fel mel">
               <template x-if="plexLabelRuleTagFilter">
                 <button type="button"
                         class="btn btn-sm"
@@ -6260,27 +6200,19 @@
         </div>
       </div>
 
-      <div class="form-group">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
-          <input type="checkbox" x-model="plexLabelRuleModal.enabled" style="accent-color:var(--accent-blue)">
-          <span>Enabled <span style="color:var(--text-secondary)">— disabled rules are skipped by every trigger (scheduled / webhook / one-off).</span></span>
-        </label>
-      </div>
-
-      <!-- Sticky footer — pins Save / Cancel to the bottom of the
-           modal even when the tag + library lists push the form past
-           the viewport. Bottom -1 + negative margin tucks the action
-           bar against the modal's padded edge so the border line
-           reads as the boundary, not a floating strip. -->
+      <!-- Sticky footer — pins Run / Cancel to the bottom of the modal
+           even when the tag + library lists push the form past the
+           viewport. The negative margin tucks the action bar against
+           the modal's padded edge so the border reads as the boundary. -->
       <div class="modal-actions"
            style="position:sticky;bottom:-20px;background:var(--bg-card);margin:16px -24px -20px;padding:12px 24px 20px;border-top:1px solid var(--border-subtle);z-index:1">
         <button class="btn" @click="closePlexLabelRuleModal()" :disabled="plexLabelRuleModal.busy">Cancel</button>
         <div style="flex:1"></div>
         <button class="btn btn-primary"
-                @click="savePlexLabelRuleModal()"
+                @click="runOneOffPlexSync()"
                 :disabled="plexLabelRuleModal.busy || !plexLabelRuleModalValid()">
-          <span x-show="!plexLabelRuleModal.busy">Save</span>
-          <span x-show="plexLabelRuleModal.busy">Saving…</span>
+          <span x-show="!plexLabelRuleModal.busy" x-text="plexLabelRuleModal.runMode === 'preview' ? 'Run preview' : 'Run sync'"></span>
+          <span x-show="plexLabelRuleModal.busy">Running…</span>
         </button>
       </div>
     </div>
@@ -8458,6 +8390,130 @@
            the chain runner reads editingRule.missingEpisodes the
            same way it reads audioTags / videoTags / dvDetail. -->
 
+      <!-- ===== Sync to Plex (wizard step) =====
+           Schedule + QFA rules only (combined phase 'plexsync').
+           Bound to editingRule.plexSync via the isolated wizardPlex*
+           helpers (the one-off form on the Plex label sync tab uses a
+           separate state object). Runs LAST in the chain so Plex reads
+           the final Arr tag state. -->
+      <template x-if="ruleEditor.open && editingRule && editingRule.plexSync && ruleEditorCurrentSection() === 'plexsync'">
+        <div x-init="wizardPlexLoadTags()">
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:14px;line-height:1.5">
+            Mirror the tags you pick here onto matching Plex movies/series as labels or collections. This step runs last in the rule, after the tag-writing steps, so Plex reflects the final tags. Only the tags you pick are touched; manual Plex labels you've added yourself are left alone.
+          </div>
+
+          <template x-if="plexInstances.length === 0">
+            <div style="margin-bottom:14px;padding:10px 14px;background:var(--alpha-blue);border:1px solid var(--accent-blue-strong);border-radius:6px;font-size:13px;color:var(--accent-sky);line-height:1.5">
+              ℹ No Plex servers configured. Add one under <strong>Settings → Plex</strong>, then click <strong>Fetch libraries</strong> on its row before configuring this step.
+            </div>
+          </template>
+
+          <template x-if="plexInstances.length > 0">
+            <div>
+              <!-- Plex server -->
+              <div class="form-group">
+                <label class="label">Plex server</label>
+                <select class="input" x-model="editingRule.plexSync.plexInstanceId">
+                  <option value="">— Pick a Plex server —</option>
+                  <template x-for="pi in plexInstances" :key="pi.id">
+                    <option :value="pi.id" :selected="pi.id === editingRule.plexSync.plexInstanceId" x-text="pi.name"></option>
+                  </template>
+                </select>
+              </div>
+
+              <!-- Libraries (gated by Arr type) -->
+              <div class="form-group" x-show="editingRule.plexSync.plexInstanceId">
+                <label class="label">Libraries <span style="color:var(--text-secondary);font-weight:400" x-text="wizardPlexWantedLibType() === 'show' ? '— TV libraries' : '— movie libraries'"></span></label>
+                <template x-if="wizardPlexVisibleLibraryCount() === 0">
+                  <div style="padding:10px 14px;font-size:12px;color:var(--text-secondary);background:var(--bg-card);border:1px dashed var(--border-subtle);border-radius:6px">
+                    No matching libraries cached on this Plex server. Click <strong>Fetch libraries</strong> on its row under Settings → Plex, then come back.
+                  </div>
+                </template>
+                <div style="display:flex;flex-direction:column;gap:2px;max-height:180px;overflow-y:auto;border:1px solid var(--border-subtle);border-radius:6px;padding:4px;background:var(--bg-card)">
+                  <template x-for="lib in wizardPlexSelectedLibraries()" :key="lib.key">
+                    <label x-show="!wizardPlexWantedLibType() || lib.type === wizardPlexWantedLibType()" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;padding:2px 8px">
+                      <input type="checkbox" :checked="(editingRule.plexSync.libraryKeys || []).includes(lib.key)" @change="wizardPlexToggleLibrary(lib.key)" style="accent-color:var(--accent-blue)">
+                      <span x-text="lib.title"></span>
+                    </label>
+                  </template>
+                </div>
+              </div>
+
+              <!-- Tags to sync -->
+              <div class="form-group">
+                <label class="label">Tags to sync <span style="color:var(--text-secondary);font-weight:400">— whitelist</span></label>
+
+                <!-- Selected chip strip -->
+                <div style="display:flex;flex-wrap:wrap;gap:6px;padding:8px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:6px;min-height:42px;margin-bottom:8px">
+                  <template x-if="(editingRule.plexSync.labels || []).length === 0">
+                    <span style="font-size:12px;color:var(--text-muted);font-style:italic">No tags selected — pick from the list below.</span>
+                  </template>
+                  <template x-for="(lbl, idx) in editingRule.plexSync.labels" :key="idx + '-' + lbl">
+                    <span style="display:inline-flex;align-items:center;gap:6px;background:var(--bg-muted);padding:3px 8px;border-radius:4px;font-size:12px">
+                      <code x-text="lbl"></code>
+                      <template x-if="wizardPlexEffectiveLabel(lbl) !== lbl">
+                        <span style="color:var(--text-secondary);font-size:11px">→ <code x-text="wizardPlexEffectiveLabel(lbl)"></code></span>
+                      </template>
+                      <template x-if="wizardPlexIsCustomLabel(lbl)">
+                        <span style="color:var(--accent-orange,#ff9800);font-size:11px;font-weight:600" title="Not found in this Arr's current tag list">⚠</span>
+                      </template>
+                      <button type="button" @click="wizardPlexToggleTag(lbl)" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1;padding:0">×</button>
+                    </span>
+                  </template>
+                </div>
+
+                <!-- Search + checkbox list -->
+                <template x-if="wizardPlexTagsLoading">
+                  <div style="padding:10px 14px;font-size:12px;color:var(--text-secondary);background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:6px"><span class="spinner"></span> Loading tags from Arr…</div>
+                </template>
+                <template x-if="wizardPlexTagsError">
+                  <div style="padding:10px 14px;font-size:12px;color:var(--accent-red);background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px" x-text="'Could not load tags: ' + wizardPlexTagsError"></div>
+                </template>
+                <template x-if="!wizardPlexTagsLoading && !wizardPlexTagsError">
+                  <div>
+                    <input class="input" type="text" x-model="wizardPlexTagFilter" placeholder="Search tags — space-separate for several, e.g. fel mel" autocomplete="off" style="margin-bottom:6px">
+                    <div style="display:flex;flex-direction:column;gap:2px;max-height:220px;overflow-y:auto;border:1px solid var(--border-subtle);border-radius:6px;padding:4px;background:var(--bg-card)">
+                      <template x-if="wizardPlexFilteredTags().length === 0">
+                        <div style="padding:10px;font-size:12px;color:var(--text-muted);font-style:italic;text-align:center">No tags match.</div>
+                      </template>
+                      <template x-for="t in wizardPlexFilteredTags()" :key="t.label">
+                        <div style="display:flex;align-items:center;gap:8px;padding:2px 8px">
+                          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;flex:1;min-width:0">
+                            <input type="checkbox" :checked="wizardPlexHasLabel(t.label)" @change="wizardPlexToggleTag(t.label)" style="accent-color:var(--accent-blue)">
+                            <code style="background:var(--bg-muted);padding:1px 6px;border-radius:3px" x-text="t.label"></code>
+                            <span x-show="t.usageCount > 0" style="font-size:11px;color:var(--text-muted)" x-text="'(' + t.usageCount + ')'"></span>
+                          </label>
+                          <input x-show="wizardPlexHasLabel(t.label)" class="input" type="text" style="width:160px;font-size:12px;padding:2px 8px"
+                                 :placeholder="'Plex label: ' + t.label"
+                                 :value="wizardPlexEffectiveLabel(t.label) !== t.label ? wizardPlexEffectiveLabel(t.label) : ''"
+                                 @input="wizardPlexSetDisplay(t.label, $event.target.value)">
+                        </div>
+                      </template>
+                    </div>
+                    <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">Tick the tags to mirror. Optional <strong>Plex label</strong> renders a prettier name on Plex (e.g. <code>atmos</code> → <code>Atmos</code>); blank = use the Arr tag as-is.</div>
+                  </div>
+                </template>
+              </div>
+
+              <!-- Write target -->
+              <div class="form-group">
+                <label class="label">Write to Plex as</label>
+                <div style="display:flex;gap:18px">
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+                    <input type="checkbox" :checked="wizardPlexHasTarget('label')" @change="wizardPlexToggleTarget('label')" style="accent-color:var(--accent-blue)">
+                    <span>Labels <span style="color:var(--text-secondary)">— filterable in Plex</span></span>
+                  </label>
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+                    <input type="checkbox" :checked="wizardPlexHasTarget('collection')" @change="wizardPlexToggleTarget('collection')" style="accent-color:var(--accent-blue)">
+                    <span>Collections <span style="color:var(--text-secondary)">— grouped views in Plex</span></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
       <!-- ===== Step 3b — qBit Grab Rename criteria =====
            Webhook-only step. Visibility gated by ruleEditorTabVisible
            ('grabrename') = isWebhook && fnGrabRename. Per-rule snapshot
@@ -9088,7 +9144,7 @@
             <template x-if="!plexLabelRuleTagsLoading && plexLabelRuleAvailableTags.length > 0">
               <div>
                 <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-                  <input type="text" class="input" style="flex:1;padding:4px 10px;font-size:12px" x-model="plexLabelRuleTagFilter" placeholder="Search tags&hellip;">
+                  <input type="text" class="input" style="flex:1;padding:4px 10px;font-size:12px" x-model="plexLabelRuleTagFilter" placeholder="Search tags — space-separate for several, e.g. fel mel">
                   <template x-if="plexLabelRuleTagFilter">
                     <button type="button" class="btn btn-sm" @click="plexLabelRuleTagFilter = ''" title="Clear search">Clear</button>
                   </template>
@@ -9561,6 +9617,35 @@
                 <div>
                   <strong style="color:var(--text-body)">Write to Plex as:</strong>
                   <span x-text="reviewPlexTargetTypesLabel()"></span>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- ===== Sync to Plex section (schedule / QFA) =====
+               Shown when the Sync to Plex phase is in combinedModes.
+               Bound to editingRule.plexSync (distinct from the webhook
+               block above, which reads editingRule.plexLabelSync). Same
+               review helpers, passed the schedule's config object. -->
+          <template x-if="ruleAffectsPlexSync() && editingRule.plexSync">
+            <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
+              <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">Sync to Plex</div>
+              <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
+                <div>
+                  <strong style="color:var(--text-body)">Plex instance:</strong>
+                  <span x-text="reviewPlexInstanceName(editingRule.plexSync)"></span>
+                </div>
+                <div>
+                  <strong style="color:var(--text-body)">Libraries:</strong>
+                  <span x-text="reviewPlexLibraryTitles(editingRule.plexSync)"></span>
+                </div>
+                <div>
+                  <strong style="color:var(--text-body)">Tags to sync:</strong>
+                  <span x-text="reviewPlexTagsSummary(editingRule.plexSync)"></span>
+                </div>
+                <div>
+                  <strong style="color:var(--text-body)">Write to Plex as:</strong>
+                  <span x-text="reviewPlexTargetTypesLabel(editingRule.plexSync)"></span>
                 </div>
               </div>
             </div>

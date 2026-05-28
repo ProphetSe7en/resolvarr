@@ -41,6 +41,7 @@ type scheduleRequest struct {
 	VideoTags       *core.VideoTagsConfig        `json:"videoTags,omitempty"`
 	DvDetail        *core.DvDetailConfig         `json:"dvDetail,omitempty"`
 	MissingEpisodes *core.MissingEpisodesConfig  `json:"missingEpisodes,omitempty"`
+	PlexSync        *core.PlexLabelSyncConfig    `json:"plexSync,omitempty"`
 	ReleaseGroupIDs []string                     `json:"releaseGroupIds,omitempty"`
 }
 
@@ -158,6 +159,22 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 	if req.DvDetail != nil {
 		if err := validateDvDetailConfig(*req.DvDetail); err != nil {
 			return newAPIError(400, "dvDetail: "+err.Error())
+		}
+	}
+	// PlexSync snapshot — validate against the shared config validator
+	// (label/library dedupe, cached-key existence, Radarr→movie /
+	// Sonarr→show library-type filter). Needs the resolved instance
+	// type, which the instance-exists check above already confirmed.
+	if req.PlexSync != nil {
+		instType := ""
+		for i := range cfg.Instances {
+			if cfg.Instances[i].ID == req.InstanceID {
+				instType = cfg.Instances[i].Type
+				break
+			}
+		}
+		if err := core.ValidatePlexLabelSyncConfig(req.PlexSync, cfg.PlexInstances, instType); err != nil {
+			return newAPIError(400, "plexSync: "+err.Error())
 		}
 	}
 	return nil
@@ -313,6 +330,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		VideoTags:       req.VideoTags,
 		DvDetail:        req.DvDetail,
 		MissingEpisodes: req.MissingEpisodes,
+		PlexSync:        req.PlexSync,
 		ReleaseGroupIDs: req.ReleaseGroupIDs,
 	}
 	if err := s.App.Config.Update(func(c *core.Config) {
@@ -374,6 +392,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.MissingEpisodes != nil {
 				c.Schedules[i].MissingEpisodes = req.MissingEpisodes
+			}
+			if req.PlexSync != nil {
+				c.Schedules[i].PlexSync = req.PlexSync
 			}
 			if req.ReleaseGroupIDs != nil {
 				c.Schedules[i].ReleaseGroupIDs = req.ReleaseGroupIDs

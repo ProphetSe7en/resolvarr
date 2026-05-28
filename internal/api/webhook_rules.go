@@ -81,7 +81,7 @@ type webhookRuleRequest struct {
 	GrabRename            *core.GrabRenameCriteria  `json:"grabRename,omitempty"`
 	QbitSe                *core.QbitSeRules         `json:"qbitSe,omitempty"`
 	QbitCategoryFix       *core.QbitCategoryFixRules `json:"qbitCategoryFix,omitempty"`
-	PlexLabelSync         *core.WebhookPlexLabelSyncConfig `json:"plexLabelSync,omitempty"`
+	PlexLabelSync         *core.PlexLabelSyncConfig `json:"plexLabelSync,omitempty"`
 	// NotifyOnFire — master per-rule kill-switch. Which agents receive
 	// the notification + which functions each renders is per-agent
 	// config (agents.Agent.Events + .Functions), not per-rule.
@@ -271,13 +271,13 @@ func (req *webhookRuleRequest) validate(cfg core.Config) *apiError {
 	// Plex label sync — required inline config + Plex-side validation.
 	// Same pattern as the other function-config blocks above. Per-Plex-
 	// instance + library + label whitelist validation lives in
-	// ValidateWebhookPlexLabelSyncConfig so the engine + scheduled-flow
-	// path can re-use it later.
+	// ValidatePlexLabelSyncConfig — shared with the schedule + one-off
+	// run paths that embed the same config.
 	if seen[core.WebhookFnPlexLabelSync] {
 		if req.PlexLabelSync == nil {
 			return newAPIError(400, "plexLabelSync config required when the Sync to Plex function is enabled")
 		}
-		if err := core.ValidateWebhookPlexLabelSyncConfig(req.PlexLabelSync, cfg.PlexInstances, appType); err != nil {
+		if err := core.ValidatePlexLabelSyncConfig(req.PlexLabelSync, cfg.PlexInstances, appType); err != nil {
 			return newAPIError(400, "plexLabelSync: "+err.Error())
 		}
 	}

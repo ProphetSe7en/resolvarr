@@ -144,20 +144,23 @@ type PlexLabelRuleRun struct {
 	Changed bool `json:"changed,omitempty"`
 }
 
-// WebhookPlexLabelSyncConfig is the inline per-rule config for the
-// WebhookFnPlexLabelSync function. Lives on WebhookRule.PlexLabelSync
-// (pointer; nil when the function isn't enabled). Carries everything
-// the engine needs to fire a per-item sync — same fields as a
-// standalone PlexLabelRule minus the rule-level identity (name,
-// enabled, history, runmode, instanceID, appType — those are
-// inherited from the parent WebhookRule).
+// PlexLabelSyncConfig is the shared inline config for a Plex label-sync
+// run, carried by every trigger context that can fire one:
 //
-// Decoupled from PlexLabelRule by design: each webhook rule is self-
-// contained, like every other inline function-config block
-// (AudioTags / VideoTags / DvDetail / GrabRename / QbitSe). Users
-// configure the Plex side directly in the webhook wizard rather
-// than referencing a rule elsewhere.
-type WebhookPlexLabelSyncConfig struct {
+//   - WebhookRule.PlexLabelSync   — per-event sync on Connect events
+//   - ScheduledJob.PlexSync       — cron-driven sync
+//   - QFA Plex-sync step          — one-shot run-all dispatcher
+//   - one-off run form            — Tag Library / Plex label sync tab
+//
+// It carries everything the engine needs minus the rule-level identity
+// (name, enabled, history). The Arr instanceID + appType are supplied
+// by the surrounding context (parent webhook rule, schedule, or the
+// one-off request) and passed to AsPlexLabelRule at engine-call time.
+//
+// There is no standalone persisted "Plex label rule": persistence
+// lives only on the QFA / Schedule / Webhook objects that embed this
+// config, mirroring how every other Tag Library feature works.
+type PlexLabelSyncConfig struct {
 	// PlexInstanceID picks the Plex Media Server to write to.
 	PlexInstanceID string `json:"plexInstanceId"`
 	// LibraryKeys scopes the writes to specific Plex libraries on
@@ -177,7 +180,7 @@ type WebhookPlexLabelSyncConfig struct {
 
 // EffectiveTargetTypes mirrors PlexLabelRule's method so engine code
 // that takes either type can use the same fallback default.
-func (c *WebhookPlexLabelSyncConfig) EffectiveTargetTypes() []string {
+func (c *PlexLabelSyncConfig) EffectiveTargetTypes() []string {
 	if c == nil || len(c.TargetTypes) == 0 {
 		return []string{"label"}
 	}
@@ -187,8 +190,8 @@ func (c *WebhookPlexLabelSyncConfig) EffectiveTargetTypes() []string {
 // DisplayLabel mirrors PlexLabelRule's method — lets engine code
 // look up per-tag display overrides without caring whether the
 // config came from a standalone PlexLabelRule or an inline
-// WebhookPlexLabelSyncConfig.
-func (c *WebhookPlexLabelSyncConfig) DisplayLabel(arrTag string) string {
+// PlexLabelSyncConfig.
+func (c *PlexLabelSyncConfig) DisplayLabel(arrTag string) string {
 	if c == nil || c.LabelDisplay == nil {
 		return arrTag
 	}
@@ -201,7 +204,7 @@ func (c *WebhookPlexLabelSyncConfig) DisplayLabel(arrTag string) string {
 	return arrTag
 }
 
-// ValidateWebhookPlexLabelSyncConfig rejects malformed inline-config
+// ValidatePlexLabelSyncConfig rejects malformed inline-config
 // at save-time. Validator parallel to ValidatePlexLabelRule for the
 // Plex-side parts (the parent webhook rule already handles instance +
 // appType validation, so this only re-checks what's specific to the
@@ -209,7 +212,7 @@ func (c *WebhookPlexLabelSyncConfig) DisplayLabel(arrTag string) string {
 //
 // appType is the parent webhook rule's app-type — used for the
 // library-type filter (Radarr→movie / Sonarr→show).
-func ValidateWebhookPlexLabelSyncConfig(c *WebhookPlexLabelSyncConfig, plexes []PlexInstance, appType string) error {
+func ValidatePlexLabelSyncConfig(c *PlexLabelSyncConfig, plexes []PlexInstance, appType string) error {
 	if c == nil {
 		return fmt.Errorf("Plex sync config is required when the Plex sync function is enabled")
 	}
@@ -317,7 +320,7 @@ func ValidateWebhookPlexLabelSyncConfig(c *WebhookPlexLabelSyncConfig, plexes []
 // instanceID + appType come from the parent WebhookRule so the
 // synthesized rule reads as if it were a standalone rule bound to
 // the same Arr.
-func (c *WebhookPlexLabelSyncConfig) AsPlexLabelRule(instanceID, appType string) PlexLabelRule {
+func (c *PlexLabelSyncConfig) AsPlexLabelRule(instanceID, appType string) PlexLabelRule {
 	if c == nil {
 		return PlexLabelRule{}
 	}

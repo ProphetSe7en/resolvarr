@@ -239,6 +239,13 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// PlexLabelHistoryCap) and returns the run for the UI's result
 	// modal.
 	mux.HandleFunc("POST /api/plex-label-rules/{id}/run", s.handleRunPlexLabelRule)
+
+	// One-off Plex label sync from inline config — no saved rule. Body
+	// {arrInstanceId, runMode, plexLabelSync:{...}}. Nothing persisted;
+	// the Tag Library / Plex label sync tab's run form posts here. The
+	// schedule + webhook paths reach the same engine via their own
+	// inline config (no HTTP hop).
+	mux.HandleFunc("POST /api/plex-sync/run", s.handleRunPlexSync)
 }
 
 // RegisterAuthRoutes wires the setup wizard, login/logout, and

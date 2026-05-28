@@ -1344,6 +1344,19 @@ func (s *ConfigStore) Get() Config {
 				dd.Labels = copyLabels(j.DvDetail.Labels)
 				out.Schedules[i].DvDetail = &dd
 			}
+			// PlexSync carries slices (Labels/LibraryKeys/TargetTypes)
+			// + a map (LabelDisplay). ValidatePlexLabelSyncConfig
+			// mutates these in place (trim, orphan-key cleanup), so a
+			// shared pointer would let a validator corrupt the store —
+			// the pointer-aliasing trap. Deep-copy every reference field.
+			if j.PlexSync != nil {
+				ps := *j.PlexSync
+				ps.Labels = append([]string(nil), j.PlexSync.Labels...)
+				ps.LibraryKeys = append([]string(nil), j.PlexSync.LibraryKeys...)
+				ps.TargetTypes = append([]string(nil), j.PlexSync.TargetTypes...)
+				ps.LabelDisplay = cloneLabelDisplay(j.PlexSync.LabelDisplay)
+				out.Schedules[i].PlexSync = &ps
+			}
 			if j.ReleaseGroupIDs != nil {
 				out.Schedules[i].ReleaseGroupIDs = append([]string(nil), j.ReleaseGroupIDs...)
 			}

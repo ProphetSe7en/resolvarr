@@ -538,6 +538,14 @@ function app() {
     // Empty = show everything. Reset every time the modal opens.
     plexLabelRuleTagFilter: '',
 
+    // ---- Wizard "Sync to Plex" step state (isolated from the one-off
+    // form above so the verified one-off flow is never touched). Bound
+    // to editingRule.plexSync; tag list comes from editingRule.instanceId.
+    wizardPlexAvailableTags: [],
+    wizardPlexTagsLoading: false,
+    wizardPlexTagsError: '',
+    wizardPlexTagFilter: '',
+
     // M-qBit-add Slice 5 — per-instance webhook hook modal state.
     qbitWebhookOpen: false,
     qbitWebhookInstance: null,
@@ -1039,6 +1047,11 @@ function app() {
       { id: 'audio',    label: 'Audio tags' },
       { id: 'video',    label: 'Video tags' },
       { id: 'dvdetail', label: 'DV detail' },
+      // Plex sync — schedule/QFA rules only (gated by ruleEditorTabVisible
+      // = !isWebhook && ruleAffectsPlexSync). Edit flow navigates by tabs,
+      // so without this the dedicated step is unreachable when editing a
+      // saved schedule that includes the phase.
+      { id: 'plexsync', label: 'Sync to Plex' },
       // Webhook-only tabs — visible only for webhook rules that have
       // the corresponding function ticked. ruleEditorTabVisible() gates
       // these via ruleAffectsGrabRename / ruleAffectsQbitSe.
@@ -1107,7 +1120,7 @@ function app() {
     // and schedule. Visibility (ruleEditorTabVisible) gates them off
     // for schedule rules entirely, and for webhook rules they only
     // surface when the matching fn flag is ticked on Basics.
-    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'grabrename', 'qbitse', 'qbitcategoryfix', 'plexlabelsync', 'schedule', 'review'],
+    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'plexsync', 'grabrename', 'qbitse', 'qbitcategoryfix', 'plexlabelsync', 'schedule', 'review'],
 
     // instance UI state
     instStatus: {},
@@ -2057,16 +2070,27 @@ function app() {
       }
     },
 
-    // plexLabelRuleFilteredAvailableTags applies the search filter
-    // (case-insensitive substring on the tag-name) to the available-
-    // tags list. Empty filter returns the full list. Used by the
-    // tag-picker template — selected tags that no longer match the
-    // filter remain visible in the chip strip above, so the user
-    // never loses sight of what's selected.
+    // plexLabelRuleFilteredAvailableTags applies the search filter to
+    // the available-tags list. Multi-term OR: whitespace splits the
+    // query into terms, a tag matches when it contains ANY term — so
+    // "fel mel" surfaces both `fel` and `mel` in one search instead of
+    // forcing a search-select-clear-search loop. Empty filter returns
+    // the full list. Used by the one-off form AND the webhook step.
     plexLabelRuleFilteredAvailableTags() {
-      const filter = (this.plexLabelRuleTagFilter || '').trim().toLowerCase();
-      if (!filter) return this.plexLabelRuleAvailableTags;
-      return this.plexLabelRuleAvailableTags.filter(t => t.label.toLowerCase().includes(filter));
+      return this.filterTagsByTerms(this.plexLabelRuleAvailableTags, this.plexLabelRuleTagFilter);
+    },
+
+    // filterTagsByTerms — shared multi-term OR filter for the Plex
+    // tag-pickers (one-off form, webhook step, wizard step). Splits the
+    // query on whitespace; a tag matches when its label contains ANY
+    // term. "fel mel" → both `fel` and `mel`. Empty query = full list.
+    filterTagsByTerms(list, query) {
+      const terms = (query || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+      if (terms.length === 0) return list;
+      return (list || []).filter(t => {
+        const lbl = (t.label || '').toLowerCase();
+        return terms.some(term => lbl.includes(term));
+      });
     },
 
     // plexLabelRuleLoadAvailableTags fetches the live tag list from the
@@ -2252,7 +2276,8 @@ function app() {
     // the backend validator's core checks (server still re-validates).
     plexLabelRuleModalValid() {
       const m = this.plexLabelRuleModal;
-      if (!m.name || !m.name.trim()) return false;
+      // No name requirement — this is a one-off run form, not a saved
+      // rule. Persistence lives on Schedule / Webhook only.
       if (!m.instanceId) return false;
       if (!m.labels || m.labels.length === 0) return false;
       if (!m.plexInstanceId) return false;
@@ -2358,6 +2383,78 @@ function app() {
 
     confirmDeletePlexLabelRule(rule) {
       this.deletePlexLabelRuleTarget = rule;
+    },
+
+    // ---- One-off Plex label sync run ------------------------------
+    // Builds the inline PlexLabelSyncConfig from the form state and
+    // POSTs it to /api/plex-sync/run — no saved rule, nothing
+    // persisted (matches every other Tag Library sub-tab). On success
+    // the form modal closes and the result is shown in the run modal's
+    // result stage (rule: null — the run modal is null-safe).
+    async runOneOffPlexSync() {
+      const m = this.plexLabelRuleModal;
+      if (!this.plexLabelRuleModalValid()) return;
+      m.busy = true;
+      try {
+        // Per-tag display overrides — drop empty / identity / orphan
+        // entries client-side (backend re-cleans, but a tidy body
+        // mirrors what runs).
+        const labelDisplay = {};
+        for (const k of Object.keys(m.labelDisplay || {})) {
+          const v = (m.labelDisplay[k] || '').trim();
+          if (!v || v === k) continue;
+          if (!m.labels.some(l => l === k)) continue;
+          labelDisplay[k] = v;
+        }
+        const body = {
+          arrInstanceId: m.instanceId,
+          runMode: m.runMode || 'apply',
+          plexLabelSync: {
+            plexInstanceId: m.plexInstanceId,
+            libraryKeys: m.libraryKeys,
+            labels: m.labels,
+            labelDisplay: labelDisplay,
+            targetTypes: (m.targetTypes && m.targetTypes.length > 0) ? m.targetTypes : ['label'],
+          },
+        };
+        const r = await this.apiFetch('/api/plex-sync/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        // Close the form, surface the result in the run modal. The run
+        // modal's markup is wrapped in x-if="rule", so we hand it a
+        // synthetic rule shaped just enough for the header +
+        // describePlexLabelRuleTargets() (name + instanceId + first
+        // target). No persistence — this object lives only for the
+        // result view.
+        const syntheticRule = {
+          name: 'Plex label sync',
+          instanceId: m.instanceId,
+          targetTypes: body.plexLabelSync.targetTypes,
+          labelDisplay: body.plexLabelSync.labelDisplay,
+          targets: [{
+            plexInstanceId: m.plexInstanceId,
+            libraryKeys: m.libraryKeys,
+          }],
+        };
+        m.open = false;
+        this.plexLabelRunModal = {
+          open: true,
+          stage: 'result',
+          rule: syntheticRule,
+          runMode: d.runMode || (m.runMode || 'apply'),
+          result: d,
+          error: '',
+          detailsFilter: '',
+        };
+      } catch (e) {
+        this.showToast('Plex sync failed: ' + e.message, 'error');
+      } finally {
+        m.busy = false;
+      }
     },
 
     // ---- Plex label-sync — one-off Run ----------------------------
@@ -8142,21 +8239,25 @@ function app() {
     //   "Disabled"
     //   "Enabled — bare values, all allowed"
     //   "Enabled — prefix `audio-`, 4 of 12 values"
-    // Plex label sync review helpers — render the inline
-    // editingRule.plexLabelSync config as four readable lines for the
-    // Review step. Defensive against partially-filled state (user
-    // opens Review without finishing the Plex sync tab) — returns
-    // "(none picked)" rather than crashing.
+    // Plex label sync review helpers — render an inline Plex-sync
+    // config as four readable lines for the Review step. cfg defaults
+    // to the webhook field (editingRule.plexLabelSync); the schedule /
+    // QFA review block passes editingRule.plexSync. Defensive against
+    // partially-filled state — returns "(none picked)" not a crash.
+    _reviewPlexCfg(cfg) {
+      if (cfg) return cfg;
+      return this.editingRule && this.editingRule.plexLabelSync;
+    },
 
-    reviewPlexInstanceName() {
-      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+    reviewPlexInstanceName(cfgArg) {
+      const cfg = this._reviewPlexCfg(cfgArg);
       if (!cfg || !cfg.plexInstanceId) return '(none picked)';
       const pi = (this.plexInstances || []).find(p => p.id === cfg.plexInstanceId);
       return pi ? pi.name : cfg.plexInstanceId;
     },
 
-    reviewPlexLibraryTitles() {
-      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+    reviewPlexLibraryTitles(cfgArg) {
+      const cfg = this._reviewPlexCfg(cfgArg);
       if (!cfg || !cfg.libraryKeys || cfg.libraryKeys.length === 0) return '(none picked)';
       const pi = (this.plexInstances || []).find(p => p.id === cfg.plexInstanceId);
       const libs = pi ? (pi.libraries || []) : [];
@@ -8167,8 +8268,8 @@ function app() {
       return titles.join(', ');
     },
 
-    reviewPlexTagsSummary() {
-      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+    reviewPlexTagsSummary(cfgArg) {
+      const cfg = this._reviewPlexCfg(cfgArg);
       if (!cfg || !cfg.labels || cfg.labels.length === 0) return '(none picked)';
       const display = cfg.labelDisplay || {};
       const parts = cfg.labels.map(lbl => {
@@ -8178,8 +8279,8 @@ function app() {
       return parts.join(', ');
     },
 
-    reviewPlexTargetTypesLabel() {
-      const cfg = this.editingRule && this.editingRule.plexLabelSync;
+    reviewPlexTargetTypesLabel(cfgArg) {
+      const cfg = this._reviewPlexCfg(cfgArg);
       const types = (cfg && cfg.targetTypes && cfg.targetTypes.length > 0) ? cfg.targetTypes : ['label'];
       const hasLabel = types.includes('label');
       const hasCollection = types.includes('collection');
@@ -10342,6 +10443,20 @@ function app() {
         actionSearch: false,
       };
     },
+    // Blank Plex-sync snapshot for the wizard's plexsync step. Unlike
+    // the auto-tag snapshots there is NO global Plex-sync config to
+    // copy from (one-off / schedule / webhook / qfa each own their
+    // inline config), so this is just an empty starting point the user
+    // fills in on the Plex sync step.
+    snapshotDefaultPlexSync() {
+      return {
+        plexInstanceId: '',
+        libraryKeys: [],
+        labels: [],
+        labelDisplay: {},
+        targetTypes: ['label'],
+      };
+    },
     // Subset of cfg.ReleaseGroups[].id matching the rule's instance type
     // AND currently Enabled. Used to seed editingRule.releaseGroupIds
     // when the user opens the wizard — gives them a sensible default
@@ -10428,6 +10543,7 @@ function app() {
         videoTags:        this.snapshotGlobalVideoTags(),
         dvDetail:         this.snapshotGlobalDvDetail(),
         missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
+        plexSync:         this.snapshotDefaultPlexSync(),
         releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       this.ruleEditor = { open: true, isCreate: true, isQuickFix: false, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [], fixedAction: '' };
@@ -10522,6 +10638,7 @@ function app() {
         videoTags:        this.snapshotGlobalVideoTags(),
         dvDetail:         this.snapshotGlobalDvDetail(),
         missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
+        plexSync:         this.snapshotDefaultPlexSync(),
         releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       // Merge restored state over defaults. Bucket snapshots use
@@ -10542,6 +10659,7 @@ function app() {
             videoTags: this._mergeBucketSnapshot(restored.videoTags, defaults.videoTags),
             dvDetail:  this._mergeBucketSnapshot(restored.dvDetail,  defaults.dvDetail),
             missingEpisodes: this._mergeBucketSnapshot(restored.missingEpisodes, defaults.missingEpisodes),
+            plexSync: (restored.plexSync && typeof restored.plexSync === 'object') ? restored.plexSync : this.snapshotDefaultPlexSync(),
             releaseGroupIds: Array.isArray(restored.releaseGroupIds)
               ? restored.releaseGroupIds
               : defaults.releaseGroupIds,
@@ -10769,6 +10887,7 @@ function app() {
         videoTags:        this.snapshotGlobalVideoTags(),
         dvDetail:         this.snapshotGlobalDvDetail(),
         missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
+        plexSync:         this.snapshotDefaultPlexSync(),
         releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       this.ruleEditor = {
@@ -10907,6 +11026,7 @@ function app() {
       if (!copy.videoTags)       copy.videoTags       = this.snapshotGlobalVideoTags();
       if (!copy.dvDetail)        copy.dvDetail        = this.snapshotGlobalDvDetail();
       if (!copy.missingEpisodes) copy.missingEpisodes = this.snapshotGlobalMissingEpisodes();
+      if (!copy.plexSync)        copy.plexSync        = this.snapshotDefaultPlexSync();
       if (!copy.releaseGroupIds) copy.releaseGroupIds = this.snapshotGlobalRGIds(copy.instanceId);
       copy.options = Object.assign({
         runMode: 'apply', cleanupUnusedTags: false, syncToSecondary: false, syncToInstanceId: '',
@@ -11305,6 +11425,32 @@ function app() {
           this.missingEpisodesSelected = sel;
           this.scanAppType = 'sonarr';
           this.scanSection = 'missing-episodes';
+          break;
+        }
+        case 'plexsync': {
+          // Reuse the one-off run modal's result view. The phase row's
+          // response is a PlexLabelRuleRun; we hand the run modal a
+          // synthetic rule shaped just enough for its header (the
+          // result markup is wrapped in x-if="rule"). Plex target
+          // config isn't carried on the run, so the context strip may
+          // read "(unknown Plex)" — cosmetic; the counts + per-label
+          // table all come from the run itself.
+          const run = p.response || {};
+          this.plexLabelRunModal = {
+            open: true,
+            stage: 'result',
+            rule: {
+              name: 'Plex label sync',
+              instanceId: p.instanceId || '',
+              targetTypes: run.targetTypes || [],
+              labelDisplay: {},
+              targets: [{ plexInstanceId: '', libraryKeys: [] }],
+            },
+            runMode: run.runMode || 'apply',
+            result: run,
+            error: '',
+            detailsFilter: '',
+          };
           break;
         }
         default:
@@ -11798,6 +11944,15 @@ function app() {
           if (p.searchError) parts.push(`search error: ${p.searchError}`);
           return parts.join(' · ');
         }
+        case 'plexsync': {
+          // p.response is a PlexLabelRuleRun (no .totals). Prefer its
+          // one-line summary; fall back to counts from the Added /
+          // Removed / InSync maps.
+          const run = p.response || {};
+          if (run.summary) return run.summary;
+          const sum = (m) => m ? Object.values(m).reduce((a, b) => a + b, 0) : 0;
+          return `${run.matched || 0} matched · ${sum(run.added)} added · ${sum(run.removed)} removed · ${sum(run.inSync)} in sync`;
+        }
         default:          return '(unknown phase)';
       }
     },
@@ -11839,6 +11994,7 @@ function app() {
       { value: 'videotags',       label: 'Tag Video',                           appliesTo: ['radarr', 'sonarr'] },
       { value: 'dvdetail',        label: 'Tag DV Details',                      appliesTo: ['radarr'], optIn: true },
       { value: 'missingepisodes', label: 'Find missing episodes',               appliesTo: ['sonarr'] },
+      { value: 'plexsync',        label: 'Sync to Plex',                        appliesTo: ['radarr', 'sonarr'], optIn: true },
     ],
     ruleEditorInstanceType() {
       // Locked at open-time on ruleEditor.appType (Create/QFA seed from
@@ -12106,6 +12262,117 @@ function app() {
       if (r.mode === 'combined' && (r.options.combinedModes || []).includes('missingepisodes')) return true;
       return false;
     },
+
+    // ---- Wizard "Sync to Plex" step ------------------------------
+    // All bound to editingRule.plexSync. Mirrors the one-off form's
+    // picker logic but on isolated wizardPlex* state so the verified
+    // one-off flow is untouched. The Arr instance is the wizard's
+    // editingRule.instanceId (locked in the Basics step).
+    ruleAffectsPlexSync() {
+      const r = this.editingRule;
+      if (!r) return false;
+      if (r.mode === 'plexsync') return true;
+      if (r.mode === 'combined' && (r.options.combinedModes || []).includes('plexsync')) return true;
+      return false;
+    },
+    async wizardPlexLoadTags() {
+      const r = this.editingRule;
+      // The schedule / QFA wizard can open on a page that never loaded
+      // the Plex server list (it's loaded per-page, like the webhooks
+      // page). Without this the step shows a false "No Plex servers
+      // configured" banner. Pull it on step entry if it's empty.
+      if (!this.plexInstances || this.plexInstances.length === 0) {
+        await this.loadPlexInstances();
+      }
+      if (!r || !r.instanceId) { this.wizardPlexAvailableTags = []; return; }
+      this.wizardPlexTagsLoading = true;
+      this.wizardPlexTagsError = '';
+      try {
+        const resp = await this.apiFetch('/api/instances/' + r.instanceId + '/tags');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const list = await resp.json();
+        const out = (Array.isArray(list) ? list : [])
+          .map(t => ({ label: (t.label || '').trim(), usageCount: t.usageCount || 0 }))
+          .filter(t => t.label);
+        out.sort((a, b) => a.label.localeCompare(b.label));
+        this.wizardPlexAvailableTags = out;
+      } catch (e) {
+        this.wizardPlexTagsError = e.message;
+        this.wizardPlexAvailableTags = [];
+      } finally {
+        this.wizardPlexTagsLoading = false;
+      }
+    },
+    wizardPlexFilteredTags() {
+      return this.filterTagsByTerms(this.wizardPlexAvailableTags, this.wizardPlexTagFilter);
+    },
+    wizardPlexHasLabel(label) {
+      const ps = this.editingRule && this.editingRule.plexSync;
+      return ps ? (ps.labels || []).some(l => l.toLowerCase() === label.toLowerCase()) : false;
+    },
+    wizardPlexToggleTag(label) {
+      const ps = this.editingRule.plexSync;
+      const idx = ps.labels.findIndex(l => l.toLowerCase() === label.toLowerCase());
+      if (idx === -1) {
+        ps.labels.push(label);
+      } else {
+        const removed = ps.labels[idx];
+        ps.labels.splice(idx, 1);
+        if (ps.labelDisplay && removed in ps.labelDisplay) delete ps.labelDisplay[removed];
+      }
+    },
+    wizardPlexSetDisplay(arrTag, value) {
+      const ps = this.editingRule.plexSync;
+      if (!ps.labelDisplay) ps.labelDisplay = {};
+      const t = (value || '').trim();
+      if (!t || t === arrTag) delete ps.labelDisplay[arrTag];
+      else ps.labelDisplay[arrTag] = t;
+    },
+    wizardPlexEffectiveLabel(arrTag) {
+      const m = (this.editingRule.plexSync && this.editingRule.plexSync.labelDisplay) || {};
+      const v = m[arrTag];
+      if (v && v.trim() && v.trim() !== arrTag) return v.trim();
+      return arrTag;
+    },
+    wizardPlexIsCustomLabel(label) {
+      if (this.wizardPlexTagsLoading) return false;
+      if (!this.wizardPlexAvailableTags || this.wizardPlexAvailableTags.length === 0) return false;
+      return !this.wizardPlexAvailableTags.some(t => t.label.toLowerCase() === label.toLowerCase());
+    },
+    wizardPlexWantedLibType() {
+      const t = this.ruleEditorInstanceType();
+      if (t === 'radarr') return 'movie';
+      if (t === 'sonarr') return 'show';
+      return '';
+    },
+    wizardPlexSelectedLibraries() {
+      const ps = this.editingRule && this.editingRule.plexSync;
+      if (!ps || !ps.plexInstanceId) return [];
+      const pi = (this.plexInstances || []).find(p => p.id === ps.plexInstanceId);
+      return pi ? (pi.libraries || []) : [];
+    },
+    wizardPlexVisibleLibraryCount() {
+      const want = this.wizardPlexWantedLibType();
+      const libs = this.wizardPlexSelectedLibraries();
+      return want ? libs.filter(l => l.type === want).length : libs.length;
+    },
+    wizardPlexToggleLibrary(key) {
+      const ps = this.editingRule.plexSync;
+      const idx = ps.libraryKeys.indexOf(key);
+      if (idx === -1) ps.libraryKeys.push(key);
+      else ps.libraryKeys.splice(idx, 1);
+    },
+    wizardPlexToggleTarget(t) {
+      const ps = this.editingRule.plexSync;
+      if (!ps.targetTypes) ps.targetTypes = [];
+      const idx = ps.targetTypes.indexOf(t);
+      if (idx === -1) ps.targetTypes.push(t);
+      else ps.targetTypes.splice(idx, 1);
+    },
+    wizardPlexHasTarget(t) {
+      const ps = this.editingRule && this.editingRule.plexSync;
+      return ps ? (ps.targetTypes || []).includes(t) : false;
+    },
     // Derived rule mode: when no quality / audio master is on, the
     // engine's CheckQuality + CheckAudio short-circuit to true, which
     // makes every filtered-group match tag — same outcome as simple
@@ -12157,6 +12424,11 @@ function app() {
       if (tabId === 'qbitse')     return isWebhook && this.ruleAffectsQbitSe();
       if (tabId === 'qbitcategoryfix') return isWebhook && this.ruleAffectsQbitCategoryFix();
       if (tabId === 'plexlabelsync') return isWebhook && this.ruleAffectsPlexLabelSync();
+      // Plex sync — dedicated step for schedule + QFA rules (combined
+      // phase). Distinct from the webhook-only 'plexlabelsync' step:
+      // schedules carry the config on editingRule.plexSync, webhooks on
+      // editingRule.plexLabelSync. Hidden for webhook rules.
+      if (tabId === 'plexsync') return !isWebhook && this.ruleAffectsPlexSync();
       // Schedule step: schedule rules only (cron-driven, not Manual
       // and not quickfix). Webhook rules trigger on Connect events,
       // not cron — the step hides entirely for kind='webhook'.
@@ -12358,6 +12630,7 @@ function app() {
       if (!copy.videoTags)       copy.videoTags       = this.snapshotGlobalVideoTags();
       if (!copy.dvDetail)        copy.dvDetail        = this.snapshotGlobalDvDetail();
       if (!copy.missingEpisodes) copy.missingEpisodes = this.snapshotGlobalMissingEpisodes();
+      if (!copy.plexSync)        copy.plexSync        = this.snapshotDefaultPlexSync();
       if (!Array.isArray(copy.releaseGroupIds)) copy.releaseGroupIds = this.snapshotGlobalRGIds(copy.instanceId);
 
       // Hoist server-shape rule fields into options.* so the
@@ -12873,6 +13146,7 @@ function app() {
         audio:           'Audio tags',
         video:           'Video tags',
         dvdetail:        'DV detail',
+        plexsync:        'Sync to Plex',
         grabrename:      'qBit Grab Rename',
         qbitse:          'qBit S/E tag',
         qbitcategoryfix: 'qBit category fix',
@@ -12967,6 +13241,13 @@ function app() {
         if (!dd || !dd.enabled) {
           return 'Enable DV detail above before continuing — this rule includes the Dolby Vision detail phase.';
         }
+      }
+      if (step === 'plexsync' && this.ruleAffectsPlexSync()) {
+        const ps = r.plexSync || {};
+        if (!ps.plexInstanceId) return 'Pick a Plex server before continuing.';
+        if (!ps.libraryKeys || ps.libraryKeys.length === 0) return 'Pick at least one Plex library before continuing.';
+        if (!ps.labels || ps.labels.length === 0) return 'Pick at least one tag to sync before continuing.';
+        if (!ps.targetTypes || ps.targetTypes.length === 0) return 'Pick Labels and/or Collections before continuing.';
       }
       // Grab Rename — backend rejects rules with no qBit instance, no
       // trigger selected, or a custom-token row missing label/regex /
@@ -13311,6 +13592,10 @@ function app() {
       // inline in Review. Send snapshot whenever the phase is in
       // combinedModes so the backend persists it on the saved rule.
       if (this.ruleAffectsMissingEpisodes() && r.missingEpisodes) body.missingEpisodes = JSON.parse(JSON.stringify(r.missingEpisodes));
+      // Plex sync — dedicated wizard step (editingRule.plexSync). Send
+      // whenever the phase is selected so the backend persists the
+      // snapshot on the saved schedule.
+      if (this.ruleAffectsPlexSync() && r.plexSync) body.plexSync = JSON.parse(JSON.stringify(r.plexSync));
       this.ruleEditor.busy = true;
       try {
         const url = r.id ? `/api/schedules/${r.id}` : '/api/schedules';
@@ -14513,7 +14798,10 @@ function app() {
       // bucket so the headPhase / autoPhase loops don't need to
       // special-case it.
       const runMissingEpisodes = has('missingepisodes');
-      if (headPhases.length === 0 && autoPhases.length === 0 && !runMissingEpisodes) {
+      // Plex sync runs LAST (after every tag-writing phase) via the
+      // shared one-off endpoint. Its own bucket like missing-episodes.
+      const runPlexSync = has('plexsync');
+      if (headPhases.length === 0 && autoPhases.length === 0 && !runMissingEpisodes && !runPlexSync) {
         this.ruleEditor.error = 'No phases to run';
         this.ruleEditor.busy = false;
         return;
@@ -14856,12 +15144,47 @@ function app() {
           results.phases.push(phaseRow);
         }
 
+        // Phase 4 — Plex sync (Radarr + Sonarr). Runs LAST so Plex
+        // reads the final Arr-side tag state. POSTs the inline config
+        // to the shared /api/plex-sync/run endpoint (no saved rule).
+        if (runPlexSync && !isCancelled() && r.plexSync) {
+          const ps = r.plexSync;
+          const phaseRow = { phase: 'plexsync', ok: true, instanceId: r.instanceId };
+          try {
+            const res = await this.apiFetch('/api/plex-sync/run', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                arrInstanceId: r.instanceId,
+                runMode: runMode,
+                plexLabelSync: {
+                  plexInstanceId: ps.plexInstanceId,
+                  libraryKeys: ps.libraryKeys || [],
+                  labels: ps.labels || [],
+                  labelDisplay: ps.labelDisplay || {},
+                  targetTypes: (ps.targetTypes && ps.targetTypes.length > 0) ? ps.targetTypes : ['label'],
+                },
+              }),
+            });
+            if (!res.ok) {
+              const d = await res.json().catch(() => ({}));
+              throw new Error(`plexsync: ${d.error || 'HTTP ' + res.status}`);
+            }
+            phaseRow.response = await res.json();
+          } catch (e) {
+            phaseRow.ok = false;
+            phaseRow.error = String((e && e.message) || e);
+          }
+          results.phases.push(phaseRow);
+        }
+
         results.finishedAt = new Date().toISOString();
         results.ok = true;
         this.quickFixResults = results;
         const verb = runMode === 'apply' ? 'applied' : 'previewed';
         const ranList = [...headPhases, ...autoPhases.map(a => a.phase)];
         if (runMissingEpisodes) ranList.push('missingepisodes');
+        if (runPlexSync) ranList.push('plexsync');
         // Toast wording: per-action wizards (fixedAction) use the
         // action's display name so the toast matches what the user
         // clicked. QFA proper keeps the chain wording. Apply-after-

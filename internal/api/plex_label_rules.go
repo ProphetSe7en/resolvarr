@@ -18,17 +18,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 
 	"resolvarr/internal/core"
 	"resolvarr/internal/plex"
 )
 
-// plexRunTimeout caps a single rule-fire. Generous — a full label
-// sync on a multi-thousand-item Plex library plus Arr round-trips
-// can run for a minute or two on a busy server. Caller's request
-// context can still cancel earlier.
-const plexRunTimeout = 5 * time.Minute
+// plexRunTimeout lives in plex_sync_run.go (survives the standalone-rule
+// CRUD removal). Referenced here while the legacy handlers remain.
 
 // handleListPlexLabelRules returns every configured rule. No credential
 // fields on the rule (the Arr API key + Plex token live on their

@@ -58,10 +58,10 @@ func (r *schedulerRunner) RunSchedule(ctx context.Context, job core.ScheduledJob
 	// hand-edited resolvarr.json sneaks one through.
 	if appType == "sonarr" {
 		switch job.Mode {
-		case core.JobModeRecover, core.JobModeAudioTags, core.JobModeVideoTags, core.JobModeMissingEpisodes, core.JobModeCombined:
+		case core.JobModeRecover, core.JobModeAudioTags, core.JobModeVideoTags, core.JobModeMissingEpisodes, core.JobModePlexSync, core.JobModeCombined:
 			// supported
 		default:
-			return core.RunSummary{}, fmt.Errorf("Sonarr schedules support recover / audiotags / videotags / missingepisodes / combined only — got %q", job.Mode)
+			return core.RunSummary{}, fmt.Errorf("Sonarr schedules support recover / audiotags / videotags / missingepisodes / plexsync / combined only — got %q", job.Mode)
 		}
 	} else if appType != "radarr" {
 		return core.RunSummary{}, fmt.Errorf("schedule against unknown instance type %q", appType)
@@ -107,6 +107,8 @@ func (r *schedulerRunner) RunSchedule(ctx context.Context, job core.ScheduledJob
 		summary, runErr = r.runDvDetailSchedule(ctx, cfg, inst, appType, job)
 	case core.JobModeMissingEpisodes:
 		summary, runErr = r.runMissingEpisodesSchedule(ctx, inst, appType, job)
+	case core.JobModePlexSync:
+		summary, runErr = r.runPlexSyncSchedule(ctx, cfg, inst, appType, job)
 	case core.JobModeCombined:
 		summary, runErr = r.runCombinedSchedule(ctx, cfg, inst, appType, filterCfg, job)
 	default:
@@ -632,6 +634,37 @@ func (r *schedulerRunner) runMissingEpisodesSchedule(ctx context.Context, inst *
 	}, nil
 }
 
+// runPlexSyncSchedule runs the standalone plexsync phase (Radarr or
+// Sonarr). Reads the inline config off job.PlexSync and fires the bulk
+// engine via the shared runPlexSyncFromConfig path — same code the
+// one-off /api/plex-sync/run endpoint uses. Config-resolve failures
+// surface as a returned error; engine-level problems come back inside
+// the run (status "error") and are mapped onto the summary.
+func (r *schedulerRunner) runPlexSyncSchedule(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, job core.ScheduledJob) (core.RunSummary, error) {
+	if job.PlexSync == nil {
+		return core.RunSummary{Status: "error"}, fmt.Errorf("plexsync schedule has no Plex sync config")
+	}
+	runMode := defaultMode(job.Options.RunMode, "apply")
+	run, err := r.server.runPlexSyncFromConfig(ctx, cfg, job.PlexSync, job.InstanceID, "scheduled", runMode)
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
+	r.server.auditScan("schedule:"+job.ID, "plexsync", inst, scanRunRequest{InstanceID: job.InstanceID, Action: "plexsync"}, nil, errMsg)
+	if err != nil {
+		return core.RunSummary{Status: "error"}, err
+	}
+	status := run.Status
+	if status == "" {
+		status = "ok"
+	}
+	return core.RunSummary{
+		Status:  status,
+		Summary: run.Summary,
+		Result:  run,
+	}, nil
+}
+
 // runCombinedSchedule chains discover → recover → tag → cleanup →
 // audiotags → videotags → dvdetail per JobOptions.CombinedModes.
 // Phase order mirrors the live-UI Quick fix-all flow:
@@ -655,6 +688,7 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 	includeVideoTags := false
 	includeDvDetail := false
 	includeMissingEpisodes := false
+	includePlexSync := false
 	for _, m := range job.Options.CombinedModes {
 		switch m {
 		case core.JobModeDiscover:
@@ -675,11 +709,18 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 			if appType == "sonarr" {
 				includeMissingEpisodes = true
 			}
+		case core.JobModePlexSync:
+			// Runs LAST in the chain (after every tag-writing phase) so
+			// Plex reads the final Arr-side tag state. Snapshot config
+			// lives on job.PlexSync; gated below to require it.
+			if job.PlexSync != nil {
+				includePlexSync = true
+			}
 		}
 	}
 	if !includeDiscover && !includeRecover && !includeTag &&
-		!includeAudioTags && !includeVideoTags && !includeDvDetail && !includeMissingEpisodes {
-		return core.RunSummary{}, fmt.Errorf("combined schedule must include at least one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes")
+		!includeAudioTags && !includeVideoTags && !includeDvDetail && !includeMissingEpisodes && !includePlexSync {
+		return core.RunSummary{}, fmt.Errorf("combined schedule must include at least one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes/plexsync")
 	}
 
 	var combined []string
@@ -992,6 +1033,34 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 		}
 	}
 
+	// Plex sync runs LAST — after every Arr-tag-writing phase above so
+	// the labels it mirrors reflect the final tag state of this run.
+	// Mirrors the webhook canonicalFunctionOrder placement (Plex sync
+	// after the Tag* functions).
+	if includePlexSync && phaseErr == nil {
+		chainMode := defaultMode(job.Options.RunMode, "apply")
+		run, syncErr := r.server.runPlexSyncFromConfig(ctx, cfg, job.PlexSync, job.InstanceID, "scheduled", chainMode)
+		errMsg := ""
+		if syncErr != nil {
+			errMsg = syncErr.Error()
+		}
+		r.server.auditScan("schedule:"+job.ID, "plexsync", inst, scanRunRequest{InstanceID: job.InstanceID, Action: "plexsync"}, nil, errMsg)
+		if syncErr != nil {
+			phaseErr = syncErr
+		} else {
+			combined = append(combined, "plexsync: "+run.Summary)
+			combinedResult.PlexSync = &run
+			// Engine-level failure (Plex write 4xx, per-item errors) comes
+			// back with run.Status == "error" and a nil syncErr. Bubble it
+			// into phaseErr so the combined schedule reports error/partial
+			// rather than a misleading "ok" — matches runPlexSyncSchedule,
+			// which maps run.Status onto the standalone RunSummary.
+			if run.Status == "error" {
+				phaseErr = fmt.Errorf("plexsync: %s", run.Summary)
+			}
+		}
+	}
+
 	if phaseErr != nil {
 		// Partial-result error path — return the error AND any phase
 		// that did succeed so the notification embed shows both the
@@ -1041,6 +1110,7 @@ type combinedScheduleResult struct {
 	DvDetail           *scanResponse                  `json:"dvDetail,omitempty"`
 	DvDetailSecondary  *scanResponse                  `json:"dvDetailSecondary,omitempty"`
 	MissingEpisodes    *missingEpisodesPreviewResponse `json:"missingEpisodes,omitempty"`
+	PlexSync           *core.PlexLabelRuleRun          `json:"plexSync,omitempty"`
 }
 
 // combinedScheduleHasAnyResult returns true when at least one phase
@@ -1051,7 +1121,7 @@ func combinedScheduleHasAnyResult(r combinedScheduleResult) bool {
 		r.AudioTags != nil || r.AudioTagsSecondary != nil ||
 		r.VideoTags != nil || r.VideoTagsSecondary != nil ||
 		r.DvDetail != nil || r.DvDetailSecondary != nil ||
-		r.MissingEpisodes != nil
+		r.MissingEpisodes != nil || r.PlexSync != nil
 }
 
 // runAutoTagOnSecondary fires runAudioTags / runVideoTags / runDvDetail

@@ -19,6 +19,7 @@ const (
 	JobModeVideoTags       JobMode = "videotags"       // M4 — video-stream auto-tags (resolution / codec / HDR) from mediaInfo
 	JobModeDvDetail        JobMode = "dvdetail"        // M4b — Dolby Vision profile / CM tags via ffmpeg+dovi_tool
 	JobModeMissingEpisodes JobMode = "missingepisodes" // Sonarr only — gap scan + optional Tag/Search
+	JobModePlexSync        JobMode = "plexsync"        // Arr tags → Plex labels/collections; config on ScheduledJob.PlexSync
 	JobModeCombined        JobMode = "combined"
 )
 
@@ -28,7 +29,7 @@ func ValidJobMode(m JobMode) bool {
 	switch m {
 	case JobModeTag, JobModeDiscover, JobModeRecover,
 		JobModeAudioTags, JobModeVideoTags, JobModeDvDetail,
-		JobModeMissingEpisodes, JobModeCombined:
+		JobModeMissingEpisodes, JobModePlexSync, JobModeCombined:
 		return true
 	}
 	return false
@@ -225,6 +226,15 @@ type ScheduledJob struct {
 	// off this snapshot rather than a global (no global for this
 	// phase today — it lives only as a per-rule snapshot).
 	MissingEpisodes *MissingEpisodesConfig `json:"missingEpisodes,omitempty"`
+
+	// PlexSync is the per-schedule snapshot for the plexsync phase
+	// (Arr tags → Plex labels/collections). nil = phase not enabled on
+	// this schedule. Same snapshot model as MissingEpisodes: the config
+	// lives only here (no global standalone "Plex label rule"), so the
+	// scheduler runner reads instance-agnostic Plex settings off this
+	// field and synthesizes the engine input via
+	// PlexLabelSyncConfig.AsPlexLabelRule(job.InstanceID, appType).
+	PlexSync *PlexLabelSyncConfig `json:"plexSync,omitempty"`
 
 	// History holds the last N runs — N=5 today, configurable later.
 	// Runs older than the cap land in the log file (LogPath on each

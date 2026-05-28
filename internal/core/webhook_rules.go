@@ -661,7 +661,7 @@ type WebhookRule struct {
 	// the rule rather than referencing a separately-configured rule
 	// elsewhere in the app. Keeps the webhook wizard as the single
 	// source of truth for everything the rule does.
-	PlexLabelSync *WebhookPlexLabelSyncConfig `json:"plexLabelSync,omitempty"`
+	PlexLabelSync *PlexLabelSyncConfig `json:"plexLabelSync,omitempty"`
 
 	// NotifyOnFire — master toggle for sending notifications when this
 	// rule fires. When false, no notification is sent regardless of how
