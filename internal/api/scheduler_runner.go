@@ -58,10 +58,10 @@ func (r *schedulerRunner) RunSchedule(ctx context.Context, job core.ScheduledJob
 	// hand-edited resolvarr.json sneaks one through.
 	if appType == "sonarr" {
 		switch job.Mode {
-		case core.JobModeRecover, core.JobModeAudioTags, core.JobModeVideoTags, core.JobModeMissingEpisodes, core.JobModePlexSync, core.JobModeCombined:
+		case core.JobModeRecover, core.JobModeAudioTags, core.JobModeVideoTags, core.JobModeMissingEpisodes, core.JobModePlexSync, core.JobModeTbaRefresh, core.JobModeCombined:
 			// supported
 		default:
-			return core.RunSummary{}, fmt.Errorf("Sonarr schedules support recover / audiotags / videotags / missingepisodes / plexsync / combined only — got %q", job.Mode)
+			return core.RunSummary{}, fmt.Errorf("Sonarr schedules support recover / audiotags / videotags / missingepisodes / plexsync / tbarefresh / combined only — got %q", job.Mode)
 		}
 	} else if appType != "radarr" {
 		return core.RunSummary{}, fmt.Errorf("schedule against unknown instance type %q", appType)
@@ -109,6 +109,8 @@ func (r *schedulerRunner) RunSchedule(ctx context.Context, job core.ScheduledJob
 		summary, runErr = r.runMissingEpisodesSchedule(ctx, inst, appType, job)
 	case core.JobModePlexSync:
 		summary, runErr = r.runPlexSyncSchedule(ctx, cfg, inst, appType, job)
+	case core.JobModeTbaRefresh:
+		summary, runErr = r.runTbaRefreshSchedule(ctx, inst, appType, job)
 	case core.JobModeCombined:
 		summary, runErr = r.runCombinedSchedule(ctx, cfg, inst, appType, filterCfg, job)
 	default:
@@ -665,6 +667,51 @@ func (r *schedulerRunner) runPlexSyncSchedule(ctx context.Context, cfg core.Conf
 	}, nil
 }
 
+// runTbaRefreshSchedule runs the standalone tbarefresh phase (Sonarr
+// only). Preview finds TBA files for the configured series filters;
+// in apply mode it then renames EVERY file found (no per-file
+// selection in the automated path) fire-and-forget per series.
+func (r *schedulerRunner) runTbaRefreshSchedule(ctx context.Context, inst *core.Instance, appType string, job core.ScheduledJob) (core.RunSummary, error) {
+	if appType != "sonarr" {
+		return core.RunSummary{Status: "error"}, fmt.Errorf("tbarefresh schedule requires Sonarr instance, got %s", appType)
+	}
+	cfg := job.TbaRefresh
+	if cfg == nil {
+		cfg = &core.TbaRefreshConfig{IncludeContinuing: true, IncludeEnded: true}
+	}
+	preview, apiErr := r.server.runTbaRefreshPreview(ctx, inst, cfg.IncludeContinuing, cfg.IncludeEnded, cfg.IncludeSpecials)
+	r.server.auditScan("schedule:"+job.ID, "tbarefresh", inst, scanRunRequest{InstanceID: job.InstanceID, Action: "tbarefresh"}, nil, errMsgOf(apiErr))
+	if apiErr != nil {
+		return core.RunSummary{Status: "error"}, apiErr
+	}
+	parts := []string{fmt.Sprintf("%d TBA files across %d series", preview.TotalFiles, preview.SeriesWithTba)}
+	chainMode := defaultMode(job.Options.RunMode, "apply")
+	if chainMode == "apply" && preview.TotalFiles > 0 {
+		groups := make([]tbaRefreshApplyGroup, 0, len(preview.Series))
+		for _, ser := range preview.Series {
+			ids := make([]int, 0, len(ser.Files))
+			for _, f := range ser.Files {
+				ids = append(ids, f.EpisodeFileID)
+			}
+			groups = append(groups, tbaRefreshApplyGroup{SeriesID: ser.SeriesID, FileIDs: ids})
+		}
+		applyResp, applyErr := r.server.runTbaRefreshApply(ctx, inst, groups)
+		if applyErr != nil {
+			parts = append(parts, "rename failed: "+applyErr.Message)
+		} else {
+			parts = append(parts, fmt.Sprintf("queued %d renames", applyResp.Queued))
+			if len(applyResp.Errors) > 0 {
+				parts = append(parts, fmt.Sprintf("%d series failed", len(applyResp.Errors)))
+			}
+		}
+	}
+	return core.RunSummary{
+		Status:  "ok",
+		Summary: strings.Join(parts, ", "),
+		Result:  preview,
+	}, nil
+}
+
 // runCombinedSchedule chains discover → recover → tag → cleanup →
 // audiotags → videotags → dvdetail per JobOptions.CombinedModes.
 // Phase order mirrors the live-UI Quick fix-all flow:
@@ -689,6 +736,7 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 	includeDvDetail := false
 	includeMissingEpisodes := false
 	includePlexSync := false
+	includeTbaRefresh := false
 	for _, m := range job.Options.CombinedModes {
 		switch m {
 		case core.JobModeDiscover:
@@ -716,11 +764,17 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 			if job.PlexSync != nil {
 				includePlexSync = true
 			}
+		case core.JobModeTbaRefresh:
+			// Sonarr-only file-rename phase. Independent of the tag
+			// phases. Snapshot config lives on job.TbaRefresh.
+			if appType == "sonarr" {
+				includeTbaRefresh = true
+			}
 		}
 	}
 	if !includeDiscover && !includeRecover && !includeTag &&
-		!includeAudioTags && !includeVideoTags && !includeDvDetail && !includeMissingEpisodes && !includePlexSync {
-		return core.RunSummary{}, fmt.Errorf("combined schedule must include at least one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes/plexsync")
+		!includeAudioTags && !includeVideoTags && !includeDvDetail && !includeMissingEpisodes && !includePlexSync && !includeTbaRefresh {
+		return core.RunSummary{}, fmt.Errorf("combined schedule must include at least one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes/plexsync/tbarefresh")
 	}
 
 	var combined []string
@@ -1061,6 +1115,39 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 		}
 	}
 
+	// TBA refresh — Sonarr-only file rename, independent of the tag
+	// phases. Apply mode renames every TBA file found.
+	if includeTbaRefresh && phaseErr == nil {
+		tbaCfg := job.TbaRefresh
+		if tbaCfg == nil {
+			tbaCfg = &core.TbaRefreshConfig{IncludeContinuing: true, IncludeEnded: true}
+		}
+		preview, apiErr := r.server.runTbaRefreshPreview(ctx, inst, tbaCfg.IncludeContinuing, tbaCfg.IncludeEnded, tbaCfg.IncludeSpecials)
+		r.server.auditScan("schedule:"+job.ID, "tbarefresh", inst, scanRunRequest{InstanceID: job.InstanceID, Action: "tbarefresh"}, nil, errMsgOf(apiErr))
+		if apiErr != nil {
+			phaseErr = apiErr
+		} else {
+			line := fmt.Sprintf("tbarefresh: %d TBA files across %d series", preview.TotalFiles, preview.SeriesWithTba)
+			if defaultMode(job.Options.RunMode, "apply") == "apply" && preview.TotalFiles > 0 {
+				groups := make([]tbaRefreshApplyGroup, 0, len(preview.Series))
+				for _, ser := range preview.Series {
+					ids := make([]int, 0, len(ser.Files))
+					for _, f := range ser.Files {
+						ids = append(ids, f.EpisodeFileID)
+					}
+					groups = append(groups, tbaRefreshApplyGroup{SeriesID: ser.SeriesID, FileIDs: ids})
+				}
+				if applyResp, applyErr := r.server.runTbaRefreshApply(ctx, inst, groups); applyErr != nil {
+					line += ", rename failed: " + applyErr.Message
+				} else {
+					line += fmt.Sprintf(", queued %d renames", applyResp.Queued)
+				}
+			}
+			combined = append(combined, line)
+			combinedResult.TbaRefresh = preview
+		}
+	}
+
 	if phaseErr != nil {
 		// Partial-result error path — return the error AND any phase
 		// that did succeed so the notification embed shows both the
@@ -1111,6 +1198,7 @@ type combinedScheduleResult struct {
 	DvDetailSecondary  *scanResponse                  `json:"dvDetailSecondary,omitempty"`
 	MissingEpisodes    *missingEpisodesPreviewResponse `json:"missingEpisodes,omitempty"`
 	PlexSync           *core.PlexLabelRuleRun          `json:"plexSync,omitempty"`
+	TbaRefresh         *tbaRefreshPreviewResponse      `json:"tbaRefresh,omitempty"`
 }
 
 // combinedScheduleHasAnyResult returns true when at least one phase
@@ -1121,7 +1209,7 @@ func combinedScheduleHasAnyResult(r combinedScheduleResult) bool {
 		r.AudioTags != nil || r.AudioTagsSecondary != nil ||
 		r.VideoTags != nil || r.VideoTagsSecondary != nil ||
 		r.DvDetail != nil || r.DvDetailSecondary != nil ||
-		r.MissingEpisodes != nil || r.PlexSync != nil
+		r.MissingEpisodes != nil || r.PlexSync != nil || r.TbaRefresh != nil
 }
 
 // runAutoTagOnSecondary fires runAudioTags / runVideoTags / runDvDetail

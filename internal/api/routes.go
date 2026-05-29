@@ -102,6 +102,12 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/scan/missing-episodes/search", s.handleMissingEpisodesSearch)
 	mux.HandleFunc("POST /api/scan/missing-episodes/tag", s.handleMissingEpisodesTag)
 
+	// TBA refresh (Sonarr only) — find files imported as "...- TBA.mkv"
+	// whose episode now has a real title, and trigger Sonarr's rename.
+	// preview = detect; apply = fire RenameFiles per series.
+	mux.HandleFunc("POST /api/scan/tba-refresh/preview", s.handleTbaRefreshPreview)
+	mux.HandleFunc("POST /api/scan/tba-refresh/apply", s.handleTbaRefreshApply)
+
 	// Recover exclusions — per-instance "skip these in next scan" lists.
 	// User flags faulty / unfixable items; Recover scan filters them out
 	// before the per-item history walk. Restored via the "Show excluded"

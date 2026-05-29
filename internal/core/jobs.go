@@ -20,6 +20,7 @@ const (
 	JobModeDvDetail        JobMode = "dvdetail"        // M4b — Dolby Vision profile / CM tags via ffmpeg+dovi_tool
 	JobModeMissingEpisodes JobMode = "missingepisodes" // Sonarr only — gap scan + optional Tag/Search
 	JobModePlexSync        JobMode = "plexsync"        // Arr tags → Plex labels/collections; config on ScheduledJob.PlexSync
+	JobModeTbaRefresh      JobMode = "tbarefresh"      // Sonarr only — rename TBA-imported files; config on ScheduledJob.TbaRefresh
 	JobModeCombined        JobMode = "combined"
 )
 
@@ -29,7 +30,7 @@ func ValidJobMode(m JobMode) bool {
 	switch m {
 	case JobModeTag, JobModeDiscover, JobModeRecover,
 		JobModeAudioTags, JobModeVideoTags, JobModeDvDetail,
-		JobModeMissingEpisodes, JobModePlexSync, JobModeCombined:
+		JobModeMissingEpisodes, JobModePlexSync, JobModeTbaRefresh, JobModeCombined:
 		return true
 	}
 	return false
@@ -236,6 +237,13 @@ type ScheduledJob struct {
 	// PlexLabelSyncConfig.AsPlexLabelRule(job.InstanceID, appType).
 	PlexSync *PlexLabelSyncConfig `json:"plexSync,omitempty"`
 
+	// TbaRefresh is the per-schedule snapshot for the tbarefresh phase
+	// (Sonarr-only — rename episode files imported as "TBA" once the
+	// real title is known). nil = phase not enabled. All-scalar config
+	// (no slices/maps), so ConfigStore.Get's slice-append copy is
+	// enough; no deep-copy block needed (same as MissingEpisodesConfig).
+	TbaRefresh *TbaRefreshConfig `json:"tbaRefresh,omitempty"`
+
 	// History holds the last N runs — N=5 today, configurable later.
 	// Runs older than the cap land in the log file (LogPath on each
 	// JobRun) and are no longer surfaced in the UI's rolling table.
@@ -274,6 +282,17 @@ type MissingEpisodesConfig struct {
 	TagName           string `json:"tagName"`
 	ActionTag         bool   `json:"actionTag"`
 	ActionSearch      bool   `json:"actionSearch"`
+}
+
+// TbaRefreshConfig is the per-schedule (and QFA) snapshot for the
+// tbarefresh phase. Same include-toggles as the standalone Library
+// scan tab. A scheduled/QFA run in apply mode renames every TBA file
+// it finds (no per-file selection in the automated path); preview mode
+// just reports the count.
+type TbaRefreshConfig struct {
+	IncludeContinuing bool `json:"includeContinuing"`
+	IncludeEnded      bool `json:"includeEnded"`
+	IncludeSpecials   bool `json:"includeSpecials"`
 }
 
 // JobRun summarises one execution of a schedule. Kept narrow on

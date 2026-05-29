@@ -2,6 +2,19 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.16-dev — TBA refresh, Activity search, Plex runs in History (2026-05-29)
+
+**New: TBA refresh (Sonarr).** When Sonarr imports an episode right at release, the title is often still "TBA" and gets baked into the filename. Later, once the real title is known, Sonarr updates the episode but leaves the file named "TBA" on disk. The new **TBA refresh** tool (Library scan, Sonarr only) finds those files and triggers Sonarr to rename them to the real title.
+
+- **Run it from the page.** Library scan, TBA refresh: pick which series to include (continuing / ended / specials), click Find TBA files. You get a list grouped by series and season showing the current name and the name Sonarr would rename it to, with per-file checkboxes. Rename the ones you pick.
+- **Put it on a schedule or Quick fix-all.** Add a TBA refresh step to a Schedule (great as a nightly job) or to Quick fix-all. On a scheduled / Quick-fix run it renames every TBA file it finds.
+
+**Each wizard phase now has its own page.** Missing episodes and TBA refresh used to tuck their settings onto the Review step. They now get their own page in the Create rule / Quick fix-all wizard, just like Tag Audio / Tag Video / DV detail, and the Review step shows a clean read-only summary of each.
+
+**Find things in Recent Activity.** The Recent activity tab now has a search box. Type a movie or series title to filter the event list to matching items.
+
+**Plex label sync runs show up in History.** A one-off Plex label sync run now appears in the History tab alongside your other scans. Click it to re-open the result (counts + per-label table).
+
 ## v0.6.15-dev — internal cleanup (2026-05-28)
 
 Housekeeping only, no user-facing changes. Removed the unused standalone Plex-label-rule storage and its API endpoints, now that Plex label sync is configured directly on each run, schedule, or webhook (v0.6.14-dev).

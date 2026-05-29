@@ -42,6 +42,7 @@ type scheduleRequest struct {
 	DvDetail        *core.DvDetailConfig         `json:"dvDetail,omitempty"`
 	MissingEpisodes *core.MissingEpisodesConfig  `json:"missingEpisodes,omitempty"`
 	PlexSync        *core.PlexLabelSyncConfig    `json:"plexSync,omitempty"`
+	TbaRefresh      *core.TbaRefreshConfig       `json:"tbaRefresh,omitempty"`
 	ReleaseGroupIDs []string                     `json:"releaseGroupIds,omitempty"`
 }
 
@@ -175,6 +176,21 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 		}
 		if err := core.ValidatePlexLabelSyncConfig(req.PlexSync, cfg.PlexInstances, instType); err != nil {
 			return newAPIError(400, "plexSync: "+err.Error())
+		}
+	}
+	// TbaRefresh snapshot — Sonarr-only (the rename phase has no Radarr
+	// equivalent). All-scalar config, so no field-level validation
+	// beyond the instance-type guard.
+	if req.TbaRefresh != nil {
+		instType := ""
+		for i := range cfg.Instances {
+			if cfg.Instances[i].ID == req.InstanceID {
+				instType = cfg.Instances[i].Type
+				break
+			}
+		}
+		if instType != "" && instType != "sonarr" {
+			return newAPIError(400, "tbaRefresh is Sonarr-only — pick a Sonarr instance")
 		}
 	}
 	return nil
@@ -331,6 +347,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		DvDetail:        req.DvDetail,
 		MissingEpisodes: req.MissingEpisodes,
 		PlexSync:        req.PlexSync,
+		TbaRefresh:      req.TbaRefresh,
 		ReleaseGroupIDs: req.ReleaseGroupIDs,
 	}
 	if err := s.App.Config.Update(func(c *core.Config) {
@@ -395,6 +412,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.PlexSync != nil {
 				c.Schedules[i].PlexSync = req.PlexSync
+			}
+			if req.TbaRefresh != nil {
+				c.Schedules[i].TbaRefresh = req.TbaRefresh
 			}
 			if req.ReleaseGroupIDs != nil {
 				c.Schedules[i].ReleaseGroupIDs = req.ReleaseGroupIDs

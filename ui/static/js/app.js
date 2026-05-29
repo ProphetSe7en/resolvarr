@@ -48,6 +48,7 @@ function app() {
     webhookEventsLoading: false,
     webhookActivityInstanceId: '',
     webhookEventFilter: 'all',     // 'all' | <eventType> — chip filter on activity panel
+    webhookActivitySearch: '',     // case-insensitive substring on event title + subtitle
     webhookOutcomeFilter: 'all',   // 'all' | 'changed' | 'no-change' | 'no-rule' | 'errors' — outcome dropdown
     // Content-shape multi-select. Empty array = no filter (show all).
     // Non-empty = only shapes in the array. Possible values:
@@ -417,6 +418,20 @@ function app() {
     missingEpisodesApplying: false,
     missingEpisodesError: '',
 
+    // TBA refresh (Sonarr-only). Same filter toggles as Missing
+    // Episodes. tbaRefreshSelected maps episodeFileId → bool for the
+    // per-row checkboxes.
+    tbaRefreshConfig: {
+      includeContinuing: true,
+      includeEnded: true,
+      includeSpecials: false,
+    },
+    tbaRefreshPreview: null,
+    tbaRefreshSelected: {},
+    tbaRefreshLoading: false,
+    tbaRefreshApplying: false,
+    tbaRefreshError: '',
+
     instances: [],
     // qBittorrent instances — user-managed list. Populated by
     // loadQbitInstances on Settings → qBit visit + after each
@@ -762,6 +777,7 @@ function app() {
       { action: 'audiotags', label: 'Tag Audio' },
       { action: 'videotags', label: 'Tag Video' },
       { action: 'dvdetail',  label: 'Tag DV Details' },
+      { action: 'plexsync',  label: 'Sync to Plex' },
     ],
     // Apply-now confirmation modal flag for DV detail.
     showDvDetailApplyConfirm: false,
@@ -1044,6 +1060,10 @@ function app() {
       { id: 'audio',    label: 'Audio tags' },
       { id: 'video',    label: 'Video tags' },
       { id: 'dvdetail', label: 'DV detail' },
+      // Missing episodes + TBA refresh — Sonarr-only phases, each their
+      // own page like Audio/Video/DV. Gated by ruleEditorTabVisible.
+      { id: 'missingepisodes', label: 'Missing episodes' },
+      { id: 'tbarefresh',      label: 'TBA refresh' },
       // Plex sync — schedule/QFA rules only (gated by ruleEditorTabVisible
       // = !isWebhook && ruleAffectsPlexSync). Edit flow navigates by tabs,
       // so without this the dedicated step is unreachable when editing a
@@ -1117,7 +1137,7 @@ function app() {
     // and schedule. Visibility (ruleEditorTabVisible) gates them off
     // for schedule rules entirely, and for webhook rules they only
     // surface when the matching fn flag is ticked on Basics.
-    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'plexsync', 'grabrename', 'qbitse', 'qbitcategoryfix', 'plexlabelsync', 'schedule', 'review'],
+    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'missingepisodes', 'tbarefresh', 'plexsync', 'grabrename', 'qbitse', 'qbitcategoryfix', 'plexlabelsync', 'schedule', 'review'],
 
     // instance UI state
     instStatus: {},
@@ -2898,6 +2918,12 @@ function app() {
           case 'dvdetail':  this.viewPhaseDetails({ phase: 'dvdetail',  response: data }); break;
           case 'recover':   this.recoverResults = data; break;
           case 'cleanup':   this.cleanupResults = data; break;
+          case 'plexsync':
+            // Dump shape: { mode, instance, totals, run }. The run is a
+            // PlexLabelRuleRun — route it through the same modal the
+            // one-off + QFA drill-in use.
+            this.viewPhaseDetails({ phase: 'plexsync', response: (data && data.run) || {}, instanceId: data && data.instance && data.instance.id });
+            break;
           default: this.showToast('Unknown action: ' + row.action, 'error'); return;
         }
         // kind enables the Historical-run banner if the user later
@@ -4890,6 +4916,114 @@ function app() {
       }
     },
 
+    // ---- TBA refresh (Sonarr-only) -------------------------------
+    async runTbaRefreshScan() {
+      if (!this.scanInstanceId) {
+        this.showToast('Pick a Sonarr instance first', 'error');
+        return;
+      }
+      this.tbaRefreshLoading = true;
+      this.tbaRefreshError = '';
+      try {
+        const res = await this.apiFetch('/api/scan/tba-refresh/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            instanceId: this.scanInstanceId,
+            includeContinuing: !!this.tbaRefreshConfig.includeContinuing,
+            includeEnded: !!this.tbaRefreshConfig.includeEnded,
+            includeSpecials: !!this.tbaRefreshConfig.includeSpecials,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        this.tbaRefreshPreview = await res.json();
+        // Pre-select every found file — same default as Missing Episodes.
+        const sel = {};
+        for (const ser of (this.tbaRefreshPreview.series || [])) {
+          for (const f of (ser.files || [])) sel[f.episodeFileId] = true;
+        }
+        this.tbaRefreshSelected = sel;
+      } catch (e) {
+        this.tbaRefreshError = (e && e.message) || String(e);
+        this.tbaRefreshPreview = null;
+      } finally {
+        this.tbaRefreshLoading = false;
+      }
+    },
+    tbaRefreshSelectAll() {
+      const sel = {};
+      for (const ser of ((this.tbaRefreshPreview && this.tbaRefreshPreview.series) || [])) {
+        for (const f of (ser.files || [])) sel[f.episodeFileId] = true;
+      }
+      this.tbaRefreshSelected = sel;
+    },
+    tbaRefreshSelectNone() { this.tbaRefreshSelected = {}; },
+    tbaRefreshSelectedCount() {
+      return Object.values(this.tbaRefreshSelected || {}).filter(Boolean).length;
+    },
+    // Group a series' flat file list into [{season, files}] for the
+    // series → season → file rendering (and the same shape the Discord
+    // notification groups by). Files arrive season-sorted from the API.
+    tbaSeasonGroups(series) {
+      const groups = [];
+      let cur = null;
+      for (const f of ((series && series.files) || [])) {
+        if (!cur || cur.season !== f.seasonNumber) {
+          cur = { season: f.seasonNumber, files: [] };
+          groups.push(cur);
+        }
+        cur.files.push(f);
+      }
+      return groups;
+    },
+    // SxxExx label; collapses multi-episode files to S03E07E08.
+    tbaEpLabel(file) {
+      const s = 'S' + String(file.seasonNumber).padStart(2, '0');
+      const eps = (file.episodeNumbers || []);
+      if (eps.length === 0) return s;
+      return s + eps.map(e => 'E' + String(e).padStart(2, '0')).join('');
+    },
+    async applyTbaRefresh() {
+      const groups = [];
+      for (const ser of ((this.tbaRefreshPreview && this.tbaRefreshPreview.series) || [])) {
+        const fileIds = (ser.files || [])
+          .filter(f => this.tbaRefreshSelected[f.episodeFileId])
+          .map(f => f.episodeFileId);
+        if (fileIds.length > 0) groups.push({ seriesId: ser.seriesId, fileIds });
+      }
+      if (groups.length === 0) {
+        this.showToast('Select at least one file to rename', 'error');
+        return;
+      }
+      const total = groups.reduce((n, g) => n + g.fileIds.length, 0);
+      if (!await this.confirmDialog({
+        title:       'Rename ' + total + ' file' + (total === 1 ? '' : 's') + '?',
+        message:     'Trigger Sonarr to rename ' + total + ' file' + (total === 1 ? '' : 's') + ' across ' + groups.length + ' series. Sonarr renames per its configured naming pattern; this is queued and runs in the background.',
+        confirmText: 'Rename',
+      })) return;
+      this.tbaRefreshApplying = true;
+      try {
+        const res = await this.apiFetch('/api/scan/tba-refresh/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instanceId: this.scanInstanceId, groups }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        const failed = (data.errors || []).length;
+        let msg = 'Queued ' + (data.queued || 0) + ' rename' + ((data.queued === 1) ? '' : 's') + ' across ' + (data.seriesCount || 0) + ' series';
+        if (failed > 0) msg += ' — ' + failed + ' series failed';
+        this.showToast(msg, failed > 0 ? 'error' : 'success');
+        // Clear — Sonarr renames async; re-run Preview to confirm.
+        this.tbaRefreshPreview = null;
+        this.tbaRefreshSelected = {};
+      } catch (e) {
+        this.showToast('Rename failed: ' + ((e && e.message) || e), 'error');
+      } finally {
+        this.tbaRefreshApplying = false;
+      }
+    },
+
     // formatDate renders an ISO8601 timestamp in the CONTAINER'S host
     // context. Three controls feed in:
     //   - serverTimezone (from $TZ on init) — the moment is shown in
@@ -5437,6 +5571,12 @@ function app() {
     webhookEventsFiltered() {
       const events = this.webhookEvents[this.webhookActivityInstanceId] || [];
       let out = events;
+      const q = (this.webhookActivitySearch || '').trim().toLowerCase();
+      if (q) {
+        out = out.filter(ev =>
+          ((ev.title || '').toLowerCase().includes(q)) ||
+          ((ev.subtitle || '').toLowerCase().includes(q)));
+      }
       if (this.webhookEventFilter !== 'all') {
         out = out.filter(ev => ev.eventType === this.webhookEventFilter);
       }
@@ -6900,10 +7040,11 @@ function app() {
         return section === 'run'    || section === 'groups' ||
                section === 'audio'  || section === 'video'  ||
                section === 'missing-episodes' ||
+               section === 'tba-refresh' ||
                section === 'history';
       }
-      // Radarr: every visible section EXCEPT missing-episodes (Sonarr-only).
-      if (section === 'missing-episodes') return false;
+      // Radarr: every visible section EXCEPT the Sonarr-only ones.
+      if (section === 'missing-episodes' || section === 'tba-refresh') return false;
       return true;
     },
     setScanAppType(type) {
@@ -10290,6 +10431,16 @@ function app() {
         targetTypes: ['label'],
       };
     },
+    // Blank TBA-refresh snapshot for the wizard's tbarefresh phase
+    // (Sonarr-only). No global to copy from; sensible default is all
+    // monitored series, specials off.
+    snapshotDefaultTbaRefresh() {
+      return {
+        includeContinuing: true,
+        includeEnded: true,
+        includeSpecials: false,
+      };
+    },
     // Subset of cfg.ReleaseGroups[].id matching the rule's instance type
     // AND currently Enabled. Used to seed editingRule.releaseGroupIds
     // when the user opens the wizard — gives them a sensible default
@@ -10377,6 +10528,7 @@ function app() {
         dvDetail:         this.snapshotGlobalDvDetail(),
         missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
         plexSync:         this.snapshotDefaultPlexSync(),
+        tbaRefresh:       this.snapshotDefaultTbaRefresh(),
         releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       this.ruleEditor = { open: true, isCreate: true, isQuickFix: false, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [], fixedAction: '' };
@@ -10472,6 +10624,7 @@ function app() {
         dvDetail:         this.snapshotGlobalDvDetail(),
         missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
         plexSync:         this.snapshotDefaultPlexSync(),
+        tbaRefresh:       this.snapshotDefaultTbaRefresh(),
         releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       // Merge restored state over defaults. Bucket snapshots use
@@ -10493,6 +10646,7 @@ function app() {
             dvDetail:  this._mergeBucketSnapshot(restored.dvDetail,  defaults.dvDetail),
             missingEpisodes: this._mergeBucketSnapshot(restored.missingEpisodes, defaults.missingEpisodes),
             plexSync: (restored.plexSync && typeof restored.plexSync === 'object') ? restored.plexSync : this.snapshotDefaultPlexSync(),
+            tbaRefresh: (restored.tbaRefresh && typeof restored.tbaRefresh === 'object') ? restored.tbaRefresh : this.snapshotDefaultTbaRefresh(),
             releaseGroupIds: Array.isArray(restored.releaseGroupIds)
               ? restored.releaseGroupIds
               : defaults.releaseGroupIds,
@@ -10528,6 +10682,9 @@ function app() {
           audioTags: rule.audioTags,
           videoTags: rule.videoTags,
           dvDetail: rule.dvDetail,
+          missingEpisodes: rule.missingEpisodes,
+          plexSync: rule.plexSync,
+          tbaRefresh: rule.tbaRefresh,
           releaseGroupIds: rule.releaseGroupIds || [],
         };
         localStorage.setItem(this._qfaStateKey(arrType), JSON.stringify(persist));
@@ -10721,6 +10878,7 @@ function app() {
         dvDetail:         this.snapshotGlobalDvDetail(),
         missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
         plexSync:         this.snapshotDefaultPlexSync(),
+        tbaRefresh:       this.snapshotDefaultTbaRefresh(),
         releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       this.ruleEditor = {
@@ -10860,6 +11018,7 @@ function app() {
       if (!copy.dvDetail)        copy.dvDetail        = this.snapshotGlobalDvDetail();
       if (!copy.missingEpisodes) copy.missingEpisodes = this.snapshotGlobalMissingEpisodes();
       if (!copy.plexSync)        copy.plexSync        = this.snapshotDefaultPlexSync();
+      if (!copy.tbaRefresh)      copy.tbaRefresh      = this.snapshotDefaultTbaRefresh();
       if (!copy.releaseGroupIds) copy.releaseGroupIds = this.snapshotGlobalRGIds(copy.instanceId);
       copy.options = Object.assign({
         runMode: 'apply', cleanupUnusedTags: false, syncToSecondary: false, syncToInstanceId: '',
@@ -11284,6 +11443,14 @@ function app() {
             error: '',
             detailsFilter: '',
           };
+          break;
+        }
+        case 'tbarefresh': {
+          // No dedicated TBA modal — hydrate the sub-tab's preview state
+          // and jump there, same as missingepisodes does.
+          this.tbaRefreshPreview = p.response || null;
+          this.scanAppType = 'sonarr';
+          this.scanSection = 'tba-refresh';
           break;
         }
         default:
@@ -11786,6 +11953,12 @@ function app() {
           const sum = (m) => m ? Object.values(m).reduce((a, b) => a + b, 0) : 0;
           return `${run.matched || 0} matched · ${sum(run.added)} added · ${sum(run.removed)} removed · ${sum(run.inSync)} in sync`;
         }
+        case 'tbarefresh': {
+          const pr = p.response || {};
+          let s = `${pr.totalFiles || 0} TBA files · ${pr.seriesWithTba || 0} series`;
+          if (p.applied) s += ` · queued ${p.applied.queued || 0} renames`;
+          return s;
+        }
         default:          return '(unknown phase)';
       }
     },
@@ -11828,6 +12001,7 @@ function app() {
       { value: 'dvdetail',        label: 'Tag DV Details',                      appliesTo: ['radarr'], optIn: true },
       { value: 'missingepisodes', label: 'Find missing episodes',               appliesTo: ['sonarr'] },
       { value: 'plexsync',        label: 'Sync to Plex',                        appliesTo: ['radarr', 'sonarr'], optIn: true },
+      { value: 'tbarefresh',      label: 'TBA refresh',                         appliesTo: ['sonarr'], optIn: true },
     ],
     ruleEditorInstanceType() {
       // Locked at open-time on ruleEditor.appType (Create/QFA seed from
@@ -12095,6 +12269,37 @@ function app() {
       if (r.mode === 'combined' && (r.options.combinedModes || []).includes('missingepisodes')) return true;
       return false;
     },
+    ruleAffectsTbaRefresh() {
+      const r = this.editingRule;
+      if (!r) return false;
+      if (r.mode === 'tbarefresh') return true;
+      if (r.mode === 'combined' && (r.options.combinedModes || []).includes('tbarefresh')) return true;
+      return false;
+    },
+    // Read-only one-line summaries for the Review step. Config itself
+    // lives on the dedicated Missing episodes / TBA refresh steps.
+    reviewMissingEpisodesSummary() {
+      const m = this.editingRule && this.editingRule.missingEpisodes;
+      if (!m) return '';
+      const series = [];
+      if (m.includeContinuing) series.push('continuing');
+      if (m.includeEnded) series.push('ended');
+      if (m.includeSpecials) series.push('specials');
+      const actions = [];
+      if (m.actionTag) actions.push('tag "' + (m.tagName || 'missing-episodes') + '"');
+      if (m.actionSearch) actions.push('search');
+      const actionStr = actions.length ? actions.join(' + ') : 'preview only';
+      return `${m.thresholdPercent ?? 70}% coverage · ${m.bufferHours ?? 24}h buffer · ${series.join('/') || 'no series picked'} · on apply: ${actionStr}`;
+    },
+    reviewTbaRefreshSummary() {
+      const t = this.editingRule && this.editingRule.tbaRefresh;
+      if (!t) return '';
+      const series = [];
+      if (t.includeContinuing) series.push('continuing');
+      if (t.includeEnded) series.push('ended');
+      if (t.includeSpecials) series.push('specials');
+      return `${series.join('/') || 'no series picked'} · renames every TBA file found on apply`;
+    },
 
     // ---- Wizard "Sync to Plex" step ------------------------------
     // All bound to editingRule.plexSync. Mirrors the one-off form's
@@ -12243,10 +12448,11 @@ function app() {
       if (tabId === 'audio')    return this.ruleAffectsAudio();
       if (tabId === 'video')    return this.ruleAffectsVideo();
       if (tabId === 'dvdetail') return this.ruleAffectsDvDetail();
-      // missingepisodes intentionally NOT a wizard step — the config is
-      // inline in the Review step (threshold / buffer / actions / tag
-      // name are all editable there). Compact enough that a dedicated
-      // step felt redundant with the Review summary that followed it.
+      // Missing episodes + TBA refresh — Sonarr-only phases, each with
+      // its own page like Audio/Video/DV. Schedule/QFA only (not
+      // webhook). Config lives on the step; Review shows a summary.
+      if (tabId === 'missingepisodes') return !isWebhook && this.ruleAffectsMissingEpisodes();
+      if (tabId === 'tbarefresh')      return !isWebhook && this.ruleAffectsTbaRefresh();
       // Webhook-only steps. Hidden for schedule rules entirely; for
       // webhook rules visible only when the corresponding function is
       // ticked. Backend's webhook rule validate-then-persist requires
@@ -12464,6 +12670,7 @@ function app() {
       if (!copy.dvDetail)        copy.dvDetail        = this.snapshotGlobalDvDetail();
       if (!copy.missingEpisodes) copy.missingEpisodes = this.snapshotGlobalMissingEpisodes();
       if (!copy.plexSync)        copy.plexSync        = this.snapshotDefaultPlexSync();
+      if (!copy.tbaRefresh)      copy.tbaRefresh      = this.snapshotDefaultTbaRefresh();
       if (!Array.isArray(copy.releaseGroupIds)) copy.releaseGroupIds = this.snapshotGlobalRGIds(copy.instanceId);
 
       // Hoist server-shape rule fields into options.* so the
@@ -12979,6 +13186,8 @@ function app() {
         audio:           'Audio tags',
         video:           'Video tags',
         dvdetail:        'DV detail',
+        missingepisodes: 'Missing episodes',
+        tbarefresh:      'TBA refresh',
         plexsync:        'Sync to Plex',
         grabrename:      'qBit Grab Rename',
         qbitse:          'qBit S/E tag',
@@ -13429,6 +13638,8 @@ function app() {
       // whenever the phase is selected so the backend persists the
       // snapshot on the saved schedule.
       if (this.ruleAffectsPlexSync() && r.plexSync) body.plexSync = JSON.parse(JSON.stringify(r.plexSync));
+      // TBA refresh — Sonarr-only file-rename phase, config in Review.
+      if (this.ruleAffectsTbaRefresh() && r.tbaRefresh) body.tbaRefresh = JSON.parse(JSON.stringify(r.tbaRefresh));
       this.ruleEditor.busy = true;
       try {
         const url = r.id ? `/api/schedules/${r.id}` : '/api/schedules';
@@ -14634,7 +14845,10 @@ function app() {
       // Plex sync runs LAST (after every tag-writing phase) via the
       // shared one-off endpoint. Its own bucket like missing-episodes.
       const runPlexSync = has('plexsync');
-      if (headPhases.length === 0 && autoPhases.length === 0 && !runMissingEpisodes && !runPlexSync) {
+      // TBA refresh — Sonarr-only file rename. Preview + (apply-mode)
+      // rename-all, via the same endpoints the standalone tab uses.
+      const runTbaRefresh = has('tbarefresh');
+      if (headPhases.length === 0 && autoPhases.length === 0 && !runMissingEpisodes && !runPlexSync && !runTbaRefresh) {
         this.ruleEditor.error = 'No phases to run';
         this.ruleEditor.busy = false;
         return;
@@ -15011,6 +15225,54 @@ function app() {
           results.phases.push(phaseRow);
         }
 
+        // Phase 5 — TBA refresh (Sonarr only). Preview, then in apply
+        // mode rename every TBA file found (no per-file selection in
+        // the chain). Uses the standalone tab's two endpoints.
+        if (runTbaRefresh && !isCancelled() && r.tbaRefresh) {
+          const tc = r.tbaRefresh;
+          const phaseRow = { phase: 'tbarefresh', ok: true, instanceId: r.instanceId };
+          try {
+            const pr = await this.apiFetch('/api/scan/tba-refresh/preview', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                instanceId: r.instanceId,
+                includeContinuing: !!tc.includeContinuing,
+                includeEnded: !!tc.includeEnded,
+                includeSpecials: !!tc.includeSpecials,
+              }),
+            });
+            if (!pr.ok) {
+              const d = await pr.json().catch(() => ({}));
+              throw new Error(`tbarefresh: ${d.error || 'HTTP ' + pr.status}`);
+            }
+            const preview = await pr.json();
+            phaseRow.response = preview;
+            if (runMode === 'apply' && (preview.totalFiles || 0) > 0) {
+              const groups = (preview.series || []).map(ser => ({
+                seriesId: ser.seriesId,
+                fileIds: (ser.files || []).map(f => f.episodeFileId),
+              }));
+              const ar = await this.apiFetch('/api/scan/tba-refresh/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ instanceId: r.instanceId, groups }),
+              });
+              if (ar.ok) {
+                phaseRow.applied = await ar.json();
+              } else {
+                const d = await ar.json().catch(() => ({}));
+                phaseRow.applyError = d.error || 'HTTP ' + ar.status;
+                phaseRow.ok = false;
+              }
+            }
+          } catch (e) {
+            phaseRow.ok = false;
+            phaseRow.error = String((e && e.message) || e);
+          }
+          results.phases.push(phaseRow);
+        }
+
         results.finishedAt = new Date().toISOString();
         results.ok = true;
         this.quickFixResults = results;
@@ -15018,6 +15280,7 @@ function app() {
         const ranList = [...headPhases, ...autoPhases.map(a => a.phase)];
         if (runMissingEpisodes) ranList.push('missingepisodes');
         if (runPlexSync) ranList.push('plexsync');
+        if (runTbaRefresh) ranList.push('tbarefresh');
         // Toast wording: per-action wizards (fixedAction) use the
         // action's display name so the toast matches what the user
         // clicked. QFA proper keeps the chain wording. Apply-after-

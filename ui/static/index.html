@@ -666,6 +666,13 @@
              @click="setScanSection('missing-episodes')"
              title="Find seasons with missing episodes — fully aired but incomplete">Missing episodes</a>
         </template>
+        <template x-if="scanSectionVisible('tba-refresh')">
+          <a class="settings-nav"
+             :class="scanSection === 'tba-refresh' && 'settings-nav-active'"
+             :href="navHref('scan', { scanSection: 'tba-refresh' })"
+             @click="setScanSection('tba-refresh')"
+             title="Rename episode files imported as TBA now that Sonarr knows the real title">TBA refresh</a>
+        </template>
         <template x-if="scanSectionVisible('plex-sync')">
           <a class="settings-nav" :class="scanSection === 'plex-sync' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'plex-sync' })" @click="setScanSection('plex-sync')" title="Sync Arr tags to Plex labels — per-rule label whitelist + library scope">Plex label sync</a>
         </template>
@@ -3228,6 +3235,104 @@
           </template>
         </div>
 
+        <!-- ===== TBA refresh sub-tab (Sonarr-only) =====
+             Finds episode files imported as "...- TBA.mkv" whose episode
+             now has a real title in Sonarr, and triggers Sonarr's rename.
+             Detection rides Sonarr's GET /api/v3/rename preview filtered
+             to TBA-in-current-name. Apply fires RenameFiles per series. -->
+        <div x-show="scanSection === 'tba-refresh'" x-cloak>
+          <div class="settings-section-title">TBA refresh</div>
+          <div class="settings-section-desc">When Sonarr imports an episode right at release, the title is often still "TBA" and gets baked into the filename. Later, once the real title is known, Sonarr updates the episode but leaves the file named "TBA" on disk. This finds those files and triggers Sonarr to rename them to the real title (per your naming pattern).</div>
+
+          <div style="display:flex;flex-direction:column;gap:10px;padding:14px 18px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:14px;margin-top:8px">
+            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                <input type="checkbox" x-model="tbaRefreshConfig.includeContinuing">
+                <span>Include continuing series</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
+                <input type="checkbox" x-model="tbaRefreshConfig.includeEnded">
+                <span>Include ended series</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px" title="Season 0 = specials. Skipped by default.">
+                <input type="checkbox" x-model="tbaRefreshConfig.includeSpecials">
+                <span>Include specials (season 0)</span>
+              </label>
+              <div style="flex:1"></div>
+              <button class="btn btn-primary"
+                      @click="runTbaRefreshScan()"
+                      :disabled="tbaRefreshLoading || !scanInstanceId || (!tbaRefreshConfig.includeContinuing && !tbaRefreshConfig.includeEnded)"
+                      :title="(!tbaRefreshConfig.includeContinuing && !tbaRefreshConfig.includeEnded) ? 'Enable Continuing or Ended series filter first' : 'Preview only — nothing is renamed until you click Rename selected below'">
+                <span x-show="!tbaRefreshLoading">Find TBA files</span>
+                <span x-show="tbaRefreshLoading">Scanning…</span>
+              </button>
+            </div>
+            <div style="font-size:11px;color:var(--text-secondary)">Preview only — no files are renamed until you click <strong>Rename selected</strong> in the result panel below.</div>
+          </div>
+
+          <!-- Results -->
+          <template x-if="tbaRefreshPreview">
+            <div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+                <span class="pill blue" style="font-size:12px">Scanned: <strong x-text="tbaRefreshPreview.seriesScanned"></strong> series</span>
+                <span class="pill amber" style="font-size:12px" x-show="tbaRefreshPreview.seriesWithTba > 0"><strong x-text="tbaRefreshPreview.seriesWithTba"></strong> with TBA files</span>
+                <span class="pill red" style="font-size:12px" x-show="tbaRefreshPreview.totalFiles > 0"><strong x-text="tbaRefreshPreview.totalFiles"></strong> files to rename</span>
+                <span class="pill green" style="font-size:12px" x-show="tbaRefreshPreview.totalFiles === 0 && tbaRefreshPreview.seriesScanned > 0">No TBA files found — nothing to rename</span>
+              </div>
+
+              <div x-show="tbaRefreshPreview.totalFiles > 0" style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+                <button class="btn btn-sm" @click="tbaRefreshSelectAll()" :disabled="tbaRefreshApplying">Select all</button>
+                <button class="btn btn-sm" @click="tbaRefreshSelectNone()" :disabled="tbaRefreshApplying">Select none</button>
+                <button class="btn btn-sm btn-primary" @click="applyTbaRefresh()" :disabled="tbaRefreshApplying || tbaRefreshSelectedCount() === 0">
+                  Rename <span x-text="tbaRefreshSelectedCount()"></span> selected in Sonarr
+                </button>
+              </div>
+
+              <!-- Per-series → per-season → per-file -->
+              <template x-for="series in tbaRefreshPreview.series" :key="series.seriesId">
+                <div style="border:1px solid var(--border-subtle);border-radius:8px;padding:12px 16px;margin-bottom:10px;background:var(--bg-page)">
+                  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+                    <strong style="font-size:14px;color:var(--text-primary)" x-text="series.seriesTitle"></strong>
+                    <div style="flex:1"></div>
+                    <span style="font-size:11px;color:var(--text-muted-secondary)"><span x-text="series.files.length"></span> file<span x-show="series.files.length !== 1">s</span></span>
+                  </div>
+                  <template x-for="grp in tbaSeasonGroups(series)" :key="grp.season">
+                    <div style="border-top:1px solid var(--bg-muted);padding-top:8px;margin-top:8px">
+                      <strong style="font-size:13px">Season <span x-text="grp.season"></span></strong>
+                      <div style="display:flex;flex-direction:column;gap:4px;margin-top:6px">
+                        <template x-for="f in grp.files" :key="f.episodeFileId">
+                          <label style="display:flex;align-items:center;gap:8px;padding:4px 8px;background:var(--bg-card);border-radius:4px;cursor:pointer;font-size:12px">
+                            <input type="checkbox" :checked="tbaRefreshSelected[f.episodeFileId] || false" @change="tbaRefreshSelected[f.episodeFileId] = $event.target.checked">
+                            <span style="font-family:ui-monospace,monospace;color:var(--accent-sky);flex-shrink:0" x-text="tbaEpLabel(f)"></span>
+                            <span style="color:var(--text-muted-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1" :title="f.existingName" x-text="f.existingName"></span>
+                            <span style="color:var(--text-muted-secondary);flex-shrink:0">→</span>
+                            <span style="color:var(--text-body);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1" :title="f.newName" x-text="f.newName"></span>
+                          </label>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <template x-if="tbaRefreshPreview.errors && tbaRefreshPreview.errors.length > 0">
+                <div style="margin-top:10px;padding:10px 14px;background:var(--accent-amber-bg);border:1px solid var(--accent-amber);border-radius:6px;font-size:12px;color:var(--accent-amber)">
+                  <strong>Some series couldn't be scanned:</strong>
+                  <ul style="margin:6px 0 0 16px">
+                    <template x-for="e in tbaRefreshPreview.errors" :key="e.seriesId">
+                      <li><span x-text="e.seriesTitle"></span> — <span x-text="e.error"></span></li>
+                    </template>
+                  </ul>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <template x-if="tbaRefreshError">
+            <div style="padding:10px 14px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;color:var(--accent-red);font-size:13px" x-text="tbaRefreshError"></div>
+          </template>
+        </div>
+
         <!-- ===== Plex label sync sub-tab =====
              Rule-management surface for syncing Arr tags to Plex labels.
              Each rule binds one Arr instance + a label whitelist to one
@@ -5443,6 +5548,16 @@
                Built dynamically from whatever event types arrived. -->
           <template x-if="webhookActivityInstanceId && (webhookEvents[webhookActivityInstanceId] || []).length > 0">
             <div style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px;display:flex;flex-direction:column;gap:8px">
+              <div style="display:flex;gap:8px;align-items:center">
+                <span class="filter-label" style="margin:0">Search:</span>
+                <input type="text" class="input" x-model="webhookActivitySearch" placeholder="Find by movie / series title…" style="font-size:12px;height:28px;flex:1;max-width:340px">
+                <template x-if="webhookActivitySearch">
+                  <button class="btn btn-sm" @click="webhookActivitySearch = ''" title="Clear search">Clear</button>
+                </template>
+                <template x-if="webhookActivitySearch">
+                  <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap" x-text="webhookEventsFiltered().length + ' match' + (webhookEventsFiltered().length === 1 ? '' : 'es')"></span>
+                </template>
+              </div>
               <div class="filter-row" style="padding:0">
                 <span class="filter-label">Type:</span>
                 <button class="filter-pill" :class="{ 'is-active': webhookEventFilter === 'all' }" @click="webhookEventFilter = 'all'">
@@ -8335,13 +8450,55 @@
         </div>
       </template>
 
-      <!-- Missing Episodes config lives inline in the Review step
-           (below) — the surface is compact enough (threshold + buffer
-           + 3 include filters + 2 action toggles + tag name) that a
-           dedicated wizard step felt redundant with the Review
-           summary card that followed it. Editing happens in Review;
-           the chain runner reads editingRule.missingEpisodes the
-           same way it reads audioTags / videoTags / dvDetail. -->
+      <!-- ===== Missing episodes (wizard step) — Sonarr only =====
+           Each combined phase gets its own page, like Audio/Video/DV.
+           Config lives here; the Review step shows a read-only summary. -->
+      <template x-if="ruleEditor.open && editingRule && editingRule.missingEpisodes && ruleEditorCurrentSection() === 'missingepisodes'">
+        <div>
+          <div class="settings-section-title" style="font-size:14px">Missing episodes <span style="color:var(--accent-sky);font-size:11px;font-weight:500">· Sonarr only</span></div>
+          <div class="settings-section-desc" style="margin-bottom:12px">Flags fully-aired seasons still missing episodes. On Apply, optionally tag the affected series and/or trigger a Sonarr search.</div>
+          <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px;margin-bottom:10px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <label style="color:var(--text-secondary)">Coverage threshold:</label>
+              <input type="number" min="0" max="100" step="5" x-model.number="editingRule.missingEpisodes.thresholdPercent" style="width:64px;font-size:13px;padding:4px 8px">
+              <span style="color:var(--text-secondary)">% on disk</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <label style="color:var(--text-secondary)" title="0 = any aired episode, 24 = Sonarr's default, up to 672 = 28 days">Buffer:</label>
+              <input type="number" min="0" max="672" x-model.number="editingRule.missingEpisodes.bufferHours" style="width:64px;font-size:13px;padding:4px 8px">
+              <span style="color:var(--text-secondary)">hours after airing</span>
+            </div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px;margin-bottom:12px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" x-model="editingRule.missingEpisodes.includeContinuing"><span>Include continuing</span></label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" x-model="editingRule.missingEpisodes.includeEnded"><span>Include ended</span></label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Season 0 = ad-hoc specials. Skipped by default."><input type="checkbox" x-model="editingRule.missingEpisodes.includeSpecials"><span>Include specials</span></label>
+          </div>
+          <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:6px">Action on Apply</div>
+          <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" x-model="editingRule.missingEpisodes.actionTag"><span><strong>Tag</strong> affected series</span></label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" x-model="editingRule.missingEpisodes.actionSearch"><span><strong>Search</strong> for missing episodes</span></label>
+            <div x-show="editingRule.missingEpisodes.actionTag" style="display:flex;align-items:center;gap:6px">
+              <label style="color:var(--text-secondary)">Tag name:</label>
+              <input type="text" :value="editingRule.missingEpisodes.tagName" @input="editingRule.missingEpisodes.tagName = $event.target.value.toLowerCase().replace(/\s+/g, '-')" placeholder="missing-episodes" style="width:200px;font-size:13px;padding:4px 8px;font-family:ui-monospace,monospace">
+            </div>
+          </div>
+          <div x-show="!editingRule.missingEpisodes.actionTag && !editingRule.missingEpisodes.actionSearch" style="font-size:11px;color:var(--accent-orange);margin-top:6px">⚠ Neither Tag nor Search ticked — Apply will preview only, no writes to Sonarr.</div>
+        </div>
+      </template>
+
+      <!-- ===== TBA refresh (wizard step) — Sonarr only ===== -->
+      <template x-if="ruleEditor.open && editingRule && editingRule.tbaRefresh && ruleEditorCurrentSection() === 'tbarefresh'">
+        <div>
+          <div class="settings-section-title" style="font-size:14px">TBA refresh <span style="color:var(--accent-sky);font-size:11px;font-weight:500">· Sonarr only</span></div>
+          <div class="settings-section-desc" style="margin-bottom:12px">Renames episode files imported as "TBA" once Sonarr knows the real title. In Apply mode this renames every TBA file found (no per-file selection); in Preview mode it just reports the count.</div>
+          <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" x-model="editingRule.tbaRefresh.includeContinuing"><span>Include continuing</span></label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" x-model="editingRule.tbaRefresh.includeEnded"><span>Include ended</span></label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Season 0 = specials. Skipped by default."><input type="checkbox" x-model="editingRule.tbaRefresh.includeSpecials"><span>Include specials</span></label>
+          </div>
+        </div>
+      </template>
 
       <!-- ===== Sync to Plex (wizard step) =====
            Schedule + QFA rules only (combined phase 'plexsync').
@@ -9604,71 +9761,22 @@
             </div>
           </template>
 
-          <!-- ===== Missing Episodes section =====
-               Editable card — no dedicated wizard step for this phase.
-               Compact config (threshold + buffer + 3 includes + 2
-               action toggles + tag name) lives inline here so QFA + Create
-               Rule don't need a whole extra page. Bound to
-               editingRule.missingEpisodes; the chain runner + scheduler
-               runner read off the same snapshot. -->
+          <!-- ===== Missing Episodes summary (read-only) =====
+               Config lives on the dedicated Missing episodes step; this
+               is the Review-page overview. -->
           <template x-if="ruleAffectsMissingEpisodes() && editingRule.missingEpisodes">
             <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-                <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600">Missing episodes <span style="color:var(--accent-sky);font-weight:500;text-transform:none;letter-spacing:0">· Sonarr only</span></div>
-              </div>
+              <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">Missing episodes <span style="color:var(--accent-sky);font-weight:500;text-transform:none;letter-spacing:0">· Sonarr only</span></div>
+              <div style="font-size:13px;color:var(--text-body)" x-text="reviewMissingEpisodesSummary()"></div>
+            </div>
+          </template>
 
-              <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px">
-                <div style="display:flex;align-items:center;gap:6px">
-                  <label style="color:var(--text-secondary)">Coverage threshold:</label>
-                  <input type="number" min="0" max="100" step="5" x-model.number="editingRule.missingEpisodes.thresholdPercent" style="width:64px;font-size:13px;padding:4px 8px">
-                  <span style="color:var(--text-secondary)">% on disk</span>
-                </div>
-                <div style="display:flex;align-items:center;gap:6px">
-                  <label style="color:var(--text-secondary)" title="0 = any aired episode, 24 = standard buffer (Sonarr's own default), up to 672 = 28 days">Buffer:</label>
-                  <input type="number" min="0" max="672" x-model.number="editingRule.missingEpisodes.bufferHours" style="width:64px;font-size:13px;padding:4px 8px">
-                  <span style="color:var(--text-secondary)">hours after airing</span>
-                </div>
-              </div>
-
-              <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px;margin-top:10px">
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                  <input type="checkbox" x-model="editingRule.missingEpisodes.includeContinuing">
-                  <span>Include continuing</span>
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                  <input type="checkbox" x-model="editingRule.missingEpisodes.includeEnded">
-                  <span>Include ended</span>
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Season 0 = ad-hoc specials. Skipped by default since they're rarely curated via Sonarr search.">
-                  <input type="checkbox" x-model="editingRule.missingEpisodes.includeSpecials">
-                  <span>Include specials</span>
-                </label>
-              </div>
-
-              <div style="margin-top:12px">
-                <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:6px">Action on Apply</div>
-                <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px">
-                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                    <input type="checkbox" x-model="editingRule.missingEpisodes.actionTag">
-                    <span><strong>Tag</strong> affected series</span>
-                  </label>
-                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                    <input type="checkbox" x-model="editingRule.missingEpisodes.actionSearch">
-                    <span><strong>Search</strong> for missing episodes</span>
-                  </label>
-                  <div x-show="editingRule.missingEpisodes.actionTag" style="display:flex;align-items:center;gap:6px">
-                    <label style="color:var(--text-secondary)">Tag name:</label>
-                    <input type="text"
-                           :value="editingRule.missingEpisodes.tagName"
-                           @input="editingRule.missingEpisodes.tagName = $event.target.value.toLowerCase().replace(/\s+/g, '-')"
-                           placeholder="missing-episodes"
-                           style="width:200px;font-size:13px;padding:4px 8px;font-family:ui-monospace,monospace">
-                  </div>
-                </div>
-                <div x-show="!editingRule.missingEpisodes.actionTag && !editingRule.missingEpisodes.actionSearch" style="font-size:11px;color:var(--accent-orange);margin-top:6px">
-                  ⚠ Neither Tag nor Search ticked — Apply will preview only, no writes to Sonarr.
-                </div>
-              </div>
+          <!-- ===== TBA refresh summary (read-only) =====
+               Config lives on the dedicated TBA refresh step. -->
+          <template x-if="ruleAffectsTbaRefresh() && editingRule.tbaRefresh">
+            <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 18px">
+              <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;font-weight:600;margin-bottom:8px">TBA refresh <span style="color:var(--accent-sky);font-weight:500;text-transform:none;letter-spacing:0">· Sonarr only</span></div>
+              <div style="font-size:13px;color:var(--text-body)" x-text="reviewTbaRefreshSummary()"></div>
             </div>
           </template>
 

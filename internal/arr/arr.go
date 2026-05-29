@@ -812,6 +812,42 @@ func (c *Client) ListEpisodefiles(ctx context.Context, seriesID int) ([]EpisodeF
 	return out, nil
 }
 
+// SonarrRenameRecord is the subset of /api/v3/rename we need. Sonarr
+// returns ONLY files whose on-disk name differs from what the series'
+// naming pattern would produce. That's exactly the TBA-refresh signal:
+// a file imported as "...- TBA.mkv" whose episode now has a real title
+// shows up (existingPath has TBA, newPath has the real title), while a
+// file that is still genuinely TBA does NOT (target == current, so
+// Sonarr omits it). No separate episode-title fetch needed.
+type SonarrRenameRecord struct {
+	SeriesID       int    `json:"seriesId"`
+	SeasonNumber   int    `json:"seasonNumber"`
+	EpisodeNumbers []int  `json:"episodeNumbers"`
+	EpisodeFileID  int    `json:"episodeFileId"`
+	ExistingPath   string `json:"existingPath"`
+	NewPath        string `json:"newPath"`
+}
+
+// GetSonarrRenamePreview returns Sonarr's pending-rename list for one
+// series (GET /api/v3/rename?seriesId=N). The TBA-refresh detector
+// filters the result to records whose existingPath carries a TBA token.
+func (c *Client) GetSonarrRenamePreview(ctx context.Context, seriesID int) ([]SonarrRenameRecord, error) {
+	path := fmt.Sprintf("/api/v3/rename?seriesId=%d", seriesID)
+	resp, err := c.do(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var out []SonarrRenameRecord
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("parse rename preview: %w", err)
+	}
+	return out, nil
+}
+
 // GetEpisodefile fetches one episodefile in full, used as the read leg of
 // the read-modify-write recover patch. Same Radarr-parity reasoning as
 // GetMovieFile — Sonarr requires the complete object on PUT, so we fetch
