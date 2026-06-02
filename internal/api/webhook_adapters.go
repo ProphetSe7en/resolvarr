@@ -441,7 +441,7 @@ func (s *Server) dispatchTagDvDetail(
 			res.Detail = DvDetail{
 				Added:        added,
 				Removed:      removed,
-				PlainSummary: formatAutoTagPlainSummary(added, "dv-"),
+				PlainSummary: formatDvDetailPlainSummary(added, "dv-"),
 			}
 		}
 		return res
@@ -547,7 +547,7 @@ func (s *Server) dispatchTagDvDetail(
 		res.Detail = DvDetail{
 			Added:        added,
 			Removed:      removed,
-			PlainSummary: formatAutoTagPlainSummary(added, "dv-"),
+			PlainSummary: formatDvDetailPlainSummary(added, "dv-"),
 		}
 	}
 	return res
