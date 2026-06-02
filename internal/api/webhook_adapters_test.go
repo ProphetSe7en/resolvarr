@@ -1486,16 +1486,8 @@ func TestWebhookRuleRequest_ValidateFilterOnly(t *testing.T) {
 	})
 
 	t.Run("unknown tagSource value rejected", func(t *testing.T) {
-		// "discover" used to live in the unknown-set here (webhook
-		// rules rejected it even though schedules accepted it).
-		// That asymmetry caused "Use Discover" picks on webhook rules
-		// to silently revert to "Use active groups" on next open of
-		// the editor. The validator now matches the schedule
-		// allowlist; this subtest uses a genuinely-unknown value to
-		// keep the rejection path covered. Positive cases for
-		// "discover" live in TestWebhookRuleTagSourceAccepts.
 		req := base
-		req.TagSource = "bogus"
+		req.TagSource = "discover" // valid for schedules but not webhook rules
 		apiErr := req.validate(cfg)
 		if apiErr == nil {
 			t.Fatal("expected error for unknown tagSource, got nil")

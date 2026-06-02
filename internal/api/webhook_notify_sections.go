@@ -14,7 +14,7 @@
 //     populated Detail has no concrete values to render. No
 //     "did not happen" lines, no "skipped because X" stubs.
 //
-//  2. Plain language, not jargon. Field names ("Audio", "Video",
+//  2. Plain language, not jargon. Field names ("Sound", "Picture",
 //     "Was", "Now", "Client") never use internal terms ("audio bucket",
 //     "WebhookFnTagAudio", "Detail.PlainSummary"). The Adapter
 //     pre-formats values; the builder just places them.
@@ -406,7 +406,7 @@ func appendAutoTagsSection(fields []agents.PayloadField, a *AudioDetail, v *Vide
 	if a != nil {
 		if s := strings.TrimSpace(a.PlainSummary); s != "" {
 			fields = append(fields, agents.PayloadField{
-				Name:   "Audio",
+				Name:   "Sound",
 				Value:  s,
 				Inline: true,
 			})
@@ -415,7 +415,7 @@ func appendAutoTagsSection(fields []agents.PayloadField, a *AudioDetail, v *Vide
 	if v != nil {
 		if s := strings.TrimSpace(v.PlainSummary); s != "" {
 			fields = append(fields, agents.PayloadField{
-				Name:   "Video",
+				Name:   "Picture",
 				Value:  s,
 				Inline: true,
 			})
@@ -887,60 +887,6 @@ func buildInstanceList(primary string, mirrored bool, secondary string) string {
 		secondaryName = "secondary"
 	}
 	return primaryName + " · " + secondaryName
-}
-
-// dvDetailHumanLabel maps an emitted DV-detail tag (raw lowercase
-// engine vocabulary) to a notification-friendly display form. The
-// engine emits compact, Arr-tag-compatible labels (mel / fel /
-// dvprofile8 / cm2 / cm4) because tag names are constrained to
-// `^[a-z0-9-]+$`; the notification embed surfaces "Profile 8 · MEL ·
-// CM v4.0" instead. Unknown tokens fall through unchanged so the
-// helper is forward-compat if the engine adds a new tag.
-//
-// CM version mapping uses the dovi_tool source format ("CM v4.0",
-// "CM v2.9"). Profile 5 is mapped pre-emptively even though
-// engine/dv_summary.go currently skips it (Profile 5 produces no
-// profile/layer tag); kept for forward-compat if the policy changes.
-func dvDetailHumanLabel(tag string) string {
-	switch tag {
-	case "fel":
-		return "FEL"
-	case "mel":
-		return "MEL"
-	case "dvprofile5":
-		return "Profile 5"
-	case "dvprofile7":
-		return "Profile 7"
-	case "dvprofile8":
-		return "Profile 8"
-	case "cm2":
-		return "CM v2.9"
-	case "cm4":
-		return "CM v4.0"
-	}
-	return tag
-}
-
-// formatDvDetailPlainSummary builds the user-facing one-liner for the
-// DV section. Strips the bucket-prefix + humanizes each label via
-// dvDetailHumanLabel so values render as "Profile 8 · MEL · CM v4.0"
-// instead of the raw engine-emit "dvprofile8 · mel · cm4". Multiple
-// labels join with " · ". Mirrors formatAutoTagPlainSummary's
-// behaviour for empty / malformed input.
-func formatDvDetailPlainSummary(labels []string, bucketPrefix string) string {
-	if len(labels) == 0 {
-		return ""
-	}
-	out := make([]string, 0, len(labels))
-	for _, l := range labels {
-		l = strings.TrimSpace(l)
-		if l == "" {
-			continue
-		}
-		l = strings.TrimPrefix(l, bucketPrefix)
-		out = append(out, dvDetailHumanLabel(l))
-	}
-	return strings.Join(out, " · ")
 }
 
 // formatAutoTagPlainSummary builds the user-facing one-liner for an

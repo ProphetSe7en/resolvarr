@@ -2,37 +2,15 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
-## v0.6.20-dev: Webhook-rule cleanup-toggle now persists on save (2026-06-02)
+## v0.6.21-dev — Reset to v0.6.16-dev baseline (2026-06-03)
 
-### Fixed
+This `:dev` build rolls the code back to v0.6.16-dev. The v0.6.17 to v0.6.20-dev builds had inconsistencies in audio and video tag emission, so the cleanest path forward is to reset to the last stable dev build and reintroduce changes one at a time. Force Update if you were on v0.6.17, v0.6.18, v0.6.19 or v0.6.20-dev.
 
-- **The "Delete release-group tags that no longer match any movie" toggle on a webhook rule now persists.** Checking it, saving, and reopening the rule used to show the toggle back at its default — the setting was silently dropped on save because the backend webhook-rule schema had no field for it. The field is now persisted end-to-end. (The actual per-item cleanup happens on every webhook fire anyway via the engine's add+remove tag diff; the toggle persistence just makes the rule editor consistent with the Schedule / Quick fix-all editor.)
+Coming back in upcoming dev releases:
 
-### Reverted
-
-- v0.6.19-dev's hide-the-toggle approach was the wrong fix. The toggle is back on webhook rules and saves properly now.
-
-## v0.6.18-dev: Cleaner notification labels (2026-06-02)
-
-### Changed
-
-- **Notification field names match standard A/V wording.** The Discord, Gotify, NTFY, Pushover, and Apprise embeds used to label the two main rows "Sound" and "Picture"; they now read "Audio" and "Video".
-- **Dolby Vision values now read like English.** The Dolby Vision row used to show the raw tag names (`dvprofile8 · mel · cm4`); it now shows `Profile 8 · MEL · CM v4.0`. The actual tags applied on Radarr/Sonarr are unchanged.
-
-## v0.6.17-dev: Webhook tagging fixes + docs refresh (2026-06-02)
-
-### Fixed
-
-- **"Use Discover" on a webhook rule now sticks when you save it.** Before, picking *Use Discover* and saving would silently revert to *Use active groups* on next open. The *Add to config and enable* toggle next to it also failed to save. Both stick now.
-- **Resolution tag on webhook-driven Tag Video.** Movies with letterbox / cinematic crops (most theatrical 2.40:1 and 2.35:1 releases) used to land one tier too low. A 1920×800 1080p film tagged as 720p; a 3840×1600 4K release as 1440p. Tags now follow the file's actual width, which crop doesn't change.
-- **10bit tag on webhook-driven Tag Video.** HDR files used to miss the 10bit tag on webhook events. The tag now fires for any HDR variant (HDR10, HDR10+, DV, HLG, PQ), all 10-bit by spec.
-- **Atmos tag on webhook-driven Tag Audio.** Files whose name didn't contain "atmos" used to miss the Atmos tag on webhook events. The check now also reads the audio codec from the payload, where Atmos shows up as "EAC3 Atmos" or "TrueHD Atmos".
-
-### Changed
-
-- README and how-to.md refreshed. how-to.md was substantially out of date and now matches the current state.
-- `ENABLE_DV_TOOLS` is no longer needed and the README no longer mentions it. dovi_tool and ffmpeg are baked into the image, so DV tagging works out of the box. If you previously set this env var, you can remove it from your container template; resolvarr ignores it now.
-- Small fix to the hint under the Library scan instance picker.
+- Cinematic-crop fix (2.40:1 releases tagged one tier below the canonical resolution, e.g. Hokum 1080p ending up as 720p)
+- Webhook-rule toggles for "Use Discover for new groups" and "Delete release-group tags that no longer match" persisting across edit
+- Notification label polish (Sound to Audio, Picture to Video, Dolby Vision detail values humanised)
 
 ## v0.6.16-dev — TBA refresh, Activity search, Plex runs in History (2026-05-29)
 

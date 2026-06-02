@@ -441,7 +441,7 @@ func (s *Server) dispatchTagDvDetail(
 			res.Detail = DvDetail{
 				Added:        added,
 				Removed:      removed,
-				PlainSummary: formatDvDetailPlainSummary(added, "dv-"),
+				PlainSummary: formatAutoTagPlainSummary(added, "dv-"),
 			}
 		}
 		return res
@@ -547,7 +547,7 @@ func (s *Server) dispatchTagDvDetail(
 		res.Detail = DvDetail{
 			Added:        added,
 			Removed:      removed,
-			PlainSummary: formatDvDetailPlainSummary(added, "dv-"),
+			PlainSummary: formatAutoTagPlainSummary(added, "dv-"),
 		}
 	}
 	return res
@@ -2021,8 +2021,6 @@ func extractDownload(appType string, p downloadEventPayload) extractedDownload {
 	if file.MediaInfo != nil {
 		out.HasMediaInfo = true
 		out.MediaInfo = engine.MediaInfo{
-			Width:                   file.MediaInfo.Width,
-			VideoResolution:         file.MediaInfo.VideoResolution,
 			Height:                  file.MediaInfo.Height,
 			VideoCodec:              file.MediaInfo.VideoCodec,
 			VideoBitDepth:           file.MediaInfo.VideoBitDepth,

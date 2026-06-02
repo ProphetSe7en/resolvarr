@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"strconv"
 	"strings"
 )
 
@@ -29,21 +28,7 @@ import (
 // so engine has no dependency on the arr package — callers translate
 // arr.MediaInfo → engine.MediaInfo at the handler boundary.
 type MediaInfo struct {
-	// Width / VideoResolution / Height — three competing signals for
-	// resolutionBucket. Width is the canonical per-tier dimension
-	// (4K=3840, 1440p=2560, 1080p=1920, 720p=1280, 480p=720) and is
-	// immune to letterbox / cinematic crops. The two Arr surfaces
-	// populate these differently:
-	//  - API GET responses set VideoResolution ("3840x1600") only;
-	//    Width + Height are absent.
-	//  - Connect webhook payloads set Width + Height ints; the
-	//    VideoResolution string is absent.
-	// resolutionBucket reads in this order: Width int > parse Width
-	// from VideoResolution > permissive Height bucket >
-	// quality.resolution last-resort.
-	Width                   int
-	VideoResolution         string
-	Height                  int     // Pixel height. Letterbox-cropped on webhook payloads; canonical only on 16:9 content.
+	Height                  int     // pixel height: 480/720/1080/2160 etc
 	VideoCodec              string  // "x264" | "x265" | "AV1" | etc
 	VideoBitDepth           int     // 8 or 10
 	VideoDynamicRangeType   string  // "" | "HDR10" | "HDR10Plus" | "DV" | "DV HDR10" | "PQ"
@@ -158,96 +143,28 @@ const (
 	AggHighest
 )
 
-// parseResolutionWxH parses Radarr/Sonarr's mediaInfo.videoResolution
-// string ("3840x2160" / "1920x800") into width + height ints. Returns
-// 0, 0 on empty / malformed input so the caller falls back gracefully
-// to other signals. Case-insensitive on the "x" separator; tolerates
-// leading/trailing whitespace.
-func parseResolutionWxH(s string) (width, height int) {
-	s = strings.TrimSpace(strings.ToLower(s))
-	if s == "" {
-		return 0, 0
-	}
-	parts := strings.Split(s, "x")
-	if len(parts) != 2 {
-		return 0, 0
-	}
-	w, errW := strconv.Atoi(strings.TrimSpace(parts[0]))
-	h, errH := strconv.Atoi(strings.TrimSpace(parts[1]))
-	if errW != nil || errH != nil || w < 0 || h < 0 {
-		return 0, 0
-	}
-	return w, h
-}
-
-// bucketByWidth maps a pixel width to a tier label. Canonical per-tier
-// widths: 4K=3840, 1440p=2560, 1080p=1920, 720p=1280, 480p=720. Width
-// is the cleanest bucketing axis because letterbox / cinematic crops
-// shrink HEIGHT, not WIDTH (a 3840x1608 4K cinema cut still has w=3840).
-// Returns "" for non-positive width so callers can distinguish "no
-// signal" from a deliberate "sd" bucket; callers gate on `w > 0`
-// before invoking, but the guard makes the helper self-defensive.
-func bucketByWidth(w int) string {
-	if w <= 0 {
-		return ""
-	}
-	switch {
-	case w >= 3840:
-		return "2160p"
-	case w >= 2560:
-		return "1440p"
-	case w >= 1920:
-		return "1080p"
-	case w >= 1280:
-		return "720p"
-	case w >= 720:
-		return "480p"
-	}
-	return "sd"
-}
-
-// resolutionBucket maps a file's reported dimensions to a tier label.
-// Truth hierarchy (file-truth first, Radarr-classification last):
-//
-//  1. Width int — webhook payloads set this directly. Bucket on width.
-//  2. Width parsed from VideoResolution "WxH" string — API GET path.
-//  3. Permissive Height bucket — fallback when neither width source
-//     resolved. Canonical heights are the UPPER bound of the tier
-//     (1080p tops out at 1080), so the strict "h >= tier" check used
-//     to drop letterbox-cropped files one tier too low (a 1920x800
-//     1080p cinema cut tagged as 720p). Permissive uses
-//     "h > lower-tier-canonical" instead.
-//  4. quality.resolution int — last resort for pre-mediaInfo legacy
-//     imports where Arr never populated mediaInfo at all.
-//
-// File truth wins over Radarr's release-name-derived quality bucket on
-// purpose: differences between the tag and the quality profile become
-// a visible signal for misclassifications the user can hunt down.
-func resolutionBucket(width int, videoResolution string, mediaInfoHeight, qualityResolution int) string {
-	// 1. Width int — webhook-payload path.
-	if width > 0 {
-		return bucketByWidth(width)
-	}
-	// 2. Parse width from the "WxH" string — API-path.
-	if w, _ := parseResolutionWxH(videoResolution); w > 0 {
-		return bucketByWidth(w)
-	}
-	// 3. Height with permissive thresholds — letterbox-safe fallback.
+// resolutionBucket maps a pixel height (or quality.resolution fallback
+// when mediaInfo is missing) to a bucket label. mediaInfoHeight wins
+// when non-zero; otherwise qualityResolution (which Radarr/Sonarr
+// populate even on pre-mediaInfo legacy imports).
+func resolutionBucket(mediaInfoHeight, qualityResolution int) string {
 	h := mediaInfoHeight
 	if h == 0 {
 		h = qualityResolution
 	}
 	switch {
-	case h > 1440:
+	case h >= 2160:
 		return "2160p"
-	case h > 1080:
+	case h >= 1440:
 		return "1440p"
-	case h > 720:
+	case h >= 1080:
 		return "1080p"
-	case h > 480:
+	case h >= 720:
 		return "720p"
-	case h > 0:
+	case h >= 480:
 		return "480p"
+	case h > 0:
+		return "sd"
 	}
 	return ""
 }
@@ -333,61 +250,22 @@ func audioChannelsBucket(channels float64) string {
 	return ""
 }
 
-// is10Bit returns true when the file is 10-bit (or higher). Reads
-// VideoBitDepth directly when present (API path); falls back to a
-// whitelist of HDR rangeType tokens on webhook payloads which omit
-// videoBitDepth. All listed HDR variants are 10-bit (or higher) by
-// spec — 8-bit HDR doesn't ship in consumer media.
+// hasAtmos checks Radarr's audioAdditionalFeatures field first (the
+// authoritative source when populated — modern Radarr writes "Atmos"
+// here when MediaInfo detected it at import time). Falls back to a
+// filename-token check on relativePath + sceneName because:
+//   - Older Radarr imports often have audioAdditionalFeatures="" even
+//     for genuine Atmos files.
+//   - MediaInfo's Atmos detection in EAC3 streams is less reliable
+//     than in TrueHD, so EAC3-Atmos files can end up with a blank
+//     features field.
 //
-// Whitelist (not blacklist) on purpose: if Arr starts emitting a new
-// or unknown rangeType label, we'd rather miss a niche 10-bit tag
-// than false-positive on something we don't know. "DV SDR" is
-// included via the dv substring — it's still 10-bit (the SDR variant
-// of Dolby Vision profile 8.4 uses 10-bit BL).
-func is10Bit(videoBitDepth int, videoDynamicRangeType string) bool {
-	if videoBitDepth == 10 {
-		return true
-	}
-	drt := strings.ToLower(strings.TrimSpace(videoDynamicRangeType))
-	if drt == "" {
-		return false
-	}
-	for _, tok := range tenBitRangeTypes {
-		if strings.Contains(drt, tok) {
-			return true
-		}
-	}
-	return false
-}
-
-// tenBitRangeTypes — substrings matched (case-insensitive) inside
-// VideoDynamicRangeType to infer 10-bit. Order doesn't matter; any
-// match wins. Sourced from Radarr/Sonarr's documented rangeType
-// strings ("HDR10", "HDR10Plus", "PQ", "HLG", "DV", "DV HDR10",
-// "DV HDR10Plus", "DV HLG", "DV SDR" — all 10-bit by spec).
-var tenBitRangeTypes = []string{"hdr10", "hdr10plus", "dv", "hlg", "pq"}
-
-// hasAtmos checks three signals in order of authority:
-//
-//  1. AudioCodec string — Connect webhook payloads omit
-//     audioAdditionalFeatures entirely; instead they bake Atmos into
-//     the codec string itself ("EAC3 Atmos", "TrueHD Atmos"). API GET
-//     responses also surface it here when present.
-//  2. AudioAdditionalFeatures string — API-path dedicated field.
-//     Modern Radarr/Sonarr writes "Atmos" here when MediaInfo detected
-//     it at import time. Absent on webhook events.
-//  3. Filename-token check on relativePath + sceneName — last-resort
-//     fallback for legacy imports where neither of the above are set,
-//     and for webhook releases whose audioCodec lacks the Atmos suffix
-//     even though the file is Atmos. Token-based (vs substring) avoids
-//     false positives — "atmos" must appear as its own word, separated
-//     by . - _ or space. Won't match a movie literally titled "Atmos"
-//     because the title rarely sits adjacent to the same delimiters as
-//     a release-tag.
-func hasAtmos(audioCodec, audioAdditionalFeatures, relativePath, sceneName string) bool {
-	if strings.Contains(strings.ToLower(audioCodec), "atmos") {
-		return true
-	}
+// Token-based filename match (vs substring) avoids false positives —
+// "atmos" must appear as its own word, separated by . - _ or space.
+// Won't match a movie literally titled "Atmos" because the title
+// rarely sits adjacent to the same delimiters as a release-tag
+// (releases use ".atmos." between codec + channels).
+func hasAtmos(audioAdditionalFeatures, relativePath, sceneName string) bool {
 	if strings.Contains(strings.ToLower(audioAdditionalFeatures), "atmos") {
 		return true
 	}
@@ -485,8 +363,7 @@ type MediaSummary struct {
 	Resolution    string  // "1080p" / "" — resolutionBucket label
 	VideoCodec    string  // "h265" / "" — codecBucket label
 	HDR           string  // "sdr" / "hdr10" / "dv" / etc — first bucket from hdrBuckets
-	VideoBitDepth int     // raw int (8 / 10). Use HasTenBit for the canonical 10-bit signal; VideoBitDepth is unreliable on webhook payloads which omit videoBitDepth.
-	HasTenBit     bool    // is10Bit result — true when bitDepth==10 OR rangeType is on the 10-bit-implies whitelist. The signal video_tags.go uses to emit the "10bit" tag, surfaced here so the UI doesn't re-implement the inference.
+	VideoBitDepth int     // raw int (8 / 10) — UI derives 10bit-tag visibility
 	AudioCodec    string  // audioCodecBucket label
 	AudioChannels string  // audioChannelsBucket label ("7-1" / "5-1" / etc)
 	HasAtmos      bool    // hasAtmos result (incl. filename-token fallback)
@@ -502,14 +379,13 @@ func SummariseMediaInfo(mi MediaInfo, qualityResolution int) MediaSummary {
 		hdr = buckets[0]
 	}
 	return MediaSummary{
-		Resolution:    resolutionBucket(mi.Width, mi.VideoResolution, mi.Height, qualityResolution),
+		Resolution:    resolutionBucket(mi.Height, qualityResolution),
 		VideoCodec:    codecBucket(mi.VideoCodec),
 		HDR:           hdr,
 		VideoBitDepth: mi.VideoBitDepth,
-		HasTenBit:     is10Bit(mi.VideoBitDepth, mi.VideoDynamicRangeType),
 		AudioCodec:    audioCodecBucket(mi.AudioCodec),
 		AudioChannels: audioChannelsBucket(mi.AudioChannels),
-		HasAtmos:      hasAtmos(mi.AudioCodec, mi.AudioAdditionalFeatures, mi.RelativePath, mi.SceneName),
+		HasAtmos:      hasAtmos(mi.AudioAdditionalFeatures, mi.RelativePath, mi.SceneName),
 	}
 }
 

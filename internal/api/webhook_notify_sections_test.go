@@ -63,21 +63,21 @@ func TestAppendAutoTagsSection(t *testing.T) {
 	}{
 		{"all nil → no fields", nil, nil, nil, nil},
 		{"audio only", &AudioDetail{PlainSummary: "TrueHD Atmos 7.1"}, nil, nil, []agents.PayloadField{
-			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
 		}},
 		{"video only", nil, &VideoDetail{PlainSummary: "4K · HDR"}, nil, []agents.PayloadField{
-			{Name: "Video", Value: "4K · HDR", Inline: true},
+			{Name: "Picture", Value: "4K · HDR", Inline: true},
 		}},
 		{"dv only", nil, nil, &DvDetail{PlainSummary: "Profile 7 · Layer 7.1"}, []agents.PayloadField{
 			{Name: "Dolby Vision", Value: "Profile 7 · Layer 7.1", Inline: true},
 		}},
 		{"all three bundled in order", &AudioDetail{PlainSummary: "TrueHD Atmos 7.1"}, &VideoDetail{PlainSummary: "4K · HDR"}, &DvDetail{PlainSummary: "Profile 7"}, []agents.PayloadField{
-			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
-			{Name: "Video", Value: "4K · HDR", Inline: true},
+			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Picture", Value: "4K · HDR", Inline: true},
 			{Name: "Dolby Vision", Value: "Profile 7", Inline: true},
 		}},
 		{"empty PlainSummary skipped per-bucket", &AudioDetail{PlainSummary: ""}, &VideoDetail{PlainSummary: "4K"}, &DvDetail{PlainSummary: "  "}, []agents.PayloadField{
-			{Name: "Video", Value: "4K", Inline: true},
+			{Name: "Picture", Value: "4K", Inline: true},
 		}},
 	}
 	for _, tc := range cases {
@@ -332,8 +332,8 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Tagged in", Value: "Radarr Main · Radarr 4K", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
-			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
-			{Name: "Video", Value: "4K · HDR", Inline: true},
+			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Picture", Value: "4K · HDR", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
@@ -348,7 +348,7 @@ func TestComposeFields(t *testing.T) {
 				Detail: AudioDetail{PlainSummary: "TrueHD Atmos 7.1"}},
 		}
 		want := []agents.PayloadField{
-			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
@@ -478,7 +478,7 @@ func TestComposeFields(t *testing.T) {
 				Detail: VideoDetail{PlainSummary: "1080p"}},
 		}
 		want := []agents.PayloadField{
-			{Name: "Video", Value: "1080p", Inline: true},
+			{Name: "Picture", Value: "1080p", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
@@ -518,8 +518,8 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Tagged in", Value: "Radarr Main · Radarr 4K", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
 			// Auto-tags bundle (Sound · Picture · Dolby Vision)
-			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
-			{Name: "Video", Value: "4K · HDR", Inline: true},
+			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Picture", Value: "4K · HDR", Inline: true},
 			{Name: "Dolby Vision", Value: "Profile 7", Inline: true},
 			// Discover
 			{Name: "New group", Value: "SiC", Inline: true},
@@ -626,7 +626,7 @@ func TestComposeFields(t *testing.T) {
 				Detail: AudioDetail{PlainSummary: "TrueHD 7.1"}},
 		}
 		want := []agents.PayloadField{
-			{Name: "Audio", Value: "TrueHD 7.1", Inline: true},
+			{Name: "Sound", Value: "TrueHD 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
@@ -649,7 +649,7 @@ func TestComposeFields(t *testing.T) {
 		// out → Tag section and Picture line both vanish; only Sound
 		// renders.
 		want := []agents.PayloadField{
-			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, []string{"tagAudio"}, "", "", "")
@@ -667,7 +667,7 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Tagged in", Value: "Radarr Main", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
-			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, []string{"tagReleaseGroups", "tagAudio"}, "", "", "")
@@ -786,37 +786,6 @@ func TestJoinNonEmpty(t *testing.T) {
 			got := joinNonEmpty(tc.items, tc.sep)
 			if got != tc.want {
 				t.Errorf("joinNonEmpty(%v) = %q, want %q", tc.items, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestFormatDvDetailPlainSummary locks the DV-detail value humanizer
-// so notification embeds render "Profile 8 · MEL · CM v4.0" instead
-// of the raw engine vocabulary "dvprofile8 · mel · cm4". The
-// constraint behind the raw vocab is Arr's tag-name regex
-// (`^[a-z0-9-]+$`) which the notification embed isn't bound by.
-func TestFormatDvDetailPlainSummary(t *testing.T) {
-	cases := []struct {
-		name   string
-		labels []string
-		prefix string
-		want   string
-	}{
-		{"empty", nil, "dv-", ""},
-		{"profile 8 alone", []string{"dvprofile8"}, "dv-", "Profile 8"},
-		{"profile 7 + MEL", []string{"dvprofile7", "mel"}, "dv-", "Profile 7 · MEL"},
-		{"profile 7 + FEL + CM v4.0", []string{"dvprofile7", "fel", "cm4"}, "dv-", "Profile 7 · FEL · CM v4.0"},
-		{"profile 8 + CM v2.9", []string{"dvprofile8", "cm2"}, "dv-", "Profile 8 · CM v2.9"},
-		{"with bucket prefix stripped", []string{"dv-dvprofile8", "dv-mel"}, "dv-", "Profile 8 · MEL"},
-		{"unknown token passes through", []string{"dvprofile8", "future-tag"}, "dv-", "Profile 8 · future-tag"},
-		{"empty entries dropped", []string{"dvprofile8", "", "  ", "mel"}, "dv-", "Profile 8 · MEL"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := formatDvDetailPlainSummary(tc.labels, tc.prefix)
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}

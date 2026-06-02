@@ -154,8 +154,6 @@ func (s *Server) runAutoTags(
 		var mi engine.MediaInfo
 		if item.MovieFile.MediaInfo != nil {
 			mi = engine.MediaInfo{
-				Width:                   item.MovieFile.MediaInfo.Width,
-				VideoResolution:         item.MovieFile.MediaInfo.VideoResolution,
 				Height:                  item.MovieFile.MediaInfo.Height,
 				VideoCodec:              item.MovieFile.MediaInfo.VideoCodec,
 				VideoBitDepth:           item.MovieFile.MediaInfo.VideoBitDepth,

@@ -1,6 +1,6 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
-ARG VERSION=0.6.20-dev
+ARG VERSION=0.6.21-dev
 
 RUN apk add --no-cache git
 
@@ -33,7 +33,7 @@ RUN go build -ldflags="-s -w -X main.Version=${VERSION}" -o resolvarr .
 # and explicit --enable-* flags — heavier maintenance burden for
 # marginal benefit. Final size is still well under mainstream Arr
 # helper containers (linuxserver/radarr ~190 MB, hotio/sonarr ~250 MB).
-FROM alpine:3.23 AS dv-tools
+FROM alpine:3.21 AS dv-tools
 
 ARG DOVI_VERSION=2.1.2
 
@@ -61,7 +61,7 @@ RUN set -o pipefail && \
 
 FROM ghcr.io/prophetse7en/container-base:alpine-3.21
 
-ARG VERSION=0.6.20-dev
+ARG VERSION=0.6.21-dev
 LABEL org.opencontainers.image.version=${VERSION} \
       org.opencontainers.image.title="resolvarr" \
       org.opencontainers.image.description="Helper container for Radarr and Sonarr — release-group tagging, recovery, multi-instance sync, and scheduled scans" \

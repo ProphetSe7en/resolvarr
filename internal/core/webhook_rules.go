@@ -646,17 +646,6 @@ type WebhookRule struct {
 	// orphan removal on the secondary.
 	SyncSkipOrphanCleanup bool `json:"syncSkipOrphanCleanup,omitempty"`
 
-	// CleanupUnusedTags mirrors the Schedule/QFA Library-scan toggle of
-	// the same name. On webhook events the per-item add+remove diff
-	// already runs via applyAutoTagDiff regardless of this flag — a
-	// rule-managed tag this item no longer qualifies for gets dropped
-	// on every fire by default. The flag persists here for UI
-	// consistency with the Schedule/QFA editor so the user's choice
-	// shows the same on reopen. The wire field name matches the
-	// schedule path (ScheduledJob.Options.CleanupUnusedTags) so the
-	// rule editor markup can share bindings across both contexts.
-	CleanupUnusedTags bool `json:"cleanupUnusedTags,omitempty"`
-
 	// GrabRename + QbitSe + QbitCategoryFix are the per-function detail
 	// configs. Pointer types so the JSON omits them when the function
 	// isn't enabled.

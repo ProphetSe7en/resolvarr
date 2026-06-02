@@ -12,73 +12,24 @@ import (
 
 func TestResolutionBucket(t *testing.T) {
 	cases := []struct {
-		name              string
-		width             int
-		videoResolution   string
-		mediaInfoHeight   int
+		name             string
+		mediaInfoHeight  int
 		qualityResolution int
-		want              string
+		want             string
 	}{
-		// --- Webhook-payload path (Width int set directly) ---
-		// Connect webhook events ship width + height as separate ints
-		// with NO resolution string. Real-world payload samples cover
-		// the strict-height failure mode: cinematic-cropped releases
-		// where the file height is below the canonical tier (1600 for
-		// a 4K 2.40:1 cut; 800 for a 1080p 2.40:1 cut). The strict
-		// h>=tier bucketing that shipped before this dropped them
-		// one tier too low; width-based bucketing pins them correctly.
-		{"webhook 4K cinematic 2.40:1 (Hokum 2160p)", 3840, "", 1600, 0, "2160p"},
-		{"webhook 4K 1.85:1 (Horizon)", 3840, "", 2076, 0, "2160p"},
-		{"webhook 1080p cinematic 2.40:1 (Hokum h264)", 1920, "", 800, 0, "1080p"},
-		{"webhook 4K 16:9", 3840, "", 2160, 0, "2160p"},
-		{"webhook DCI 4K", 4096, "", 2160, 0, "2160p"},
-		{"webhook QHD 1440p", 2560, "", 1440, 0, "1440p"},
-		{"webhook 720p 2.40:1", 1280, "", 536, 0, "720p"},
-		{"webhook 480p NTSC", 720, "", 480, 0, "480p"},
-
-		// File-truth wins over Radarr's release-name-derived quality
-		// bucket. If quality.resolution says 2160 but the file is
-		// 1920x1080, the tag reflects the file — gives the user a
-		// visible signal that Arr's classification is wrong.
-		{"webhook file-truth vs Arr misclassification", 1920, "", 1080, 2160, "1080p"},
-
-		// --- API-path (VideoResolution "WxH" string, no Width int) ---
-		// GET /api/v3/movie + /api/v3/episodefile return only the
-		// resolution string; we parse out width from it.
-		{"API 4K 16:9", 0, "3840x2160", 0, 0, "2160p"},
-		{"API 4K cinematic 2.40:1", 0, "3840x1600", 0, 0, "2160p"},
-		{"API 1080p 16:9", 0, "1920x1080", 0, 0, "1080p"},
-		{"API 1080p cinematic", 0, "1920x800", 0, 0, "1080p"},
-
-		// --- Height-fallback path (no width, no resolution string) ---
-		// Permissive thresholds: canonical heights are the UPPER bound
-		// of the tier, cinematic crops sit below. "h > lower-canonical"
-		// catches them; the strict "h >= tier" check that shipped
-		// before this lands one tier too low for nearly all theatrical
-		// movies.
-		{"fallback height 2160", 0, "", 2160, 0, "2160p"},
-		{"fallback height 1608 cinematic 4K", 0, "", 1608, 0, "2160p"},
-		{"fallback height 1440 exact QHD", 0, "", 1440, 0, "1440p"},
-		{"fallback height 1080 exact FHD", 0, "", 1080, 0, "1080p"},
-		{"fallback height 802 cinematic 1080p", 0, "", 802, 0, "1080p"},
-		{"fallback height 720 exact", 0, "", 720, 0, "720p"},
-		{"fallback height 480 exact", 0, "", 480, 0, "480p"},
-
-		// --- Last-resort quality.resolution fallback ---
-		// Pre-mediaInfo Radarr imports left everything empty;
-		// quality.resolution was populated regardless.
-		{"quality fallback 2160", 0, "", 0, 2160, "2160p"},
-		{"quality fallback 1080", 0, "", 0, 1080, "1080p"},
-		{"all empty", 0, "", 0, 0, ""},
-
-		// --- Malformed videoResolution falls through to height ---
-		{"malformed videoResolution falls to height", 0, "1080p", 1080, 0, "1080p"},
-		{"empty parts string falls to height", 0, "x", 1080, 0, "1080p"},
-		{"non-numeric width falls to height", 0, "axb", 1080, 0, "1080p"},
+		{"4K mediaInfo", 2160, 0, "2160p"},
+		{"4K with quality fallback", 2160, 2160, "2160p"},
+		{"1440p mediaInfo wins over 1080p quality", 1440, 1080, "1440p"},
+		{"1080p mediaInfo", 1080, 0, "1080p"},
+		{"720p mediaInfo", 720, 0, "720p"},
+		{"480p mediaInfo", 480, 0, "480p"},
+		{"sd from low height", 240, 0, "sd"},
+		{"missing mediaInfo, quality 1080", 0, 1080, "1080p"},
+		{"missing mediaInfo, quality 0", 0, 0, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolutionBucket(tc.width, tc.videoResolution, tc.mediaInfoHeight, tc.qualityResolution)
+			got := resolutionBucket(tc.mediaInfoHeight, tc.qualityResolution)
 			if got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
@@ -163,99 +114,44 @@ func TestAudioChannelsBucket(t *testing.T) {
 func TestHasAtmos(t *testing.T) {
 	cases := []struct {
 		name         string
-		audioCodec   string
 		features     string
 		relativePath string
 		sceneName    string
 		want         bool
 	}{
-		// AudioCodec match — webhook-payload path. Real captures:
-		// Horizon (DD+ Atmos) and the TrueHD Atmos 7.1 4K samples.
-		{"audiocodec_eac3_atmos", "EAC3 Atmos", "", "", "", true},
-		{"audiocodec_truehd_atmos", "TrueHD Atmos", "", "", "", true},
-		{"audiocodec_lower_atmos", "eac3 atmos", "", "", "", true},
+		// Authoritative source: audioAdditionalFeatures match wins.
+		{"feature_match_capital", "Atmos", "", "", true},
+		{"feature_match_lower", "atmos", "", "", true},
+		{"feature_match_compound", "Dolby Atmos / DD+", "", "", true},
 
-		// AudioAdditionalFeatures match — API-path. Modern Radarr
-		// populates this when MediaInfo detected Atmos at import time.
-		{"feature_match_capital", "", "Atmos", "", "", true},
-		{"feature_match_lower", "", "atmos", "", "", true},
-		{"feature_match_compound", "", "Dolby Atmos / DD+", "", "", true},
-
-		// Filename fallback when both codec + features are blank.
+		// Filename fallback when features blank.
 		{"filename_token_uhd_release",
-			"", "", "Movie.2024.UHD.BluRay.2160p.HDR10.TrueHD.Atmos.7.1.x265-FLUX.mkv", "",
+			"", "Movie.2024.UHD.BluRay.2160p.HDR10.TrueHD.Atmos.7.1.x265-FLUX.mkv", "",
 			true},
 		{"scenename_token",
-			"", "", "", "Movie.2024.UHD.BluRay.TrueHD.Atmos.7.1.x265-FLUX",
+			"", "", "Movie.2024.UHD.BluRay.TrueHD.Atmos.7.1.x265-FLUX",
 			true},
 		{"filename_lowercase",
-			"", "", "movie.2024.webdl.atmos.5.1-ntb.mkv", "",
+			"", "movie.2024.webdl.atmos.5.1-ntb.mkv", "",
 			true},
 
 		// Negative paths.
-		{"empty_all", "", "", "", "", false},
-		{"audiocodec_negative", "EAC3", "", "", "", false},
-		{"features_negative", "", "DTS:X", "", "", false},
+		{"empty_all", "", "", "", false},
+		{"features_negative", "DTS:X", "", "", false},
 		{"no_atmos_token_in_filename",
-			"", "", "Movie.2024.WEB-DL.DDP.5.1.x264-NTb.mkv", "Movie.2024.WEB-DL.DDP.5.1-NTb",
+			"", "Movie.2024.WEB-DL.DDP.5.1.x264-NTb.mkv", "Movie.2024.WEB-DL.DDP.5.1-NTb",
 			false},
 		// Substring guard — "atmospheric" in a movie title shouldn't trigger.
 		{"substring_false_positive_guard",
-			"", "", "Atmospheric.Pressure.2024.WEB-DL.DDP.5.1-NTb.mkv", "",
+			"", "Atmospheric.Pressure.2024.WEB-DL.DDP.5.1-NTb.mkv", "",
 			false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := hasAtmos(tc.audioCodec, tc.features, tc.relativePath, tc.sceneName)
+			got := hasAtmos(tc.features, tc.relativePath, tc.sceneName)
 			if got != tc.want {
-				t.Errorf("hasAtmos(%q, %q, %q, %q) = %v, want %v",
-					tc.audioCodec, tc.features, tc.relativePath, tc.sceneName, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestIs10Bit locks the bit-depth inference: when VideoBitDepth is
-// populated (API path) use it directly; when absent (webhook path)
-// derive from VideoDynamicRangeType. HDR variants are all 10-bit or
-// higher by spec — 8-bit HDR doesn't ship in consumer media.
-func TestIs10Bit(t *testing.T) {
-	cases := []struct {
-		name          string
-		videoBitDepth int
-		rangeType     string
-		want          bool
-	}{
-		// API path — bit-depth set directly.
-		{"explicit 10-bit", 10, "", true},
-		{"explicit 8-bit", 8, "", false},
-		{"explicit 10-bit with HDR rangeType", 10, "HDR10", true},
-
-		// Webhook path — bit-depth absent, infer from rangeType.
-		// Real webhook captures: Horizon (DV HDR10Plus), Hokum (HDR10Plus).
-		{"webhook HDR10", 0, "HDR10", true},
-		{"webhook HDR10Plus", 0, "HDR10Plus", true},
-		{"webhook DV HDR10", 0, "DV HDR10", true},
-		{"webhook DV HDR10Plus", 0, "DV HDR10Plus", true},
-		{"webhook plain DV", 0, "DV", true},
-		{"webhook HLG", 0, "HLG", true},
-		{"webhook PQ", 0, "PQ", true},
-
-		// Webhook path with no HDR — SDR file, bit-depth missing.
-		// We can't infer 10-bit reliably here; tag is intentionally
-		// absent (better to miss a niche SDR 10-bit encode than to
-		// false-positive an 8-bit SDR file).
-		{"webhook SDR no rangeType", 0, "", false},
-		{"webhook explicit SDR rangeType", 0, "SDR", false},
-		{"webhook SDR lowercase", 0, "sdr", false},
-		{"webhook SDR whitespace", 0, "  ", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := is10Bit(tc.videoBitDepth, tc.rangeType)
-			if got != tc.want {
-				t.Errorf("is10Bit(%d, %q) = %v, want %v",
-					tc.videoBitDepth, tc.rangeType, got, tc.want)
+				t.Errorf("hasAtmos(%q, %q, %q) = %v, want %v",
+					tc.features, tc.relativePath, tc.sceneName, got, tc.want)
 			}
 		})
 	}
@@ -527,10 +423,9 @@ func TestAggregateVideoForSeries_PerBucketStrategy(t *testing.T) {
 	got := AggregateVideoForSeries(eps, cfg)
 	sort.Strings(got)
 	// Resolution all-occurring: 1080p + 2160p
-	// Codec all-occurring: h264 + h265, plus 10bit on ep1 (HDR10 implies
-	//   10-bit by spec; is10Bit infers it when VideoBitDepth is absent).
+	// Codec all-occurring: h264 + h265
 	// HDR strict: hdr10 in ep1, sdr in ep2 → nothing survives
-	want := []string{"1080p", "2160p", "10bit", "h264", "h265"}
+	want := []string{"1080p", "2160p", "h264", "h265"}
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
