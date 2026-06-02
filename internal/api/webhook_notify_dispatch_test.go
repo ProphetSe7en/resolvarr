@@ -497,7 +497,7 @@ func TestFireWebhookNotificationsEndToEnd(t *testing.T) {
 	// Fields (post-2026-05-24 layout): Tagged in + Quality tag + Sound
 	// from the detail sections, then Rule + Event from the universal
 	// suffix. NO "New group" since Discover was filtered.
-	wantFields := []string{"Tagged in", "Quality tag", "Sound", "Rule", "Event"}
+	wantFields := []string{"Tagged in", "Quality tag", "Audio", "Rule", "Event"}
 	if len(e.Fields) != len(wantFields) {
 		t.Fatalf("field count = %d (%+v), want %d (%v)", len(e.Fields), e.Fields, len(wantFields), wantFields)
 	}

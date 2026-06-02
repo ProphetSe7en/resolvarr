@@ -2,6 +2,13 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.18-dev: Cleaner notification labels (2026-06-02)
+
+### Changed
+
+- **Notification field names match standard A/V wording.** The Discord, Gotify, NTFY, Pushover, and Apprise embeds used to label the two main rows "Sound" and "Picture"; they now read "Audio" and "Video".
+- **Dolby Vision values now read like English.** The Dolby Vision row used to show the raw tag names (`dvprofile8 · mel · cm4`); it now shows `Profile 8 · MEL · CM v4.0`. The actual tags applied on Radarr/Sonarr are unchanged.
+
 ## v0.6.17-dev: Webhook tagging fixes + docs refresh (2026-06-02)
 
 ### Fixed
