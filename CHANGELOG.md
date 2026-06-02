@@ -2,11 +2,15 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
-## v0.6.19-dev: Hide a webhook-rule toggle that never saved (2026-06-02)
+## v0.6.20-dev: Webhook-rule cleanup-toggle now persists on save (2026-06-02)
 
 ### Fixed
 
-- **The "Delete release-group tags that no longer match any movie" toggle no longer appears on webhook rules.** It used to show in the editor but had no effect on save. The cleanup pass walks your whole library for tags that are no longer used, which only makes sense for a Library scan, Schedule, or Quick fix-all run, not a per-event webhook fire. The toggle still works where it belongs (Library scan, Schedule, Quick fix-all editor).
+- **The "Delete release-group tags that no longer match any movie" toggle on a webhook rule now persists.** Checking it, saving, and reopening the rule used to show the toggle back at its default — the setting was silently dropped on save because the backend webhook-rule schema had no field for it. The field is now persisted end-to-end. (The actual per-item cleanup happens on every webhook fire anyway via the engine's add+remove tag diff; the toggle persistence just makes the rule editor consistent with the Schedule / Quick fix-all editor.)
+
+### Reverted
+
+- v0.6.19-dev's hide-the-toggle approach was the wrong fix. The toggle is back on webhook rules and saves properly now.
 
 ## v0.6.18-dev: Cleaner notification labels (2026-06-02)
 

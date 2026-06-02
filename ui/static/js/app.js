@@ -12733,6 +12733,7 @@ function app() {
       if (typeof copy.filterOnlyTag === 'string') copy.options.filterOnlyTag = copy.filterOnlyTag || copy.options.filterOnlyTag;
       if (typeof copy.syncToInstanceId === 'string') copy.options.syncToInstanceId = copy.syncToInstanceId;
       if (typeof copy.discoverAutoEnable === 'boolean') copy.options.autoActivateDiscovered = copy.discoverAutoEnable;
+      if (typeof copy.cleanupUnusedTags === 'boolean') copy.options.cleanupUnusedTags = copy.cleanupUnusedTags;
       // discoverWriteBack is the gate the radio-button :checked
       // expressions look at — both options ("leave disabled" and
       // "add and enable") only render as checked when it's true.
@@ -13756,6 +13757,15 @@ function app() {
       // when the rule actually runs the Discover phase.
       if (o.fnDiscover) {
         body.discoverAutoEnable = !!o.autoActivateDiscovered;
+      }
+      // Cleanup-unused-tags toggle. Only relevant when the rule runs the
+      // Tag-RG phase + isn't in filter-only mode (same UI gate as the
+      // schedule/QFA editor at index.html ~line 7790). On webhook events
+      // the per-item add+remove diff happens via applyAutoTagDiff
+      // regardless of this flag; the flag persists here so the rule
+      // editor shows the user's choice consistently on reopen.
+      if (o.fnTagReleaseGroups && (o.tagSource || 'active') !== 'filter-only') {
+        body.cleanupUnusedTags = !!o.cleanupUnusedTags;
       }
 
       // Sync target — only meaningful when fnSyncToSecondary is on.

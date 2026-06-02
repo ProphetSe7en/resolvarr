@@ -7653,12 +7653,7 @@
                 </ul>
               </div>
             </template>
-            <!-- Cleanup-tail is inherently a batch operation (walks the
-                 whole library for orphaned managed tags). Doesn't map onto
-                 per-event webhook firing where we only see one item, so
-                 the help + toggle + Review-summary are all gated to non-
-                 webhook contexts (Schedule + QFA). -->
-            <template x-if="ruleAffectsTag() && !ruleEditorIsWebhook()">
+            <template x-if="ruleAffectsTag()">
               <div class="help-section">
                 <h4>Delete release-group tags that no longer match any movie</h4>
                 <p>Optional cleanup pass at the tail of a Tag run. Walks the managed tag list and drops any release-group tag that's no longer on a single movie (typical case: you removed a group from this rule, or a group got renamed). <strong>Off by default — destructive</strong>; only managed tags (those tied to your Release Groups list) are touched. Manual / Custom-Format / Quality-Profile tags are never affected.</p>
@@ -7791,13 +7786,8 @@
                a tag is "unused" when no movie in the library matches
                any of the rule's release groups under that label.
                No-op for filter-only (single rule, single tag, no
-               orphan candidates) — toggle hides in that mode.
-               Webhook-gated too: cleanup-tail is a library-walk that
-               doesn't map onto per-event firing (one item per fire,
-               no library-wide orphan set to scan against), and the
-               backend webhook-rule schema has no CleanupUnusedTags
-               field. Save would silently drop the toggle. -->
-          <template x-if="ruleAffectsTag() && editingRule.options.tagSource !== 'filter-only' && !ruleEditorIsWebhook()">
+               orphan candidates) — toggle hides in that mode. -->
+          <template x-if="ruleAffectsTag() && editingRule.options.tagSource !== 'filter-only'">
             <div style="margin-bottom:14px;padding:14px 16px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
               <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-primary);line-height:1.45">
                 <input type="checkbox" x-model="editingRule.options.cleanupUnusedTags" style="accent-color:var(--accent-blue);margin-top:3px">
@@ -9562,13 +9552,11 @@
                   <strong style="color:var(--text-body)">Filters active:</strong>
                   <span x-text="reviewActiveFilters().length === 0 ? '(none — every matched release group passes)' : reviewActiveFilters().join(', ')"></span>
                 </div>
-                <template x-if="!ruleEditorIsWebhook()">
-                  <div>
-                    <strong style="color:var(--text-body)">Cleanup unused tags after Apply:</strong>
-                    <span :style="editingRule.options.cleanupUnusedTags ? 'color:var(--accent-red);font-weight:500' : ''"
-                          x-text="editingRule.options.cleanupUnusedTags ? 'yes — destructive · managed tags with 0 movies get deleted from Radarr' : 'no'"></span>
-                  </div>
-                </template>
+                <div>
+                  <strong style="color:var(--text-body)">Cleanup unused tags after Apply:</strong>
+                  <span :style="editingRule.options.cleanupUnusedTags ? 'color:var(--accent-red);font-weight:500' : ''"
+                        x-text="editingRule.options.cleanupUnusedTags ? 'yes — destructive · managed tags with 0 movies get deleted from Radarr' : 'no'"></span>
+                </div>
                 <template x-if="editingRule.options.syncToSecondary && reviewSecondaryInstance()">
                   <div>
                     <strong style="color:var(--text-body)">Secondary sync:</strong>

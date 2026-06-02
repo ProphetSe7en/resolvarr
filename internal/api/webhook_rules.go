@@ -72,6 +72,7 @@ type webhookRuleRequest struct {
 	ReleaseGroupIDs       []string                  `json:"releaseGroupIds,omitempty"`
 	SyncToInstanceID      string                    `json:"syncToInstanceId,omitempty"`
 	SyncSkipOrphanCleanup bool                      `json:"syncSkipOrphanCleanup,omitempty"`
+	CleanupUnusedTags     bool                      `json:"cleanupUnusedTags,omitempty"`
 	DiscoverAutoEnable    bool                      `json:"discoverAutoEnable,omitempty"`
 	// TagSource + FilterOnlyTag mirror the same fields on
 	// ScheduledJob.options + scanRunRequest. Webhook frontend sends
@@ -503,6 +504,7 @@ func (req *webhookRuleRequest) applyTo(rule *core.WebhookRule, isUpdate bool) {
 	rule.Functions = append([]core.WebhookFunction(nil), req.Functions...)
 	rule.SyncToInstanceID = strings.TrimSpace(req.SyncToInstanceID)
 	rule.SyncSkipOrphanCleanup = req.SyncSkipOrphanCleanup
+	rule.CleanupUnusedTags = req.CleanupUnusedTags
 	rule.DiscoverAutoEnable = req.DiscoverAutoEnable
 	rule.TagSource = strings.TrimSpace(req.TagSource)
 	rule.FilterOnlyTag = strings.TrimSpace(req.FilterOnlyTag)
