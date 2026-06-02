@@ -123,6 +123,96 @@ func TestWebhookRuleNotifyJSONOmitemptyContract(t *testing.T) {
 	}
 }
 
+// TestWebhookRuleTagSourceAccepts pins the validator's allowed-values
+// set for TagSource. The schedule path at schedules.go accepts
+// "" / "active" / "discover" / "filter-only"; the webhook path used
+// to drop "discover" — only "" / "active" / "filter-only" were
+// accepted, so a wizard payload with tagSource="discover" got
+// rejected with HTTP 400 and the editor silently reverted the radio
+// to "Use active groups" on next open of the rule.
+func TestWebhookRuleTagSourceAccepts(t *testing.T) {
+	dir := t.TempDir()
+	store := core.NewConfigStore(dir)
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := store.Update(func(c *core.Config) {
+		c.Instances = []core.Instance{{ID: "arr1", Name: "Radarr", Type: "radarr", URL: "http://x", APIKey: "k"}}
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	cfg := store.Get()
+
+	mk := func(tagSource string) *webhookRuleRequest {
+		// Tag-RG + Discover both enabled — the wizard state where the
+		// pre-fix asymmetry showed: picking "Use Discover" as the tag-
+		// source mode on a rule that runs both phases.
+		return &webhookRuleRequest{
+			Name: "test", Enabled: true, InstanceID: "arr1", AppType: "radarr",
+			Functions: []core.WebhookFunction{
+				core.WebhookFnTagReleaseGroups,
+				core.WebhookFnDiscover,
+			},
+			TagSource: tagSource,
+		}
+	}
+
+	t.Run("empty validates (default)", func(t *testing.T) {
+		if err := mk("").validate(cfg); err != nil {
+			t.Errorf(`tagSource="" rejected: %v`, err)
+		}
+	})
+	t.Run("active validates", func(t *testing.T) {
+		if err := mk("active").validate(cfg); err != nil {
+			t.Errorf(`tagSource="active" rejected: %v`, err)
+		}
+	})
+	t.Run("discover validates", func(t *testing.T) {
+		// Regression: pre-fix this returned 400 "tagSource must be
+		// 'active' or 'filter-only'".
+		if err := mk("discover").validate(cfg); err != nil {
+			t.Errorf(`tagSource="discover" rejected: %v`, err)
+		}
+	})
+	t.Run("filter-only validates with filterOnlyTag set", func(t *testing.T) {
+		req := mk("filter-only")
+		req.FilterOnlyTag = "lossless-web"
+		if err := req.validate(cfg); err != nil {
+			t.Errorf(`tagSource="filter-only" rejected: %v`, err)
+		}
+	})
+	t.Run("unknown value rejected", func(t *testing.T) {
+		if err := mk("bogus").validate(cfg); err == nil {
+			t.Errorf(`tagSource="bogus" accepted, want rejection`)
+		}
+	})
+}
+
+// TestWebhookRuleApplyToTagSourceDiscover locks the field's persistence
+// through request -> rule transformation. Save flow at
+// saveWebhookRuleEditor (ui/static/js/app.js) emits body.tagSource for
+// every non-empty value; this test pins the backend keeps "discover"
+// on the persisted rule, so the next GET returns it and the load
+// flow hoists it back into the wizard radio.
+func TestWebhookRuleApplyToTagSourceDiscover(t *testing.T) {
+	req := &webhookRuleRequest{
+		Name:       "x",
+		Enabled:    true,
+		InstanceID: "arr1",
+		AppType:    "radarr",
+		Functions: []core.WebhookFunction{
+			core.WebhookFnTagReleaseGroups,
+			core.WebhookFnDiscover,
+		},
+		TagSource: "discover",
+	}
+	rule := core.WebhookRule{}
+	req.applyTo(&rule, false)
+	if rule.TagSource != "discover" {
+		t.Errorf(`TagSource = %q after applyTo, want "discover"`, rule.TagSource)
+	}
+}
+
 // TestWebhookRule_PerRuleWebhookCreds_MaskedInListAndGet verifies that
 // the broad rule-listing + single-rule-fetch endpoints mask the
 // per-rule Webhook.Token + Webhook.Secret bearer credentials. The

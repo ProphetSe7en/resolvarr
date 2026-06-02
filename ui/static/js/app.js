@@ -11699,7 +11699,11 @@ function app() {
       const parts = [];
       if (ev.resolution) parts.push(ev.resolution);
       if (ev.videoCodec) parts.push(ev.videoCodec);
-      if (ev.videoBitDepth === 10) parts.push('10bit');
+      // hasTenBit mirrors the engine's is10Bit inference: bitDepth==10 OR
+      // HDR rangeType implies 10-bit. Webhook payloads omit videoBitDepth,
+      // so reading the raw int would miss the 10bit tag on every HDR
+      // webhook fire; the engine-computed flag handles both code paths.
+      if (ev.hasTenBit) parts.push('10bit');
       if (ev.hdr && ev.hdr !== 'sdr') parts.push(ev.hdr);
       if (ev.audioCodec) parts.push(ev.audioCodec);
       if (ev.audioChannels) parts.push(ev.audioChannels);
@@ -13732,9 +13736,26 @@ function app() {
       // filter-only; filterOnlyTag is required when filter-only +
       // Tag-RG; tag must match Radarr's `^[a-z0-9-]+$` regex; tag
       // must not collide with an existing per-group rule's Tag.
-      if ((o.tagSource || '').trim() === 'filter-only' && o.fnTagReleaseGroups) {
-        body.tagSource = 'filter-only';
-        body.filterOnlyTag = (o.filterOnlyTag || 'lossless-web').trim();
+      // Emit tagSource whenever it's set — mirrors the schedule path
+      // (saveRuleEditor) which sends 'active' / 'discover' / 'filter-only'
+      // alike. Previously this branch only emitted 'filter-only', silently
+      // dropping 'discover' so the user's "Use Discover" pick reverted to
+      // "Use active groups" on next open. Backend validator at
+      // webhook_rules.go accepts all three values + empty.
+      const trimmedTagSource = (o.tagSource || '').trim();
+      if (trimmedTagSource) {
+        body.tagSource = trimmedTagSource;
+        if (trimmedTagSource === 'filter-only' && o.fnTagReleaseGroups) {
+          body.filterOnlyTag = (o.filterOnlyTag || 'lossless-web').trim();
+        }
+      }
+      // Discover-add behaviour. UI binds to autoActivateDiscovered; wire
+      // shape uses discoverAutoEnable (load-side hoist at
+      // openEditWebhookRuleModal maps backend -> UI on the way in, so the
+      // inverse mapping has to happen here on the way out). Only relevant
+      // when the rule actually runs the Discover phase.
+      if (o.fnDiscover) {
+        body.discoverAutoEnable = !!o.autoActivateDiscovered;
       }
 
       // Sync target — only meaningful when fnSyncToSecondary is on.

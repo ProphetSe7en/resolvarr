@@ -68,7 +68,10 @@ func TestVideoTagsForFile_HDR10Plus(t *testing.T) {
 		VideoDynamicRangeType: "HDR10Plus",
 	}
 	got := VideoTagsForFile(mi, 0, defaultVideoCfg())
-	want := []string{"2160p", "h265", "hdr10plus"}
+	// 10bit is inferred from HDR10Plus rangeType when VideoBitDepth is
+	// absent (webhook-payload scenario). All HDR variants are 10-bit by
+	// spec — see is10Bit + TestIs10Bit for the inference details.
+	want := []string{"2160p", "h265", "10bit", "hdr10plus"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}

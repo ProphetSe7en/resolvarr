@@ -293,10 +293,10 @@ func (req *webhookRuleRequest) validate(cfg core.Config) *apiError {
 	tagSource := strings.TrimSpace(req.TagSource)
 	filterOnlyTag := strings.TrimSpace(req.FilterOnlyTag)
 	switch tagSource {
-	case "", "active", "filter-only":
+	case "", "active", "discover", "filter-only":
 		// ok
 	default:
-		return newAPIError(400, "tagSource must be 'active' or 'filter-only' (or empty for active)")
+		return newAPIError(400, "tagSource must be 'active', 'discover', or 'filter-only' (or empty for active)")
 	}
 	// Filter-only is a Radarr-only feature today. Library scan
 	// (runTagFilterOnly) lives in the Radarr scan path; Sonarr's

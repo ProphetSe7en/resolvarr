@@ -2,6 +2,21 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.17-dev: Webhook tagging fixes + docs refresh (2026-06-02)
+
+### Fixed
+
+- **"Use Discover" on a webhook rule now sticks when you save it.** Before, picking *Use Discover* and saving would silently revert to *Use active groups* on next open. The *Add to config and enable* toggle next to it also failed to save. Both stick now.
+- **Resolution tag on webhook-driven Tag Video.** Movies with letterbox / cinematic crops (most theatrical 2.40:1 and 2.35:1 releases) used to land one tier too low. A 1920×800 1080p film tagged as 720p; a 3840×1600 4K release as 1440p. Tags now follow the file's actual width, which crop doesn't change.
+- **10bit tag on webhook-driven Tag Video.** HDR files used to miss the 10bit tag on webhook events. The tag now fires for any HDR variant (HDR10, HDR10+, DV, HLG, PQ), all 10-bit by spec.
+- **Atmos tag on webhook-driven Tag Audio.** Files whose name didn't contain "atmos" used to miss the Atmos tag on webhook events. The check now also reads the audio codec from the payload, where Atmos shows up as "EAC3 Atmos" or "TrueHD Atmos".
+
+### Changed
+
+- README and how-to.md refreshed. how-to.md was substantially out of date and now matches the current state.
+- `ENABLE_DV_TOOLS` is no longer needed and the README no longer mentions it. dovi_tool and ffmpeg are baked into the image, so DV tagging works out of the box. If you previously set this env var, you can remove it from your container template; resolvarr ignores it now.
+- Small fix to the hint under the Library scan instance picker.
+
 ## v0.6.16-dev — TBA refresh, Activity search, Plex runs in History (2026-05-29)
 
 **New: TBA refresh (Sonarr).** When Sonarr imports an episode right at release, the title is often still "TBA" and gets baked into the filename. Later, once the real title is known, Sonarr updates the episode but leaves the file named "TBA" on disk. The new **TBA refresh** tool (Library scan, Sonarr only) finds those files and triggers Sonarr to rename them to the real title.
