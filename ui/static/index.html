@@ -29,6 +29,15 @@
 <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body x-data="app()" x-init="init()">
+  <!-- Dev-only section-id badge — shows the stable section-id of the
+       active page/sub-tab (docs/resolvarr/ui-section-map.md) so a bug
+       report names the same section we read in the code. Fixed corner,
+       non-interactive, dev builds only. -->
+  <template x-if="isDevBuild">
+    <div x-text="currentSectionId()"
+         title="Section id (dev build) — see docs/resolvarr/ui-section-map.md"
+         style="position:fixed;bottom:8px;left:8px;z-index:9999;font-family:monospace;font-size:10px;font-weight:700;letter-spacing:0.5px;padding:2px 7px;border-radius:6px;background:var(--accent-orange-bg, #3a2a10);color:var(--accent-orange, #e0a030);border:1px solid var(--accent-orange, #e0a030);pointer-events:none;opacity:0.85"></div>
+  </template>
   <div class="topnav">
     <div class="logo">Resolvarr</div>
     <div class="version" x-text="'v' + version"></div>
@@ -1629,9 +1638,9 @@
                         </span>
                         <span x-show="discoveredSelectedCount() > 0">
                           <strong class="v-num-add" x-text="discoveredSelectedCount()"></strong>
-                          of <span x-text="scanResults.discover.discovered.length"></span> selected — will create
-                          <span x-text="discoveredSelectedCount() === 1 ? 'one entry' : discoveredSelectedCount() + ' entries'"></span>
-                          on <strong x-text="instances.find(i => i.id === scanResults.discover.instance.id)?.name"></strong>.
+                          of <span x-text="scanResults.discover.discovered.length"></span> selected. Adds
+                          <span x-text="discoveredSelectedCount() === 1 ? 'one release group' : discoveredSelectedCount() + ' release groups'"></span>
+                          to your list (not to Radarr). Resolvarr tags matching movies from this list.
                         </span>
                       </div>
                       <button class="btn btn-primary"
@@ -1831,7 +1840,7 @@
                       :class="qfaDetailAutoActive().mode === 'apply' ? 'chip-mode-apply' : 'chip-mode-preview'"
                       x-text="qfaDetailAutoActive().mode === 'apply' ? 'Applied' : 'Preview'"></span>
                 <strong x-text="qfaDetailAutoActive().instance && qfaDetailAutoActive().instance.name" style="color:var(--text-primary);flex-shrink:0;min-width:110px"></strong>
-                <span><span style="color:var(--text-secondary)">Movies scanned</span> <strong x-text="qfaDetailAutoActive().totals.items || 0"></strong></span>
+                <span><span style="color:var(--text-secondary)" x-text="qfaDetailAutoNounPluralCap() + ' scanned'"></span> <strong x-text="qfaDetailAutoActive().totals.items || 0"></strong></span>
                 <template x-if="(qfaDetailAutoActive().totals.missingMediaInfo || 0) > 0">
                   <span style="color:var(--text-muted-secondary)">·</span>
                   <span style="color:var(--accent-orange)"><span style="color:var(--text-secondary)">Missing mediaInfo</span> <strong x-text="qfaDetailAutoActive().totals.missingMediaInfo"></strong></span>
@@ -1845,6 +1854,20 @@
                 <span style="color:var(--text-muted-secondary)">·</span>
                 <span><span style="color:var(--text-secondary)" x-text="qfaDetailAutoActive().mode === 'apply' ? 'Kept' : 'To keep'"></span> <strong x-text="qfaDetailAutoActive().totals.toKeep || 0"></strong></span>
               </div>
+              <!-- Dev-only Debug strip — shows which config actually ran
+                   (overlay vs global) + the resolved per-bucket selectMode
+                   + allowedValues, so a preview-vs-apply config mismatch is
+                   visible rather than hunted. Gated on isDevBuild (mirrors
+                   the backend s.isDev() gate). See docs/resolvarr/ui-section-map.md. -->
+              <template x-if="isDevBuild && qfaDetailAutoActive().debug">
+                <div style="margin-top:6px;padding:6px 10px;background:var(--bg-muted);border:1px dashed var(--border-subtle);border-radius:6px;font-size:11px;font-family:monospace;color:var(--text-secondary);display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+                  <span style="font-weight:700;color:var(--accent-orange)">DEBUG</span>
+                  <span>config: <strong x-text="qfaDetailAutoActive().debug.configSource" :style="{ color: qfaDetailAutoActive().debug.configSource === 'global' ? 'var(--accent-red)' : 'var(--accent-green)' }"></strong></span>
+                  <template x-for="b in (qfaDetailAutoActive().debug.buckets || [])" :key="b.name">
+                    <span x-text="b.name + ': ' + (b.enabled ? '' : 'off ') + (b.selectMode || 'all') + ' [' + ((b.allowedValues || []).join(',') || '*') + ']' + (b.aggregation ? ' agg=' + b.aggregation : '')"></span>
+                  </template>
+                </div>
+              </template>
             </div>
 
             <!-- Promote-to-apply strip (top mirror) — preview-only.
@@ -6485,7 +6508,20 @@
 
               <div class="modal-actions">
                 <div style="flex:1"></div>
-                <button class="btn btn-primary" @click="closePlexLabelRunModal()">Done</button>
+                <!-- Apply-now: only on a preview result that carries the
+                     config to re-fire (schedule / QFA drill-ins). Parity with
+                     the audio/video Apply-now so the user need not re-run the
+                     whole rule in apply mode. -->
+                <template x-if="plexLabelRunModal.result.runMode === 'preview' && plexLabelRunModal.applyConfig">
+                  <button class="btn btn-primary"
+                          @click="applyPlexSyncFromPreview()"
+                          :disabled="plexLabelRunModal.applying"
+                          style="margin-right:8px">
+                    <span x-show="!plexLabelRunModal.applying">Apply now</span>
+                    <span x-show="plexLabelRunModal.applying">Applying…</span>
+                  </button>
+                </template>
+                <button class="btn" @click="closePlexLabelRunModal()">Done</button>
               </div>
             </div>
           </template>
@@ -7653,7 +7689,7 @@
                 </ul>
               </div>
             </template>
-            <template x-if="ruleAffectsTag()">
+            <template x-if="ruleAffectsTag() && !ruleEditorIsWebhook()">
               <div class="help-section">
                 <h4>Delete release-group tags that no longer match any movie</h4>
                 <p>Optional cleanup pass at the tail of a Tag run. Walks the managed tag list and drops any release-group tag that's no longer on a single movie (typical case: you removed a group from this rule, or a group got renamed). <strong>Off by default — destructive</strong>; only managed tags (those tied to your Release Groups list) are touched. Manual / Custom-Format / Quality-Profile tags are never affected.</p>
@@ -7786,8 +7822,15 @@
                a tag is "unused" when no movie in the library matches
                any of the rule's release groups under that label.
                No-op for filter-only (single rule, single tag, no
-               orphan candidates) — toggle hides in that mode. -->
-          <template x-if="ruleAffectsTag() && editingRule.options.tagSource !== 'filter-only'">
+               orphan candidates) — toggle hides in that mode.
+               Hidden on WEBHOOK rules: this is a library-wide action
+               (it DELETEs the tag label from the Arr — DELETE /api/v3/tag/{id}
+               via DeleteTag — when 0 movies use it library-wide). A webhook
+               fires per single Connect event and can't safely decide a
+               label is unused across the whole library. Per-item tag
+               removal on requalification (+ secondary mirror) is the
+               separate Tag-RG / Sync functions, which work per-event. -->
+          <template x-if="ruleAffectsTag() && editingRule.options.tagSource !== 'filter-only' && !ruleEditorIsWebhook()">
             <div style="margin-bottom:14px;padding:14px 16px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px">
               <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-primary);line-height:1.45">
                 <input type="checkbox" x-model="editingRule.options.cleanupUnusedTags" style="accent-color:var(--accent-blue);margin-top:3px">
@@ -9423,11 +9466,11 @@
            Structured into clear sections so a long review still
            reads easily; each section is a card with its own
            header. -->
-      <template x-if="ruleEditor.open && editingRule && ruleEditor.isCreate && ruleEditorCurrentSection() === 'review'">
+      <template x-if="ruleEditor.open && editingRule && ruleEditorCurrentSection() === 'review'">
         <div style="display:flex;flex-direction:column;gap:14px">
 
           <div style="font-size:13px;color:var(--text-secondary);line-height:1.5"
-               x-text="ruleEditor.isQuickFix ? 'Review and run. This is a one-shot dispatch — nothing is saved as a rule.' : (ruleEditorIsWebhook() ? 'Review and create. The rule fires automatically when matching Connect events arrive — see the trigger list below for which events to enable in Sonarr/Radarr.' : 'Review and create. You can edit any of these later from the Scheduled runs list.')"></div>
+               x-text="!ruleEditor.isCreate ? 'A summary of everything configured for this rule. Jump to any tab above to change a setting, then Save changes.' : (ruleEditor.isQuickFix ? 'Review and run. This is a one-shot dispatch — nothing is saved as a rule.' : (ruleEditorIsWebhook() ? 'Review and create. The rule fires automatically when matching Connect events arrive — see the trigger list below for which events to enable in Sonarr/Radarr.' : 'Review and create. You can edit any of these later from the Scheduled runs list.'))"></div>
 
           <!-- Webhook-mode trigger list — surfaces the exact Connect
                events the user needs to toggle ON in Sonarr/Radarr's
@@ -9470,7 +9513,7 @@
                       x-text="reviewRunModeLabel()"></span>
               </div>
               <div x-show="!ruleEditor.isQuickFix"><strong style="color:var(--text-body)">Schedule:</strong> <code style="color:var(--accent-sky);font-family:ui-monospace,monospace" x-text="reviewScheduleLabel()"></code></div>
-              <div x-show="!ruleEditor.isQuickFix"><strong style="color:var(--text-body)">Enabled at create:</strong> <span x-text="editingRule.enabled ? 'yes' : 'no — paused'"></span></div>
+              <div x-show="!ruleEditor.isQuickFix"><strong style="color:var(--text-body)" x-text="ruleEditor.isCreate ? 'Enabled at create:' : 'Enabled:'"></strong> <span x-text="editingRule.enabled ? 'yes' : 'no — paused'"></span></div>
             </div>
           </div>
 
@@ -10743,6 +10786,13 @@
     Resolvarr <span x-text="version || ''"></span> — Built by <a href="https://github.com/ProphetSe7en" target="_blank" rel="noopener" style="color:var(--text-muted-secondary);text-decoration:none">ProphetSe7en</a>
   </div>
 
+<!-- Stage 4 module split: js/modules/*.js define factory functions
+     (appRunModule, ...) composed into the Alpine root inside app().
+     Must load BEFORE app.js so the factories exist when app() runs. -->
+<script src="/js/modules/state.js"></script>
+<script src="/js/modules/config.js"></script>
+<script src="/js/modules/rule-editor-plex.js"></script>
+<script src="/js/modules/run.js"></script>
 <script src="/js/app.js"></script>
 </body>
 </html>

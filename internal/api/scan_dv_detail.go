@@ -573,6 +573,9 @@ func (s *Server) handleScanDvDetail(w http.ResponseWriter, r *http.Request, cfg 
 		writeAPIError(w, apiErr)
 		return
 	}
+	if s.isDev() && resp != nil {
+		resp.Debug = dvScanDebug(cfg, req)
+	}
 	// Persist the full scanResponse for adhoc inspection. See
 	// scan_audit.go for the generic dumpScanJSON helper used by
 	// every scan handler.

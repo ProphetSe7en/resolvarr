@@ -494,10 +494,10 @@ func TestFireWebhookNotificationsEndToEnd(t *testing.T) {
 	if e.Color != embedColorTagged {
 		t.Errorf("color = %#x, want orange %#x", e.Color, embedColorTagged)
 	}
-	// Fields (post-2026-05-24 layout): Tagged in + Quality tag + Sound
+	// Fields (post-2026-05-24 layout): Tagged in + Quality tag + Audio
 	// from the detail sections, then Rule + Event from the universal
 	// suffix. NO "New group" since Discover was filtered.
-	wantFields := []string{"Tagged in", "Quality tag", "Sound", "Rule", "Event"}
+	wantFields := []string{"Tagged in", "Quality tag", "Audio", "Rule", "Event"}
 	if len(e.Fields) != len(wantFields) {
 		t.Fatalf("field count = %d (%+v), want %d (%v)", len(e.Fields), e.Fields, len(wantFields), wantFields)
 	}
@@ -514,7 +514,7 @@ func TestFireWebhookNotificationsEndToEnd(t *testing.T) {
 		t.Errorf("Quality tag = %q, want 'FLUX'", e.Fields[1].Value)
 	}
 	if e.Fields[2].Value != "TrueHD Atmos 7.1" {
-		t.Errorf("Sound = %q, want 'TrueHD Atmos 7.1'", e.Fields[2].Value)
+		t.Errorf("Audio = %q, want 'TrueHD Atmos 7.1'", e.Fields[2].Value)
 	}
 	if e.Fields[3].Value != "Tag 4K imports" {
 		t.Errorf("Rule = %q, want 'Tag 4K imports'", e.Fields[3].Value)

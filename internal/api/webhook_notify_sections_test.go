@@ -63,21 +63,31 @@ func TestAppendAutoTagsSection(t *testing.T) {
 	}{
 		{"all nil → no fields", nil, nil, nil, nil},
 		{"audio only", &AudioDetail{PlainSummary: "TrueHD Atmos 7.1"}, nil, nil, []agents.PayloadField{
-			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
 		}},
 		{"video only", nil, &VideoDetail{PlainSummary: "4K · HDR"}, nil, []agents.PayloadField{
-			{Name: "Picture", Value: "4K · HDR", Inline: true},
+			{Name: "Video", Value: "4K · HDR", Inline: true},
 		}},
-		{"dv only", nil, nil, &DvDetail{PlainSummary: "Profile 7 · Layer 7.1"}, []agents.PayloadField{
-			{Name: "Dolby Vision", Value: "Profile 7 · Layer 7.1", Inline: true},
+		// DV PlainSummary arrives as the engine's raw token vocabulary
+		// (dvprofile8 / mel / cm4) and is humanised for the embed.
+		{"dv raw tokens humanised", nil, nil, &DvDetail{PlainSummary: "dvprofile8 · mel · cm4"}, []agents.PayloadField{
+			{Name: "Dolby Vision", Value: "Profile 8 · MEL · CM v4.0", Inline: true},
 		}},
-		{"all three bundled in order", &AudioDetail{PlainSummary: "TrueHD Atmos 7.1"}, &VideoDetail{PlainSummary: "4K · HDR"}, &DvDetail{PlainSummary: "Profile 7"}, []agents.PayloadField{
-			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
-			{Name: "Picture", Value: "4K · HDR", Inline: true},
-			{Name: "Dolby Vision", Value: "Profile 7", Inline: true},
+		{"dv fel + cm2 humanised", nil, nil, &DvDetail{PlainSummary: "fel · cm2"}, []agents.PayloadField{
+			{Name: "Dolby Vision", Value: "FEL · CM v2.0", Inline: true},
+		}},
+		// A user's custom Labels override (not in the vocab map) passes
+		// through verbatim — we never clobber a deliberate rename.
+		{"dv custom label passes through", nil, nil, &DvDetail{PlainSummary: "p8 · enhanced"}, []agents.PayloadField{
+			{Name: "Dolby Vision", Value: "p8 · enhanced", Inline: true},
+		}},
+		{"all three bundled in order", &AudioDetail{PlainSummary: "TrueHD Atmos 7.1"}, &VideoDetail{PlainSummary: "4K · HDR"}, &DvDetail{PlainSummary: "dvprofile8"}, []agents.PayloadField{
+			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Video", Value: "4K · HDR", Inline: true},
+			{Name: "Dolby Vision", Value: "Profile 8", Inline: true},
 		}},
 		{"empty PlainSummary skipped per-bucket", &AudioDetail{PlainSummary: ""}, &VideoDetail{PlainSummary: "4K"}, &DvDetail{PlainSummary: "  "}, []agents.PayloadField{
-			{Name: "Picture", Value: "4K", Inline: true},
+			{Name: "Video", Value: "4K", Inline: true},
 		}},
 	}
 	for _, tc := range cases {
@@ -332,8 +342,8 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Tagged in", Value: "Radarr Main · Radarr 4K", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
-			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
-			{Name: "Picture", Value: "4K · HDR", Inline: true},
+			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Video", Value: "4K · HDR", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
@@ -348,7 +358,7 @@ func TestComposeFields(t *testing.T) {
 				Detail: AudioDetail{PlainSummary: "TrueHD Atmos 7.1"}},
 		}
 		want := []agents.PayloadField{
-			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
@@ -478,7 +488,7 @@ func TestComposeFields(t *testing.T) {
 				Detail: VideoDetail{PlainSummary: "1080p"}},
 		}
 		want := []agents.PayloadField{
-			{Name: "Picture", Value: "1080p", Inline: true},
+			{Name: "Video", Value: "1080p", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
@@ -517,9 +527,9 @@ func TestComposeFields(t *testing.T) {
 			// Tag section
 			{Name: "Tagged in", Value: "Radarr Main · Radarr 4K", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
-			// Auto-tags bundle (Sound · Picture · Dolby Vision)
-			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
-			{Name: "Picture", Value: "4K · HDR", Inline: true},
+			// Auto-tags bundle (Audio · Video · Dolby Vision)
+			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Video", Value: "4K · HDR", Inline: true},
 			{Name: "Dolby Vision", Value: "Profile 7", Inline: true},
 			// Discover
 			{Name: "New group", Value: "SiC", Inline: true},
@@ -626,7 +636,7 @@ func TestComposeFields(t *testing.T) {
 				Detail: AudioDetail{PlainSummary: "TrueHD 7.1"}},
 		}
 		want := []agents.PayloadField{
-			{Name: "Sound", Value: "TrueHD 7.1", Inline: true},
+			{Name: "Audio", Value: "TrueHD 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
@@ -646,10 +656,10 @@ func TestComposeFields(t *testing.T) {
 				Detail: VideoDetail{PlainSummary: "4K · HDR"}},
 		}
 		// Agent subscribed ONLY to tagAudio. Tag-RG + tagVideo filtered
-		// out → Tag section and Picture line both vanish; only Sound
+		// out → Tag section and Video line both vanish; only Audio
 		// renders.
 		want := []agents.PayloadField{
-			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, []string{"tagAudio"}, "", "", "")
@@ -667,7 +677,7 @@ func TestComposeFields(t *testing.T) {
 		want := []agents.PayloadField{
 			{Name: "Tagged in", Value: "Radarr Main", Inline: false},
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
-			{Name: "Sound", Value: "TrueHD Atmos 7.1", Inline: true},
+			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
 		got := composeFields(core.WebhookEventDownload, results, []string{"tagReleaseGroups", "tagAudio"}, "", "", "")

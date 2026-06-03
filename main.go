@@ -223,6 +223,17 @@ func indexHandler(indexBytes []byte, fileServer http.Handler) http.Handler {
 			_, _ = w.Write(indexBytes)
 			return
 		}
+		// Force revalidation on the mutable text assets (JS / CSS /
+		// partials). Without this the file-server sends no Cache-Control
+		// and browsers heuristically cache app.js, so a new container
+		// build serves fresh code from the embed.FS but the browser keeps
+		// running the stale app.js until a manual hard-refresh. "no-cache"
+		// = revalidate every load (304 when unchanged), so each build is
+		// picked up automatically. Images/fonts/icons stay cacheable.
+		switch filepath.Ext(r.URL.Path) {
+		case ".js", ".css", ".html":
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		fileServer.ServeHTTP(w, r)
 	})
 }

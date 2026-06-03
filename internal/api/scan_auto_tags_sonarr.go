@@ -256,6 +256,8 @@ func (s *Server) runAutoTagsSonarr(
 			var mi engine.MediaInfo
 			if ef.MediaInfo != nil {
 				mi = engine.MediaInfo{
+					Width:                   ef.MediaInfo.Width,
+					VideoResolution:         ef.MediaInfo.VideoResolution,
 					Height:                  ef.MediaInfo.Height,
 					VideoCodec:              ef.MediaInfo.VideoCodec,
 					VideoBitDepth:           ef.MediaInfo.VideoBitDepth,

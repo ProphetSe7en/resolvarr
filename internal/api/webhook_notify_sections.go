@@ -14,7 +14,7 @@
 //     populated Detail has no concrete values to render. No
 //     "did not happen" lines, no "skipped because X" stubs.
 //
-//  2. Plain language, not jargon. Field names ("Sound", "Picture",
+//  2. Plain language, not jargon. Field names ("Audio", "Video",
 //     "Was", "Now", "Client") never use internal terms ("audio bucket",
 //     "WebhookFnTagAudio", "Detail.PlainSummary"). The Adapter
 //     pre-formats values; the builder just places them.
@@ -390,23 +390,25 @@ func appendTagSection(fields []agents.PayloadField, d *TagDetail) []agents.Paylo
 // appendAutoTagsSection renders the bundled Audio + Video + DV
 // detail outcome:
 //
-//	Sound         TrueHD Atmos 7.1
-//	Picture       4K · HDR · Dolby Vision
-//	Dolby Vision  Profile 7 · Layer 7.1
+//	Audio         TrueHD Atmos 7.1
+//	Video         4K · HDR · Dolby Vision
+//	Dolby Vision  Profile 8 · MEL · CM v4.0
 //
 // Each sub-bucket is shown only when its PlainSummary is non-empty
 // (Changed=true alone isn't sufficient — a future adapter could
 // legitimately produce an empty PlainSummary if no user-facing tag
-// landed). Inline so a typical "Sound + Picture" packs side-by-side.
+// landed). Inline so a typical "Audio + Video" packs side-by-side.
 //
-// DV is its own row when present because the Picture line is often
+// DV is its own row when present because the Video line is often
 // already long ("4K · HEVC · HDR10+"). Separating DV detail keeps
-// each line readable.
+// each line readable. The raw DV tag tokens (dvprofile8 / mel / cm4)
+// are run through humaniseDvSummary so the embed reads "Profile 8 ·
+// MEL · CM v4.0" rather than the engine's internal vocabulary.
 func appendAutoTagsSection(fields []agents.PayloadField, a *AudioDetail, v *VideoDetail, dv *DvDetail) []agents.PayloadField {
 	if a != nil {
 		if s := strings.TrimSpace(a.PlainSummary); s != "" {
 			fields = append(fields, agents.PayloadField{
-				Name:   "Sound",
+				Name:   "Audio",
 				Value:  s,
 				Inline: true,
 			})
@@ -415,7 +417,7 @@ func appendAutoTagsSection(fields []agents.PayloadField, a *AudioDetail, v *Vide
 	if v != nil {
 		if s := strings.TrimSpace(v.PlainSummary); s != "" {
 			fields = append(fields, agents.PayloadField{
-				Name:   "Picture",
+				Name:   "Video",
 				Value:  s,
 				Inline: true,
 			})
@@ -425,12 +427,51 @@ func appendAutoTagsSection(fields []agents.PayloadField, a *AudioDetail, v *Vide
 		if s := strings.TrimSpace(dv.PlainSummary); s != "" {
 			fields = append(fields, agents.PayloadField{
 				Name:   "Dolby Vision",
-				Value:  s,
+				Value:  humaniseDvSummary(s),
 				Inline: true,
 			})
 		}
 	}
 	return fields
+}
+
+// humaniseDvSummary turns the engine's raw DV-detail token list into a
+// human-readable string for the embed. The DV PlainSummary arrives as
+// the engine vocabulary joined with " · " (e.g. "dvprofile8 · mel ·
+// cm4"); each token is mapped to its display form ("Profile 8 · MEL ·
+// CM v4.0"). Tokens the map doesn't recognise — most importantly a
+// user's custom Labels override — pass through verbatim so we never
+// clobber a deliberate rename.
+func humaniseDvSummary(summary string) string {
+	parts := strings.Split(summary, " · ")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, dvDetailHumanLabel(p))
+	}
+	return strings.Join(out, " · ")
+}
+
+// dvDetailHumanLabel maps a single engine DV-detail token to its
+// display form. The recognised vocabulary mirrors engine
+// dv_summary.go's vocabDvDetail: mel / fel / dvprofile8 / cm2 / cm4 /
+// no-dv. Anything else (a custom label, a future token) is returned
+// trimmed but otherwise unchanged.
+func dvDetailHumanLabel(token string) string {
+	switch strings.ToLower(strings.TrimSpace(token)) {
+	case "dvprofile8":
+		return "Profile 8"
+	case "mel":
+		return "MEL"
+	case "fel":
+		return "FEL"
+	case "cm2":
+		return "CM v2.0"
+	case "cm4":
+		return "CM v4.0"
+	case "no-dv":
+		return "No Dolby Vision"
+	}
+	return strings.TrimSpace(token)
 }
 
 // appendDiscoverSection renders the discovery outcome — a new

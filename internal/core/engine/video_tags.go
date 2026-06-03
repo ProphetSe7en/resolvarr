@@ -59,7 +59,7 @@ func VideoTagsForFile(mi MediaInfo, qualityResolution int, cfg VideoTagsConfig) 
 	var out []string
 
 	if cfg.Resolution.Enabled {
-		if tag := resolutionBucket(mi.Height, qualityResolution); tag != "" && cfg.Resolution.allowed(tag) {
+		if tag := resolutionBucket(mi.Width, mi.VideoResolution, mi.Height, qualityResolution); tag != "" && cfg.Resolution.allowed(tag) {
 			out = append(out, cfg.Resolution.Prefix+cfg.Resolution.label(tag))
 		}
 	}
@@ -68,7 +68,12 @@ func VideoTagsForFile(mi MediaInfo, qualityResolution int, cfg VideoTagsConfig) 
 		if tag := codecBucket(mi.VideoCodec); tag != "" && cfg.Codec.allowed(tag) {
 			out = append(out, cfg.Codec.Prefix+cfg.Codec.label(tag))
 		}
-		if mi.VideoBitDepth == 10 && cfg.Codec.allowed("10bit") {
+		// is10Bit accepts VideoBitDepth directly (API path) and infers
+		// 10-bit from VideoDynamicRangeType when bit-depth is absent
+		// (webhook payloads omit videoBitDepth but always set the HDR
+		// rangeType for HDR releases — DV / HDR10 / HDR10Plus / HLG /
+		// PQ are all 10-bit by spec).
+		if is10Bit(mi.VideoBitDepth, mi.VideoDynamicRangeType) && cfg.Codec.allowed("10bit") {
 			out = append(out, cfg.Codec.Prefix+cfg.Codec.label("10bit"))
 		}
 	}

@@ -1487,13 +1487,24 @@ func TestWebhookRuleRequest_ValidateFilterOnly(t *testing.T) {
 
 	t.Run("unknown tagSource value rejected", func(t *testing.T) {
 		req := base
-		req.TagSource = "discover" // valid for schedules but not webhook rules
+		req.TagSource = "bogus-source"
 		apiErr := req.validate(cfg)
 		if apiErr == nil {
 			t.Fatal("expected error for unknown tagSource, got nil")
 		}
 		if !strings.Contains(apiErr.Message, "tagSource") {
 			t.Errorf("message = %q, want hint about tagSource", apiErr.Message)
+		}
+	})
+
+	t.Run("discover tagSource accepted", func(t *testing.T) {
+		// "discover" must persist on webhook rules (the Source-of-release-
+		// groups radio reverted to filter-only otherwise). The tag adapter
+		// treats it like active matching; the Discover function seeds groups.
+		req := base
+		req.TagSource = "discover"
+		if apiErr := req.validate(cfg); apiErr != nil {
+			t.Fatalf("discover tagSource should be accepted, got: %v", apiErr.Message)
 		}
 	})
 

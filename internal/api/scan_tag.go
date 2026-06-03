@@ -579,6 +579,9 @@ func (s *Server) handleScanTag(w http.ResponseWriter, r *http.Request, cfg core.
 		writeAPIError(w, apiErr)
 		return
 	}
+	if s.isDev() && resp != nil {
+		resp.Debug = tagScanDebug(req)
+	}
 	s.auditScan(req.auditSource(), "tag", inst, req, resp, "")
 	s.dumpScanJSON("tag", resp)
 	writeJSON(w, resp)

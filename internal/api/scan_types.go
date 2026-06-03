@@ -108,6 +108,13 @@ type scanRunRequest struct {
 	// every time" rule doesn't depend on user action. Default false
 	// (cache active — same behaviour as before this flag existed).
 	BypassDvCache bool `json:"bypassDvCache,omitempty"`
+
+	// debugConfigSource is set server-side by handleScanRun (NOT decoded
+	// from the client) to "overlay" or "global" for the active action,
+	// based on whether the matching Overlay* field was non-nil. The
+	// auto-tag handlers copy it into scanResponse.Debug on dev builds.
+	// Unexported so encoding/json never reads or writes it.
+	debugConfigSource string
 }
 
 // scanDecision is the per-(movie, group) public shape returned in preview.
@@ -545,6 +552,37 @@ type scanResponse struct {
 	Applied    *scanApplied          `json:"applied,omitempty"`    // tag apply only
 	Discovered []scanDiscoveredGroup `json:"discovered,omitempty"` // discover only
 	Recover    []scanRecoverItem     `json:"recover,omitempty"`    // recover only
+	Debug      *scanDebug            `json:"debug,omitempty"`      // dev builds only — see scanDebug
+}
+
+// scanDebug surfaces "which config actually ran" on dev builds so a
+// reported symptom maps to one trigger path + config source without
+// guessing. Populated ONLY when the server is a -dev build (s.isDev());
+// nil on release builds so production responses are byte-identical.
+// Because it rides on scanResponse it also lands in the scan-*.json
+// dump, making historical runs self-describing. The frontend renders
+// it as the dev "Debug strip" on auto-tag result panels. The canonical
+// vocabulary (trigger-ids, section-ids) lives in
+// docs/resolvarr/ui-section-map.md.
+type scanDebug struct {
+	// ConfigSource is "overlay" when this run carried a per-request
+	// wizard snapshot (QFA / QFA-apply-now / schedule), or "global"
+	// when it fell back to cfg.* (Tag Library one-off). The 2026-06-03
+	// apply-now audio bug is exactly a run that should be "overlay"
+	// resolving as "global".
+	ConfigSource string            `json:"configSource"`
+	Buckets      []scanDebugBucket `json:"buckets,omitempty"`
+}
+
+// scanDebugBucket is the resolved per-bucket config the engine saw:
+// the exact SelectMode + AllowedValues that decide emission. One entry
+// for audio; three (resolution/codec/hdr) for video; one for DV detail.
+type scanDebugBucket struct {
+	Name          string   `json:"name"`
+	Enabled       bool     `json:"enabled"`
+	SelectMode    string   `json:"selectMode"`
+	AllowedValues []string `json:"allowedValues,omitempty"`
+	Aggregation   string   `json:"aggregation,omitempty"` // Sonarr only
 }
 
 // scanTimeout is the upper bound for a single /api/scan/run invocation.

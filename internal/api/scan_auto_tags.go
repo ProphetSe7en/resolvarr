@@ -154,6 +154,8 @@ func (s *Server) runAutoTags(
 		var mi engine.MediaInfo
 		if item.MovieFile.MediaInfo != nil {
 			mi = engine.MediaInfo{
+				Width:                   item.MovieFile.MediaInfo.Width,
+				VideoResolution:         item.MovieFile.MediaInfo.VideoResolution,
 				Height:                  item.MovieFile.MediaInfo.Height,
 				VideoCodec:              item.MovieFile.MediaInfo.VideoCodec,
 				VideoBitDepth:           item.MovieFile.MediaInfo.VideoBitDepth,
@@ -300,6 +302,9 @@ func (s *Server) handleScanAudioTags(w http.ResponseWriter, r *http.Request, cfg
 		writeAPIError(w, apiErr)
 		return
 	}
+	if s.isDev() && resp != nil {
+		resp.Debug = audioScanDebug(cfg, req, appType)
+	}
 	s.auditScan(req.auditSource(), "audiotags", inst, req, resp, "")
 	s.dumpScanJSON("audiotags", resp)
 	writeJSON(w, resp)
@@ -315,9 +320,76 @@ func (s *Server) handleScanVideoTags(w http.ResponseWriter, r *http.Request, cfg
 		writeAPIError(w, apiErr)
 		return
 	}
+	if s.isDev() && resp != nil {
+		resp.Debug = videoScanDebug(cfg, req, appType)
+	}
 	s.auditScan(req.auditSource(), "videotags", inst, req, resp, "")
 	s.dumpScanJSON("videotags", resp)
 	writeJSON(w, resp)
+}
+
+// isDev reports whether this is a development build (Version contains
+// "-dev"). Gates the scanResponse.Debug block so release builds emit
+// byte-identical responses. See docs/resolvarr/ui-section-map.md.
+func (s *Server) isDev() bool {
+	return strings.Contains(s.Version, "-dev")
+}
+
+// tagBucketDebug snapshots the resolved per-bucket emission config the
+// engine actually saw for a run. Aggregation only meaningful on Sonarr.
+func tagBucketDebug(name string, b core.TagBucket, appType string) scanDebugBucket {
+	d := scanDebugBucket{
+		Name:          name,
+		Enabled:       b.Enabled,
+		SelectMode:    b.SelectMode,
+		AllowedValues: b.AllowedValues,
+	}
+	if appType == "sonarr" {
+		d.Aggregation = b.SonarrAggregation
+	}
+	return d
+}
+
+// audioScanDebug / videoScanDebug / dvScanDebug build the dev-only
+// Debug block from the resolved (post-overlay) config + the recorded
+// config-source. Called by the handlers only when s.isDev().
+func audioScanDebug(cfg core.Config, req scanRunRequest, appType string) *scanDebug {
+	return &scanDebug{
+		ConfigSource: req.debugConfigSource,
+		Buckets:      []scanDebugBucket{tagBucketDebug("audio", cfg.AudioTags.Audio, appType)},
+	}
+}
+
+func videoScanDebug(cfg core.Config, req scanRunRequest, appType string) *scanDebug {
+	return &scanDebug{
+		ConfigSource: req.debugConfigSource,
+		Buckets: []scanDebugBucket{
+			tagBucketDebug("resolution", cfg.VideoTags.Resolution, appType),
+			tagBucketDebug("codec", cfg.VideoTags.Codec, appType),
+			tagBucketDebug("hdr", cfg.VideoTags.HDR, appType),
+		},
+	}
+}
+
+// tagScanDebug surfaces only the config-source for the Tag (quality
+// releases) action — the bucket model doesn't apply (tag emission is
+// driven by filters + the release-group list, not a value vocabulary).
+// "overlay" means the run carried the rule's filters / RG subset;
+// "global" means it fell back to the Library-scan globals.
+func tagScanDebug(req scanRunRequest) *scanDebug {
+	return &scanDebug{ConfigSource: req.debugConfigSource}
+}
+
+func dvScanDebug(cfg core.Config, req scanRunRequest) *scanDebug {
+	return &scanDebug{
+		ConfigSource: req.debugConfigSource,
+		Buckets: []scanDebugBucket{{
+			Name:          "dvdetail",
+			Enabled:       cfg.DvDetail.Enabled,
+			SelectMode:    cfg.DvDetail.SelectMode,
+			AllowedValues: cfg.DvDetail.AllowedValues,
+		}},
+	}
 }
 
 // flattenAutoTagRollup turns the action|bucket|tag → count map into a

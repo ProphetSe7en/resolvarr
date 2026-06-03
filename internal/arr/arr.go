@@ -342,7 +342,16 @@ type MovieFile struct {
 // Quality.Quality.Resolution top-level fallback.
 type MediaInfo struct {
 	// Video
-	Height                  int    `json:"height,omitempty"`                  // 1080, 2160, etc — pixel height
+	// Resolvarr accepts two divergent mediaInfo shapes Arr ships:
+	//  - GET /api/v3/movie + /api/v3/episodefile: single "resolution"
+	//    string ("3840x2160"). No width / height ints.
+	//  - Connect webhook payloads (Download / Import / Grab): separate
+	//    "width" + "height" int fields. No "resolution" string.
+	// All three are populated where Arr provides them; resolutionBucket
+	// picks the strongest available signal at fire-time.
+	Width                   int    `json:"width,omitempty"`                   // Webhook-path int. 3840 / 1920 / 1280 / 720 — the canonical per-tier dimension. Immune to letterbox crops (which shrink HEIGHT, not WIDTH). Empty on the API path.
+	VideoResolution         string `json:"resolution,omitempty"`              // API-path "WxH" string. Verified live against Radarr 6.x + Sonarr; do NOT rename the json tag (silent decode-drop). Empty on the webhook path.
+	Height                  int    `json:"height,omitempty"`                  // Webhook-path int. Cropped height for letterboxed releases (a 4K cinema 2.40:1 cut reports 1600 here). Last-resort signal when neither Width nor VideoResolution is set.
 	VideoCodec              string `json:"videoCodec,omitempty"`              // "x264" | "x265" | "AV1" | "MPEG2" | "VC1"
 	VideoBitDepth           int    `json:"videoBitDepth,omitempty"`           // 8 or 10
 	VideoDynamicRangeType   string `json:"videoDynamicRangeType,omitempty"`   // "" | "HDR10" | "HDR10Plus" | "DV" | "DV HDR10" | "PQ"

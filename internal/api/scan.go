@@ -167,6 +167,31 @@ func (s *Server) handleScanRun(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg = applyRuleOverlay(cfg, req.OverlayFilters, req.OverlayAudioTags, req.OverlayVideoTags, req.OverlayDvDetail, req.OverlayReleaseGroupIDs, inst.Type, req.OverlayInjectGroups)
 
+	// Record whether THIS action ran against a per-request wizard
+	// snapshot ("overlay") or fell back to globals ("global"). Surfaced
+	// on dev builds via scanResponse.Debug so a preview-vs-apply
+	// mismatch (e.g. QFA apply-now silently using globals) is visible
+	// rather than hunted. Per-action: each auto-tag family has its own
+	// overlay field.
+	overlaySource := func(present bool) string {
+		if present {
+			return "overlay"
+		}
+		return "global"
+	}
+	switch req.Action {
+	case "audiotags":
+		req.debugConfigSource = overlaySource(req.OverlayAudioTags != nil)
+	case "videotags":
+		req.debugConfigSource = overlaySource(req.OverlayVideoTags != nil)
+	case "dvdetail":
+		req.debugConfigSource = overlaySource(req.OverlayDvDetail != nil)
+	case "tag":
+		// Tag emission is driven by filters + the release-group subset,
+		// so either overlay marks a rule-scoped run.
+		req.debugConfigSource = overlaySource(req.OverlayFilters != nil || len(req.OverlayReleaseGroupIDs) > 0)
+	}
+
 	// Per-action Sonarr support is rolling in incrementally — Recover is
 	// the first one (per-series → per-episodefile), the rest still
 	// short-circuit here with 501 until each is ported. Done this way

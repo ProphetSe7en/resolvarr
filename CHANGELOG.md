@@ -2,6 +2,26 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.36-dev — Apply matches preview, Review tab, resolution and memory fixes (2026-06-04)
+
+This build brings back the work from the v0.6.17 to v0.6.20 builds, one piece at a time on the clean baseline, including the fixes promised in v0.6.21-dev, plus a couple of editor improvements.
+
+**Apply now does exactly what the preview showed.** When you run a preview and then click Apply on the result, resolvarr applies it using the same settings the preview ran with. Before, Apply could fall back to your global settings, so a preview that found, say, 128 tags to add could apply 0. Preview and Apply now always match. This covers Quick fix-all, scheduled runs, the per-action Audio / Video / DV applies, and Plex label sync.
+
+**Review tab when editing a rule.** Editing a webhook or scheduled rule now has a Review tab, the same at-a-glance summary of everything the rule does that you get on the last step of the create wizard. Jump to any tab to change a setting, then Save.
+
+**Clearer notifications.** Tag notifications now use plain headers, Audio and Video instead of Sound and Picture, and Dolby Vision detail values are spelled out (Profile 8, MEL, FEL, CM v2.0, CM v4.0) instead of raw codes.
+
+**HDR releases also get a `10bit` tag.** When a file is HDR (HDR10, HDR10+, Dolby Vision, HLG or PQ), resolvarr now also tags it `10bit`, even when the bit-depth field isn't filled in.
+
+**Fixed: letterboxed 4K tagged one tier too low.** A 2.40:1 cinematic release reports a cropped height (a 4K cut can read as 1600 lines), which made resolvarr tag it 1080p or even 720p instead of 2160p. It now reads the width and tags the correct tier.
+
+**Fixed: webhook rule editor forgetting your choices.** A webhook rule now remembers your "Source of release groups" pick (Active groups / Discover / filter only) and your "add new Discover groups and enable them" choice when you reopen it to edit.
+
+**Scheduled-run results are fully clickable.** In a scheduled or Quick fix-all result, the Plex sync, missing-episodes and TBA-refresh phases now have a View details drill-in like the tagging phases, instead of just a summary line.
+
+Also: the option to delete unused tags has been removed from the webhook rule editor. It is a library-wide action that doesn't fit a per-event rule, so use it from Quick fix-all or a Schedule instead.
+
 ## v0.6.21-dev — Reset to v0.6.16-dev baseline (2026-06-03)
 
 This `:dev` build rolls the code back to v0.6.16-dev. The v0.6.17 to v0.6.20-dev builds had inconsistencies in audio and video tag emission, so the cleanest path forward is to reset to the last stable dev build and reintroduce changes one at a time. Force Update if you were on v0.6.17, v0.6.18, v0.6.19 or v0.6.20-dev.

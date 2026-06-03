@@ -42,6 +42,16 @@
               <span style="color:var(--text-muted-secondary)">·</span>
               <span style="color:var(--accent-orange)" title="Movies in Radarr without an imported file — engine has nothing to evaluate"><span style="color:var(--accent-orange)">No file</span> <strong x-text="scanResults.tag.totals.noFile || 0"></strong></span>
             </div>
+            <!-- Dev-only Debug strip — config source (overlay vs global)
+                 for this Tag run. overlay = the rule's filters + RG subset
+                 were used; global = fell back to Library-scan globals.
+                 See docs/resolvarr/ui-section-map.md. -->
+            <template x-if="isDevBuild && scanResults.tag.debug">
+              <div style="margin-top:6px;padding:6px 10px;background:var(--bg-muted);border:1px dashed var(--border-subtle);border-radius:6px;font-size:11px;font-family:monospace;color:var(--text-secondary);display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+                <span style="font-weight:700;color:var(--accent-orange)">DEBUG</span>
+                <span>config: <strong x-text="scanResults.tag.debug.configSource" :style="{ color: scanResults.tag.debug.configSource === 'global' ? 'var(--accent-red)' : 'var(--accent-green)' }"></strong></span>
+              </div>
+            </template>
             <!-- Secondary totals — only when sync was enabled -->
             <template x-if="scanResults.tag.totals.secondaryToAdd || scanResults.tag.totals.secondaryToRemove || scanResults.tag.totals.secondaryToKeep || scanResults.tag.totals.secondaryMissing">
               <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:6px;padding-top:8px;border-top:1px solid var(--bg-muted);font-size:13px">
