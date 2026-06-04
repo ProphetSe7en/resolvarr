@@ -3410,7 +3410,7 @@
              sweep. Inline config (no saved rule); the Run button drives
              the shared backlog-scan modal via the /api/qbit-se/run/*
              endpoints. Automatic on-grab tagging lives on webhook rules. -->
-        <div x-show="scanSection === 'qbit-se'" x-cloak>
+        <div x-show="scanSection === 'qbit-se' && scanAppType === 'sonarr'" x-cloak>
           <div class="settings-section-title">qBit S/E tags</div>
           <div class="settings-section-desc">Tag your qBittorrent torrents by what the release name looks like: an episode (S01E05 or a daily-show date), a season pack (S01), or neither. This is a one-off sweep of the current backlog. Nothing is saved here. To tag automatically when Sonarr grabs a release, add the qBit S/E function to a webhook rule instead.</div>
 

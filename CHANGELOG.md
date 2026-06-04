@@ -2,6 +2,10 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.39-dev — qBit S/E tags sub-tab is Sonarr-only (2026-06-04)
+
+**Fixed: the qBit S/E tags sub-tab showed under Library scan for Radarr.** qBit Season/Episode tagging is Sonarr-only (Radarr has no per-episode model), but the new sub-tab from v0.6.38-dev appeared on Radarr too. It now shows only when Library scan is set to a Sonarr instance. Quick fix-all and Schedule were already correct.
+
 ## v0.6.38-dev — qBit S/E tagging beyond webhooks: one-off, scheduled, and Quick fix-all (2026-06-04)
 
 **qBit Season/Episode tagging now works everywhere, not just on webhooks.** Tagging your qBittorrent torrents by what the release looks like (an episode, a season pack, or neither) used to be a webhook-only function plus a backlog button tucked away on the webhook rule card. It is now a first-class action you can run three more ways (Sonarr only):

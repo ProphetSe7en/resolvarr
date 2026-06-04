@@ -5874,7 +5874,8 @@ function app() {
                section === 'history';
       }
       // Radarr: every visible section EXCEPT the Sonarr-only ones.
-      if (section === 'missing-episodes' || section === 'tba-refresh') return false;
+      // (qbit-se = qBit Season/Episode tagging is Sonarr-only too.)
+      if (section === 'missing-episodes' || section === 'tba-refresh' || section === 'qbit-se') return false;
       return true;
     },
     setScanAppType(type) {
