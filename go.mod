@@ -2,7 +2,7 @@ module resolvarr
 
 go 1.25
 
-toolchain go1.25.10
+toolchain go1.25.11
 
 require golang.org/x/crypto v0.45.0
 

@@ -12541,6 +12541,8 @@ function app() {
         if (rule.discoverAutoEnable) body.discoverAutoEnable = rule.discoverAutoEnable;
         if (rule.grabRename)      body.grabRename = rule.grabRename;
         if (rule.qbitSe)          body.qbitSe = rule.qbitSe;
+        if (rule.qbitCategoryFix) body.qbitCategoryFix = rule.qbitCategoryFix;
+        if (rule.plexLabelSync)   body.plexLabelSync = rule.plexLabelSync;
         const r = await this.apiFetch('/api/webhook-rules/' + rule.id, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },

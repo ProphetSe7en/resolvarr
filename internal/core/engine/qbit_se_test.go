@@ -104,6 +104,12 @@ func TestDetermineQbitTag(t *testing.T) {
 		{"bare S01 season pack", "Show.S01.Complete.WEB-DL-FLUX", allOn, "Season"},
 		{"Season.1 worded", "Show.Season.1.Complete.WEB-DL-FLUX", allOn, "Season"},
 		{"Season 1 spaced", "Show Season 1 Complete WEB-DL FLUX", allOn, "Season"},
+		// Year + season tokens must classify as Season, not Episode. The
+		// daily-show date heuristic used to false-match a year followed by
+		// the two-digit season numbers around a language tag as a date.
+		{"year + season + language tag stays Season", "Demo.Series.2025.s01.PL.s01.1080p.WEB-DL.H.264-GRP", allOn, "Season"},
+		{"year then bare season pack stays Season", "Show.2024.S01.1080p.WEB-DL-GRP", allOn, "Season"},
+		{"daily-show underscore date stays Episode", "Show.2024_10_15.WEB-DL-GRP", allOn, "Episode"},
 		// Unmatched — neither pattern matched
 		{"movie no S/E token", "Movie.2024.1080p.WEB-DL-FLUX", allOn, "Unmatched"},
 		{"music release", "Album.Name.2024.FLAC", allOn, "Unmatched"},

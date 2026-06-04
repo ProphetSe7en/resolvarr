@@ -2,6 +2,14 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.37-dev — Pause/resume fix, clearer Resume icon, better season detection (2026-06-04)
+
+**Fixed: pausing a rule failed for some webhook rules.** Pausing or resuming a webhook rule that used qBit Category Fix or Plex label sync returned a "criteria required" error and didn't toggle. It now pauses and resumes cleanly. Affects Radarr and Sonarr rules alike.
+
+**Clearer Resume icon.** The pause/resume button's Resume state used the same filled play triangle as the Run-now and Backlog-scan buttons, so a paused rule showed two near-identical icons side by side. Resume is now a play-in-circle, distinct from the "run now" triangle, on both scheduled-run and webhook rule cards.
+
+**Better season vs episode detection in qBit S/E tagging.** Releases that carry a year alongside season tokens (common on non-English season packs) could be mis-tagged as an episode by the daily-show date check. Season packs like these are now correctly tagged as Season, while genuine daily-show dates still tag as Episode.
+
 ## v0.6.36-dev — Apply matches preview, Review tab, resolution and memory fixes (2026-06-04)
 
 This build brings back the work from the v0.6.17 to v0.6.20 builds, one piece at a time on the clean baseline, including the fixes promised in v0.6.21-dev, plus a couple of editor improvements.

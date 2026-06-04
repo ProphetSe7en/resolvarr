@@ -48,16 +48,19 @@ type QbitSeRulesView struct {
 //   - Standard scene S01E05 / S01E05E06 multi-ep
 //   - Daily-show ISO-ish date pattern (e.g. "Show.2024.10.15")
 //
-// The daily-show pattern matches "<4 digits><non-digits><2 digits><non-
-// digits><2 digits>" — cheap heuristic that catches Show.2024.10.15,
-// Show.2024-10-15, Show 2024 10 15, etc. Year-range component is
-// not bounded (could match 9999 03 04) but in practice torrents only
-// have plausible release dates, and the worst case (false positive on
-// a non-date 4+2+2 string) is just "this torrent gets the Episode tag
-// instead of Unmatched" — recoverable.
+// The daily-show pattern matches "<4 digits><sep><2 digits><sep><2
+// digits>" where <sep> is a date separator (. _ - or space): catches
+// Show.2024.10.15, Show.2024-10-15, Show 2024 10 15, Show.2024_10_15.
+// The separator is restricted to those chars rather than "any non-
+// digit", so a year followed by season tokens (e.g. "...2025.s01.PL.
+// s01...") does NOT false-match as a date. Before the restriction the
+// year + the two-digit season numbers around the language tag matched,
+// and the season pack was mis-tagged Episode instead of Season. The
+// remaining worst case is a genuine 4+2+2 date-shaped string that is
+// not actually a release date, which just tags Episode (recoverable).
 var qbitEpisodePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)S\d{1,3}E\d{1,3}`),
-	regexp.MustCompile(`\b\d{4}\D+\d{2}\D+\d{2}\b`),
+	regexp.MustCompile(`\b\d{4}[._ -]\d{2}[._ -]\d{2}\b`),
 }
 
 // qbitSeasonPattern matches season-pack tokens: bare S01 / S12 / etc.
