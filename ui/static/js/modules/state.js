@@ -956,6 +956,14 @@ function appState() {
     qbitSeBacklogSelected: {},           // {hash: bool} — per-row checkbox state
     qbitSeBacklogFilter: 'taggable',     // 'all' | 'taggable' | 'alreadyOk' | 'skipped'
     qbitSeBacklogError: '',              // top-level error banner shown above the table
+    qbitSeBacklogConfig: null,           // inline QbitSe config when the scan runs from the Tag Library one-off sub-tab (null = webhook-rule path)
+    qbitSeRunForm: {                     // Tag Library "qBit S/E tags" one-off form state (Sonarr-only)
+      qbitInstanceId: '',
+      episodeEnabled: true, episodeTag: 'Episode',
+      seasonEnabled: true, seasonTag: 'Season',
+      unmatchedEnabled: false, unmatchedTag: 'Unmatched',
+      categoryFilter: '',
+    },
     // Per-Arr-type filter on the Webhooks page. Mirrors scanAppType
     // / tagsAppType — pills at the page top let the user flip
     // context, instance card list filters down, app-type-irrelevant

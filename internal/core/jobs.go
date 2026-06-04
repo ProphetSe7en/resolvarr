@@ -21,6 +21,7 @@ const (
 	JobModeMissingEpisodes JobMode = "missingepisodes" // Sonarr only — gap scan + optional Tag/Search
 	JobModePlexSync        JobMode = "plexsync"        // Arr tags → Plex labels/collections; config on ScheduledJob.PlexSync
 	JobModeTbaRefresh      JobMode = "tbarefresh"      // Sonarr only — rename TBA-imported files; config on ScheduledJob.TbaRefresh
+	JobModeQbitSeTag       JobMode = "qbitsetag"       // Sonarr only — tag qBit torrents by Season/Episode; config on ScheduledJob.QbitSe
 	JobModeCombined        JobMode = "combined"
 )
 
@@ -30,7 +31,7 @@ func ValidJobMode(m JobMode) bool {
 	switch m {
 	case JobModeTag, JobModeDiscover, JobModeRecover,
 		JobModeAudioTags, JobModeVideoTags, JobModeDvDetail,
-		JobModeMissingEpisodes, JobModePlexSync, JobModeTbaRefresh, JobModeCombined:
+		JobModeMissingEpisodes, JobModePlexSync, JobModeTbaRefresh, JobModeQbitSeTag, JobModeCombined:
 		return true
 	}
 	return false
@@ -243,6 +244,14 @@ type ScheduledJob struct {
 	// (no slices/maps), so ConfigStore.Get's slice-append copy is
 	// enough; no deep-copy block needed (same as MissingEpisodesConfig).
 	TbaRefresh *TbaRefreshConfig `json:"tbaRefresh,omitempty"`
+
+	// QbitSe is the per-schedule snapshot for the qbitsetag phase
+	// (Sonarr-only — tag qBit torrents by Season / Episode / Unmatched).
+	// nil = phase not enabled. Reuses core.QbitSeRules (same shape the
+	// webhook rule + one-off run carry); the scheduler runner hands it
+	// straight to runQbitSeScanWithRules. AggregationWindowSeconds is
+	// ignored here (it only matters for the webhook qBit-Add debounce).
+	QbitSe *QbitSeRules `json:"qbitSe,omitempty"`
 
 	// History holds the last N runs — N=5 today, configurable later.
 	// Runs older than the cap land in the log file (LogPath on each

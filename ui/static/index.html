@@ -685,6 +685,9 @@
         <template x-if="scanSectionVisible('plex-sync')">
           <a class="settings-nav" :class="scanSection === 'plex-sync' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'plex-sync' })" @click="setScanSection('plex-sync')" title="Sync Arr tags to Plex labels — per-rule label whitelist + library scope">Plex label sync</a>
         </template>
+        <template x-if="scanSectionVisible('qbit-se')">
+          <a class="settings-nav" :class="scanSection === 'qbit-se' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'qbit-se' })" @click="setScanSection('qbit-se')" title="Tag qBittorrent torrents by Season / Episode / Unmatched, one-off sweep of the backlog">qBit S/E tags</a>
+        </template>
         <template x-if="scanSectionVisible('history')">
           <a class="settings-nav" :class="scanSection === 'history' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'history' })" @click="setScanSection('history')">History</a>
         </template>
@@ -3398,6 +3401,72 @@
                       @click="openPlexLabelRuleModal()"
                       :disabled="plexLabelRuleAvailableInstances().length === 0"
                       :title="plexLabelRuleAvailableInstances().length === 0 ? 'No ' + (scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr') + ' instances configured — add one under Settings → Instances first' : ''">Configure and run Plex label sync</button>
+            </div>
+          </template>
+        </div>
+
+        <!-- ===== qBit S/E tags (one-off, Sonarr-only) =====
+             Tag library surface for the qBit Season/Episode backlog
+             sweep. Inline config (no saved rule); the Run button drives
+             the shared backlog-scan modal via the /api/qbit-se/run/*
+             endpoints. Automatic on-grab tagging lives on webhook rules. -->
+        <div x-show="scanSection === 'qbit-se'" x-cloak>
+          <div class="settings-section-title">qBit S/E tags</div>
+          <div class="settings-section-desc">Tag your qBittorrent torrents by what the release name looks like: an episode (S01E05 or a daily-show date), a season pack (S01), or neither. This is a one-off sweep of the current backlog. Nothing is saved here. To tag automatically when Sonarr grabs a release, add the qBit S/E function to a webhook rule instead.</div>
+
+          <template x-if="(qbitInstances || []).length === 0">
+            <div style="padding:12px 14px;background:var(--bg-page);border:1px solid var(--accent-orange);border-radius:8px;color:var(--accent-orange);font-size:13px;margin:12px 0">
+              Add a qBittorrent instance under <strong>Settings → qBittorrent</strong> first, then come back here to run a backlog sweep.
+            </div>
+          </template>
+
+          <template x-if="(qbitInstances || []).length > 0">
+            <div style="max-width:660px">
+              <div class="form-group">
+                <label class="label">qBittorrent instance</label>
+                <select class="input" x-model="qbitSeRunForm.qbitInstanceId" style="max-width:320px">
+                  <option value="">— pick an instance —</option>
+                  <template x-for="q in qbitInstances" :key="q.id">
+                    <option :value="q.id" x-text="q.name"></option>
+                  </template>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="label">Which torrents to tag</label>
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+                    <input type="checkbox" x-model="qbitSeRunForm.episodeEnabled" style="accent-color:var(--accent-blue)">
+                    <span style="min-width:170px">Episodes (S01E05, dailies)</span>
+                    <span style="color:var(--text-muted-secondary)">tag:</span>
+                    <input class="input" type="text" x-model="qbitSeRunForm.episodeTag" :disabled="!qbitSeRunForm.episodeEnabled" placeholder="Episode" style="width:150px;font-size:12px;padding:4px 8px">
+                  </label>
+                  <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+                    <input type="checkbox" x-model="qbitSeRunForm.seasonEnabled" style="accent-color:var(--accent-blue)">
+                    <span style="min-width:170px">Season packs (S01)</span>
+                    <span style="color:var(--text-muted-secondary)">tag:</span>
+                    <input class="input" type="text" x-model="qbitSeRunForm.seasonTag" :disabled="!qbitSeRunForm.seasonEnabled" placeholder="Season" style="width:150px;font-size:12px;padding:4px 8px">
+                  </label>
+                  <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+                    <input type="checkbox" x-model="qbitSeRunForm.unmatchedEnabled" style="accent-color:var(--accent-blue)">
+                    <span style="min-width:170px">Everything else</span>
+                    <span style="color:var(--text-muted-secondary)">tag:</span>
+                    <input class="input" type="text" x-model="qbitSeRunForm.unmatchedTag" :disabled="!qbitSeRunForm.unmatchedEnabled" placeholder="Unmatched" style="width:150px;font-size:12px;padding:4px 8px">
+                  </label>
+                </div>
+                <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Each torrent gets one tag, decided in order: Episode, then Season, then Everything else. Tag names: letters, digits, dashes, underscores.</div>
+              </div>
+
+              <div class="form-group">
+                <label class="label">Limit to qBit category (optional)</label>
+                <input class="input" type="text" x-model="qbitSeRunForm.categoryFilter" placeholder="e.g. sonarr" autocomplete="off" style="max-width:280px">
+                <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">Leave blank to scan every torrent. Match is case-insensitive.</div>
+              </div>
+
+              <button class="btn btn-primary" @click="openQbitSeRunFromConfig()"
+                      :disabled="!qbitSeRunForm.qbitInstanceId || (!qbitSeRunForm.episodeEnabled && !qbitSeRunForm.seasonEnabled && !qbitSeRunForm.unmatchedEnabled)">
+                Run preview
+              </button>
             </div>
           </template>
         </div>
@@ -8133,7 +8202,7 @@
                    tags with the OLD label stay in Radarr until the user
                    removes them in Tag inventory. -->
               <div x-data="{ open: false }" style="margin-top:14px;border-top:1px dashed var(--border-subtle);padding-top:10px">
-                <button type="button" @click="open = !open" class="icon-btn" style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+                <button type="button" @click="open = !open" style="font-size:12px;color:var(--text-muted);display:inline-flex;align-items:center;gap:6px;background:none;border:none;padding:0;cursor:pointer">
                   <span x-show="!open">▸</span>
                   <span x-show="open">▾</span>
                   <span>Customise labels</span>
@@ -8294,7 +8363,7 @@
 
               <!-- Customise labels (collapsible) — per-bucket overrides. -->
               <div x-data="{ open: false }" style="margin-top:10px;border-top:1px dashed var(--border-subtle);padding-top:8px">
-                <button type="button" @click="open = !open" class="icon-btn" style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+                <button type="button" @click="open = !open" style="font-size:12px;color:var(--text-muted);display:inline-flex;align-items:center;gap:6px;background:none;border:none;padding:0;cursor:pointer">
                   <span x-show="!open">▸</span>
                   <span x-show="open">▾</span>
                   <span>Customise labels</span>
@@ -8438,7 +8507,7 @@
 
             <!-- Customise labels (collapsible) — DV-detail overrides. -->
             <div x-data="{ open: false }" style="margin-top:10px;border-top:1px dashed var(--border-subtle);padding-top:8px">
-              <button type="button" @click="open = !open" class="icon-btn" style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+              <button type="button" @click="open = !open" style="font-size:12px;color:var(--text-muted);display:inline-flex;align-items:center;gap:6px;background:none;border:none;padding:0;cursor:pointer">
                 <span x-show="!open">▸</span>
                 <span x-show="open">▾</span>
                 <span>Customise labels</span>
@@ -9011,7 +9080,7 @@
                      "Grab" events fire instantly regardless. Field
                      stores 0 = use default 60s; range 1..3600
                      enforced server-side at buffer-enqueue. -->
-                <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border-subtle)">
+                <div x-show="ruleEditorIsWebhook()" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border-subtle)">
                   <label class="label" style="font-size:13px;color:var(--text-primary);font-weight:500;margin-bottom:4px">Aggregation window (seconds)</label>
                   <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
                     <input class="input"
@@ -10293,15 +10362,16 @@
        @click.self="if (!qbitSeBacklogApplying && !qbitSeBacklogLoading) closeQbitSeBacklog()"
        @keydown.escape.window="if (qbitSeBacklogOpen && !qbitSeBacklogApplying && !qbitSeBacklogLoading) closeQbitSeBacklog()">
     <div class="modal" style="width:880px;max-width:96vw;max-height:90vh;overflow-y:auto" x-cloak>
-      <template x-if="qbitSeBacklogRule">
+      <template x-if="qbitSeBacklogRule || qbitSeBacklogConfig">
         <div>
-          <!-- Header: pill + rule name -->
+          <!-- Header: pill + rule name (or "One-off run" when driven by
+               the Tag Library sub-tab's inline config). -->
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
             <span style="font-size:11px;font-weight:500;background:var(--alpha-blue);color:var(--accent-sky);padding:2px 10px;border-radius:8px;text-transform:uppercase;letter-spacing:0.4px">Backlog scan</span>
-            <div class="modal-title" style="margin:0;flex:1" x-text="qbitSeBacklogRule.name || ''"></div>
+            <div class="modal-title" style="margin:0;flex:1" x-text="qbitSeBacklogRule ? (qbitSeBacklogRule.name || '') : 'One-off run'"></div>
           </div>
           <div style="font-size:12px;color:var(--text-secondary);margin-bottom:16px">
-            Walks every torrent in the rule's qBit instance and shows what tags would be applied based on the rule's Episode / Season / Unmatched configuration. Nothing is written to qBit until you click <strong>Apply selected</strong>.
+            Walks every torrent in the chosen qBit instance and shows what tags would be applied based on the Episode / Season / Unmatched settings. Nothing is written to qBit until you click <strong>Apply selected</strong>.
           </div>
 
           <!-- Top-level error banner -->
@@ -10704,7 +10774,7 @@
       <div class="form-group" x-data="{ open: false }">
         <label class="form-label" style="display:flex;align-items:center;justify-content:space-between">
           <span>Which actions show in the embed</span>
-          <button type="button" class="icon-btn" @click="open = !open" :title="open ? 'Collapse' : 'Expand'" style="font-size:11px;color:var(--text-muted)">
+          <button type="button" @click="open = !open" :title="open ? 'Collapse' : 'Expand'" style="font-size:11px;color:var(--text-muted);background:none;border:none;padding:0;cursor:pointer">
             <span x-show="!open">▸ Show options</span>
             <span x-show="open">▾ Hide options</span>
           </button>

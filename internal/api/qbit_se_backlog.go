@@ -146,16 +146,11 @@ func (s *Server) handleQbitSeBacklogApply(w http.ResponseWriter, r *http.Request
 	writeJSON(w, resp)
 }
 
-// runQbitSeBacklogScan is the shared preview+apply implementation.
-// When apply=false, returns a preview only. When apply=true, runs
-// the same scan + invokes qBit AddTags for each taggable torrent.
-//
-// Returns *anyResponse (typed as anyEndpointResponse below) so the
-// preview vs apply paths can return distinct shapes.
+// runQbitSeBacklogScan is the webhook-rule-scoped entry point: resolve
+// the rule + its QbitSe criteria from req.RuleID, then run the shared
+// scan. Used by the per-rule "Backlog scan" button on the Webhooks page.
 func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScanRequest, apply bool) (any, *apiError) {
 	cfg := s.App.Config.Get()
-
-	// Resolve rule + criteria.
 	rule := findWebhookRuleByID(cfg, req.RuleID)
 	if rule == nil {
 		return nil, newAPIError(404, "webhook rule not found")
@@ -163,12 +158,22 @@ func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScan
 	if rule.AppType != "sonarr" {
 		return nil, newAPIError(400, "qbit-se backlog requires a Sonarr rule")
 	}
-	if rule.QbitSe == nil {
-		return nil, newAPIError(400, "rule has no QbitSe criteria")
+	return s.runQbitSeScanWithRules(ctx, cfg, rule.QbitSe, req.CategoryFilter, req.SelectedHashes, apply)
+}
+
+// runQbitSeScanWithRules is the shared preview+apply implementation,
+// decoupled from persistence — it takes the QbitSe criteria inline so
+// the webhook backlog button, the one-off Tag Library run, and (later)
+// QFA/Schedule all feed the same scan. apply=false returns a preview;
+// apply=true also calls qBit AddTags for each taggable torrent. rules
+// is assumed validated (validateQbitSeConfig); the guards here are
+// defence-in-depth for direct callers.
+func (s *Server) runQbitSeScanWithRules(ctx context.Context, cfg core.Config, rules *core.QbitSeRules, categoryFilterRaw string, selectedHashes []string, apply bool) (any, *apiError) {
+	if rules == nil {
+		return nil, newAPIError(400, "no QbitSe criteria")
 	}
-	rules := rule.QbitSe
 	if !rules.EpisodeEnabled && !rules.SeasonEnabled && !rules.UnmatchedEnabled {
-		return nil, newAPIError(400, "rule has every tag rule disabled — enable Episode, Season, or Unmatched before running backlog fix")
+		return nil, newAPIError(400, "every tag rule disabled — enable Episode, Season, or Unmatched before running")
 	}
 
 	// Resolve qBit instance.
@@ -202,7 +207,7 @@ func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScan
 		UnmatchedEnabled: rules.UnmatchedEnabled,
 		UnmatchedTag:     rules.UnmatchedTag,
 	}
-	categoryFilter := strings.TrimSpace(req.CategoryFilter)
+	categoryFilter := strings.TrimSpace(categoryFilterRaw)
 
 	// Build a hash-allowlist set for the apply pass when the caller
 	// passed SelectedHashes. nil set = legacy "apply to all taggable"
@@ -210,9 +215,9 @@ func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScan
 	// returns hashes in lowercase but the UI may have cached an
 	// uppercase variant from a different endpoint.
 	var selectedSet map[string]bool
-	if apply && len(req.SelectedHashes) > 0 {
-		selectedSet = make(map[string]bool, len(req.SelectedHashes))
-		for _, h := range req.SelectedHashes {
+	if apply && len(selectedHashes) > 0 {
+		selectedSet = make(map[string]bool, len(selectedHashes))
+		for _, h := range selectedHashes {
 			h = strings.ToLower(strings.TrimSpace(h))
 			if h != "" {
 				selectedSet[h] = true
@@ -312,6 +317,107 @@ func (s *Server) runQbitSeBacklogScan(ctx context.Context, req qbitSeBacklogScan
 		Failed:  failed,
 		Errors:  errs,
 	}, nil
+}
+
+// validateQbitSeConfig validates + canonicalises a QbitSe criteria
+// block. Shared by the webhook-rule validator and the one-off run
+// endpoint so every context enforces identical rules. Trims + defaults
+// each enabled tag name in place and rejects unknown qBit instances.
+func validateQbitSeConfig(qse *core.QbitSeRules, cfg core.Config) *apiError {
+	if qse == nil {
+		return newAPIError(400, "qbitSe rules required when qbitSeTag function is enabled")
+	}
+	if !qse.EpisodeEnabled && !qse.SeasonEnabled && !qse.UnmatchedEnabled {
+		return newAPIError(400, "qbitSe must enable at least one of episodeEnabled / seasonEnabled / unmatchedEnabled")
+	}
+	if qse.QbitInstanceID == "" {
+		return newAPIError(400, "qbitSe.qbitInstanceId is required")
+	}
+	if !qbitInstanceExists(cfg, qse.QbitInstanceID) {
+		return newAPIError(400, "qbitSe.qbitInstanceId not found")
+	}
+	if qse.EpisodeEnabled {
+		qse.EpisodeTag = strings.TrimSpace(qse.EpisodeTag)
+		if qse.EpisodeTag == "" {
+			qse.EpisodeTag = "Episode"
+		}
+		if !reTagName.MatchString(strings.ToLower(qse.EpisodeTag)) {
+			return newAPIError(400, "qbitSe.episodeTag must be letters, digits, underscores, or dashes")
+		}
+	}
+	if qse.SeasonEnabled {
+		qse.SeasonTag = strings.TrimSpace(qse.SeasonTag)
+		if qse.SeasonTag == "" {
+			qse.SeasonTag = "Season"
+		}
+		if !reTagName.MatchString(strings.ToLower(qse.SeasonTag)) {
+			return newAPIError(400, "qbitSe.seasonTag must be letters, digits, underscores, or dashes")
+		}
+	}
+	if qse.UnmatchedEnabled {
+		qse.UnmatchedTag = strings.TrimSpace(qse.UnmatchedTag)
+		if qse.UnmatchedTag == "" {
+			qse.UnmatchedTag = "Unmatched"
+		}
+		if !reTagName.MatchString(strings.ToLower(qse.UnmatchedTag)) {
+			return newAPIError(400, "qbitSe.unmatchedTag must be letters, digits, underscores, or dashes")
+		}
+	}
+	return nil
+}
+
+// qbitSeRunRequest is the body for the one-off qBit S/E run (Tag
+// Library sub-tab; QFA/Schedule reuse the same inline config later).
+// Unlike the webhook backlog request it carries the QbitSe criteria
+// inline rather than a rule ID, matching the one-off model: the Tag
+// Library surface owns its config and nothing is saved.
+type qbitSeRunRequest struct {
+	QbitSe         *core.QbitSeRules `json:"qbitSe"`
+	CategoryFilter string            `json:"categoryFilter,omitempty"`
+	SelectedHashes []string          `json:"selectedHashes,omitempty"`
+}
+
+// handleQbitSeRunPreview — POST /api/qbit-se/run/preview
+// One-off preview from inline QbitSe config (no saved rule).
+func (s *Server) handleQbitSeRunPreview(w http.ResponseWriter, r *http.Request) {
+	var req qbitSeRunRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, webhookRuleRequestBodyMaxBytes)).Decode(&req); err != nil {
+		writeError(w, 400, "invalid body: "+err.Error())
+		return
+	}
+	cfg := s.App.Config.Get()
+	if e := validateQbitSeConfig(req.QbitSe, cfg); e != nil {
+		writeAPIError(w, e)
+		return
+	}
+	resp, apiErr := s.runQbitSeScanWithRules(r.Context(), cfg, req.QbitSe, req.CategoryFilter, nil, false)
+	if apiErr != nil {
+		writeAPIError(w, apiErr)
+		return
+	}
+	writeJSON(w, resp)
+}
+
+// handleQbitSeRunApply — POST /api/qbit-se/run/apply
+// One-off apply from inline QbitSe config. SelectedHashes narrows the
+// apply to the checked subset (empty = every taggable torrent).
+func (s *Server) handleQbitSeRunApply(w http.ResponseWriter, r *http.Request) {
+	var req qbitSeRunRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, webhookRuleRequestBodyMaxBytes)).Decode(&req); err != nil {
+		writeError(w, 400, "invalid body: "+err.Error())
+		return
+	}
+	cfg := s.App.Config.Get()
+	if e := validateQbitSeConfig(req.QbitSe, cfg); e != nil {
+		writeAPIError(w, e)
+		return
+	}
+	resp, apiErr := s.runQbitSeScanWithRules(r.Context(), cfg, req.QbitSe, req.CategoryFilter, req.SelectedHashes, true)
+	if apiErr != nil {
+		writeAPIError(w, apiErr)
+		return
+	}
+	writeJSON(w, resp)
 }
 
 // findWebhookRuleByID is a small helper used by the backlog endpoints.

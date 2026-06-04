@@ -180,49 +180,8 @@ func (req *webhookRuleRequest) validate(cfg core.Config) *apiError {
 		}
 	}
 	if seen[core.WebhookFnQbitSeTag] {
-		if req.QbitSe == nil {
-			return newAPIError(400, "qbitSe rules required when qbitSeTag function is enabled")
-		}
-		if !req.QbitSe.EpisodeEnabled && !req.QbitSe.SeasonEnabled && !req.QbitSe.UnmatchedEnabled {
-			return newAPIError(400, "qbitSe must enable at least one of episodeEnabled / seasonEnabled / unmatchedEnabled")
-		}
-		if req.QbitSe.QbitInstanceID == "" {
-			return newAPIError(400, "qbitSe.qbitInstanceId is required")
-		}
-		if !qbitInstanceExists(cfg, req.QbitSe.QbitInstanceID) {
-			return newAPIError(400, "qbitSe.qbitInstanceId not found")
-		}
-		// Trim each enabled tag name in place + backfill blanks with
-		// the documented defaults so the persisted shape is canonical.
-		// Validate non-blank values against the strict tag-label regex
-		// (Radarr's rule is the strictest; Sonarr is permissive but
-		// cross-compatible values land cleanly on both Arrs).
-		if req.QbitSe.EpisodeEnabled {
-			req.QbitSe.EpisodeTag = strings.TrimSpace(req.QbitSe.EpisodeTag)
-			if req.QbitSe.EpisodeTag == "" {
-				req.QbitSe.EpisodeTag = "Episode"
-			}
-			if !reTagName.MatchString(strings.ToLower(req.QbitSe.EpisodeTag)) {
-				return newAPIError(400, "qbitSe.episodeTag must be letters, digits, underscores, or dashes")
-			}
-		}
-		if req.QbitSe.SeasonEnabled {
-			req.QbitSe.SeasonTag = strings.TrimSpace(req.QbitSe.SeasonTag)
-			if req.QbitSe.SeasonTag == "" {
-				req.QbitSe.SeasonTag = "Season"
-			}
-			if !reTagName.MatchString(strings.ToLower(req.QbitSe.SeasonTag)) {
-				return newAPIError(400, "qbitSe.seasonTag must be letters, digits, underscores, or dashes")
-			}
-		}
-		if req.QbitSe.UnmatchedEnabled {
-			req.QbitSe.UnmatchedTag = strings.TrimSpace(req.QbitSe.UnmatchedTag)
-			if req.QbitSe.UnmatchedTag == "" {
-				req.QbitSe.UnmatchedTag = "Unmatched"
-			}
-			if !reTagName.MatchString(strings.ToLower(req.QbitSe.UnmatchedTag)) {
-				return newAPIError(400, "qbitSe.unmatchedTag must be letters, digits, underscores, or dashes")
-			}
+		if e := validateQbitSeConfig(req.QbitSe, cfg); e != nil {
+			return e
 		}
 	}
 	// qBit Category Fix validation — required struct + qBit pairing

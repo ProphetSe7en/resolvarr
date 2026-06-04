@@ -43,6 +43,7 @@ type scheduleRequest struct {
 	MissingEpisodes *core.MissingEpisodesConfig  `json:"missingEpisodes,omitempty"`
 	PlexSync        *core.PlexLabelSyncConfig    `json:"plexSync,omitempty"`
 	TbaRefresh      *core.TbaRefreshConfig       `json:"tbaRefresh,omitempty"`
+	QbitSe          *core.QbitSeRules            `json:"qbitSe,omitempty"`
 	ReleaseGroupIDs []string                     `json:"releaseGroupIds,omitempty"`
 }
 
@@ -191,6 +192,24 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 		}
 		if instType != "" && instType != "sonarr" {
 			return newAPIError(400, "tbaRefresh is Sonarr-only — pick a Sonarr instance")
+		}
+	}
+	// QbitSe snapshot — Sonarr-only qBit-tagging phase. Validate via the
+	// shared config validator (same checks the webhook rule + one-off run
+	// use): at least one rule enabled, qBit instance exists, tag-name regex.
+	if req.QbitSe != nil {
+		instType := ""
+		for i := range cfg.Instances {
+			if cfg.Instances[i].ID == req.InstanceID {
+				instType = cfg.Instances[i].Type
+				break
+			}
+		}
+		if instType != "" && instType != "sonarr" {
+			return newAPIError(400, "qbitSe is Sonarr-only — pick a Sonarr instance")
+		}
+		if e := validateQbitSeConfig(req.QbitSe, cfg); e != nil {
+			return e
 		}
 	}
 	return nil
@@ -348,6 +367,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		MissingEpisodes: req.MissingEpisodes,
 		PlexSync:        req.PlexSync,
 		TbaRefresh:      req.TbaRefresh,
+		QbitSe:          req.QbitSe,
 		ReleaseGroupIDs: req.ReleaseGroupIDs,
 	}
 	if err := s.App.Config.Update(func(c *core.Config) {
@@ -415,6 +435,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.TbaRefresh != nil {
 				c.Schedules[i].TbaRefresh = req.TbaRefresh
+			}
+			if req.QbitSe != nil {
+				c.Schedules[i].QbitSe = req.QbitSe
 			}
 			if req.ReleaseGroupIDs != nil {
 				c.Schedules[i].ReleaseGroupIDs = req.ReleaseGroupIDs

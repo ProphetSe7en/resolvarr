@@ -2,6 +2,16 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.38-dev — qBit S/E tagging beyond webhooks: one-off, scheduled, and Quick fix-all (2026-06-04)
+
+**qBit Season/Episode tagging now works everywhere, not just on webhooks.** Tagging your qBittorrent torrents by what the release looks like (an episode, a season pack, or neither) used to be a webhook-only function plus a backlog button tucked away on the webhook rule card. It is now a first-class action you can run three more ways (Sonarr only):
+
+- **One-off sweep.** Library scan has a new **qBit S/E tags** sub-tab: pick your qBittorrent instance, choose which torrents get an Episode / Season / Unmatched tag, optionally limit to a category, then Preview and Apply. Great for tagging an existing backlog in one pass.
+- **On a schedule.** Add qBit S/E tagging to a scheduled rule so it sweeps the backlog on a cron, for example nightly.
+- **In Quick fix-all.** Add it as a step in a combined Quick fix-all run alongside your other tagging phases.
+
+All four paths (webhook, one-off, schedule, Quick fix-all) make the exact same tag decision for the same release name, so behaviour is consistent wherever you run it. The webhook function and the webhook rule card's Backlog scan button are unchanged.
+
 ## v0.6.37-dev — Pause/resume fix, clearer Resume icon, better season detection (2026-06-04)
 
 **Fixed: pausing a rule failed for some webhook rules.** Pausing or resuming a webhook rule that used qBit Category Fix or Plex label sync returned a "criteria required" error and didn't toggle. It now pauses and resumes cleanly. Affects Radarr and Sonarr rules alike.

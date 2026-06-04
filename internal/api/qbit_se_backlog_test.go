@@ -391,3 +391,47 @@ func TestQbitSeBacklog_SelectedHashesUnknownDropped(t *testing.T) {
 		t.Errorf("AddTags hit hashes = %v, want [aaa111] (deadbeef must not have triggered an AddTags call)", hitHashes)
 	}
 }
+
+// TestValidateQbitSeConfig locks the shared validator extracted from the
+// webhook rule validator (now also used by the one-off run endpoint).
+func TestValidateQbitSeConfig(t *testing.T) {
+	cfg := core.Config{QbitInstances: []core.QbitInstance{{ID: "qbt1", Name: "main"}}}
+	cases := []struct {
+		name    string
+		in      *core.QbitSeRules
+		wantErr bool
+		check   func(t *testing.T, qse *core.QbitSeRules)
+	}{
+		{"nil rejected", nil, true, nil},
+		{"all disabled rejected", &core.QbitSeRules{QbitInstanceID: "qbt1"}, true, nil},
+		{"missing instance rejected", &core.QbitSeRules{EpisodeEnabled: true}, true, nil},
+		{"unknown instance rejected", &core.QbitSeRules{EpisodeEnabled: true, QbitInstanceID: "nope"}, true, nil},
+		{"invalid tag char rejected", &core.QbitSeRules{QbitInstanceID: "qbt1", EpisodeEnabled: true, EpisodeTag: "bad tag!"}, true, nil},
+		{"blank tags default in place", &core.QbitSeRules{QbitInstanceID: "qbt1", EpisodeEnabled: true, SeasonEnabled: true, UnmatchedEnabled: true}, false,
+			func(t *testing.T, qse *core.QbitSeRules) {
+				if qse.EpisodeTag != "Episode" || qse.SeasonTag != "Season" || qse.UnmatchedTag != "Unmatched" {
+					t.Errorf("defaults not applied: %+v", qse)
+				}
+			}},
+		{"valid custom tag trimmed", &core.QbitSeRules{QbitInstanceID: "qbt1", EpisodeEnabled: true, EpisodeTag: "  ep-1  "}, false,
+			func(t *testing.T, qse *core.QbitSeRules) {
+				if qse.EpisodeTag != "ep-1" {
+					t.Errorf("EpisodeTag = %q, want trimmed \"ep-1\"", qse.EpisodeTag)
+				}
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateQbitSeConfig(c.in, cfg)
+			if c.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c.check != nil {
+				c.check(t, c.in)
+			}
+		})
+	}
+}

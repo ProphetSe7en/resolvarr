@@ -213,6 +213,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Preview returns proposed tags; apply runs the same scan + writes.
 	mux.HandleFunc("POST /api/webhook-rules/qbit-se-backlog/preview", s.handleQbitSeBacklogPreview)
 	mux.HandleFunc("POST /api/webhook-rules/qbit-se-backlog/apply", s.handleQbitSeBacklogApply)
+	// One-off qBit S/E run (Tag Library sub-tab) — inline config, no saved rule.
+	mux.HandleFunc("POST /api/qbit-se/run/preview", s.handleQbitSeRunPreview)
+	mux.HandleFunc("POST /api/qbit-se/run/apply", s.handleQbitSeRunApply)
 
 	// Plex instances + Plex label rules. Plex instances are managed
 	// standalone (same shape as qBit instances) so a single Plex can

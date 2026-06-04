@@ -111,6 +111,8 @@ func (r *schedulerRunner) RunSchedule(ctx context.Context, job core.ScheduledJob
 		summary, runErr = r.runPlexSyncSchedule(ctx, cfg, inst, appType, job)
 	case core.JobModeTbaRefresh:
 		summary, runErr = r.runTbaRefreshSchedule(ctx, inst, appType, job)
+	case core.JobModeQbitSeTag:
+		summary, runErr = r.runQbitSeSchedule(ctx, cfg, inst, appType, job)
 	case core.JobModeCombined:
 		summary, runErr = r.runCombinedSchedule(ctx, cfg, inst, appType, filterCfg, job)
 	default:
@@ -667,6 +669,40 @@ func (r *schedulerRunner) runPlexSyncSchedule(ctx context.Context, cfg core.Conf
 	}, nil
 }
 
+// runQbitSeSchedule runs the standalone qbitsetag phase (Sonarr only):
+// tag every torrent in the configured qBit instance by Season /
+// Episode / Unmatched. Reuses runQbitSeScanWithRules — the same code
+// the one-off run + the webhook backlog button use. Apply mode tags
+// every taggable torrent (no per-row selection in the automated path);
+// preview mode reports the plan only.
+func (r *schedulerRunner) runQbitSeSchedule(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, job core.ScheduledJob) (core.RunSummary, error) {
+	if appType != "sonarr" {
+		return core.RunSummary{Status: "error"}, fmt.Errorf("qbitsetag schedule requires Sonarr instance, got %s", appType)
+	}
+	if job.QbitSe == nil {
+		return core.RunSummary{Status: "error"}, fmt.Errorf("qbitsetag schedule has no qBit S/E config")
+	}
+	apply := defaultMode(job.Options.RunMode, "apply") == "apply"
+	res, apiErr := r.server.runQbitSeScanWithRules(ctx, cfg, job.QbitSe, "", nil, apply)
+	r.server.auditScan("schedule:"+job.ID, "qbitsetag", inst, scanRunRequest{InstanceID: job.InstanceID, Action: "qbitsetag"}, nil, errMsgOf(apiErr))
+	if apiErr != nil {
+		return core.RunSummary{Status: "error"}, apiErr
+	}
+	status := "ok"
+	summary := ""
+	switch v := res.(type) {
+	case qbitSeBacklogApplyResponse:
+		summary = fmt.Sprintf("tagged %d torrent(s)", v.Applied)
+		if v.Failed > 0 {
+			status = "partial"
+			summary += fmt.Sprintf(", %d failed", v.Failed)
+		}
+	case qbitSeBacklogPreviewResponse:
+		summary = fmt.Sprintf("preview: %d taggable, %d already tagged", v.TotalTaggable, v.TotalAlreadyOK)
+	}
+	return core.RunSummary{Status: status, Summary: summary, Result: res}, nil
+}
+
 // runTbaRefreshSchedule runs the standalone tbarefresh phase (Sonarr
 // only). Preview finds TBA files for the configured series filters;
 // in apply mode it then renames EVERY file found (no per-file
@@ -737,6 +773,7 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 	includeMissingEpisodes := false
 	includePlexSync := false
 	includeTbaRefresh := false
+	includeQbitSe := false
 	for _, m := range job.Options.CombinedModes {
 		switch m {
 		case core.JobModeDiscover:
@@ -770,11 +807,17 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 			if appType == "sonarr" {
 				includeTbaRefresh = true
 			}
+		case core.JobModeQbitSeTag:
+			// Sonarr-only qBit-side phase — tags torrents in qBit (not Arr
+			// items). Snapshot config lives on job.QbitSe.
+			if appType == "sonarr" && job.QbitSe != nil {
+				includeQbitSe = true
+			}
 		}
 	}
 	if !includeDiscover && !includeRecover && !includeTag &&
-		!includeAudioTags && !includeVideoTags && !includeDvDetail && !includeMissingEpisodes && !includePlexSync && !includeTbaRefresh {
-		return core.RunSummary{}, fmt.Errorf("combined schedule must include at least one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes/plexsync/tbarefresh")
+		!includeAudioTags && !includeVideoTags && !includeDvDetail && !includeMissingEpisodes && !includePlexSync && !includeTbaRefresh && !includeQbitSe {
+		return core.RunSummary{}, fmt.Errorf("combined schedule must include at least one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes/plexsync/tbarefresh/qbitsetag")
 	}
 
 	var combined []string
@@ -1148,6 +1191,30 @@ func (r *schedulerRunner) runCombinedSchedule(ctx context.Context, cfg core.Conf
 		}
 	}
 
+	// qbitsetag runs independently of the Arr-side phases — it tags
+	// torrents in qBit, not Arr items. Sonarr-only; gated above.
+	if includeQbitSe && phaseErr == nil {
+		apply := defaultMode(job.Options.RunMode, "apply") == "apply"
+		res, apiErr := r.server.runQbitSeScanWithRules(ctx, cfg, job.QbitSe, "", nil, apply)
+		r.server.auditScan("schedule:"+job.ID, "qbitsetag", inst, scanRunRequest{InstanceID: job.InstanceID, Action: "qbitsetag"}, nil, errMsgOf(apiErr))
+		if apiErr != nil {
+			phaseErr = apiErr
+		} else {
+			switch v := res.(type) {
+			case qbitSeBacklogApplyResponse:
+				line := fmt.Sprintf("qbitsetag: tagged %d torrent(s)", v.Applied)
+				if v.Failed > 0 {
+					line += fmt.Sprintf(", %d failed", v.Failed)
+				}
+				combined = append(combined, line)
+				combinedResult.QbitSe = v
+			case qbitSeBacklogPreviewResponse:
+				combined = append(combined, fmt.Sprintf("qbitsetag: %d taggable, %d already tagged (preview)", v.TotalTaggable, v.TotalAlreadyOK))
+				combinedResult.QbitSe = v
+			}
+		}
+	}
+
 	if phaseErr != nil {
 		// Partial-result error path — return the error AND any phase
 		// that did succeed so the notification embed shows both the
@@ -1199,6 +1266,7 @@ type combinedScheduleResult struct {
 	MissingEpisodes    *missingEpisodesPreviewResponse `json:"missingEpisodes,omitempty"`
 	PlexSync           *core.PlexLabelRuleRun          `json:"plexSync,omitempty"`
 	TbaRefresh         *tbaRefreshPreviewResponse      `json:"tbaRefresh,omitempty"`
+	QbitSe             any                             `json:"qbitSe,omitempty"` // qbitSeBacklogApplyResponse (apply) or qbitSeBacklogPreviewResponse (preview)
 }
 
 // combinedScheduleHasAnyResult returns true when at least one phase
@@ -1209,7 +1277,8 @@ func combinedScheduleHasAnyResult(r combinedScheduleResult) bool {
 		r.AudioTags != nil || r.AudioTagsSecondary != nil ||
 		r.VideoTags != nil || r.VideoTagsSecondary != nil ||
 		r.DvDetail != nil || r.DvDetailSecondary != nil ||
-		r.MissingEpisodes != nil || r.PlexSync != nil || r.TbaRefresh != nil
+		r.MissingEpisodes != nil || r.PlexSync != nil || r.TbaRefresh != nil ||
+		r.QbitSe != nil
 }
 
 // runAutoTagOnSecondary fires runAudioTags / runVideoTags / runDvDetail

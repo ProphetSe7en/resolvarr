@@ -235,6 +235,12 @@ function app() {
       if (this.currentPage === 'settings' && this.section === 'plex') {
         this.loadPlexInstances();
       }
+      // qBit instances feed the qBit S/E one-off sub-tab + the schedule
+      // / QFA qBit S/E step dropdowns. Load on a direct-hash / refresh
+      // landing on the Scan tab so those dropdowns aren't empty there.
+      if (this.currentPage === 'scan') {
+        this.loadQbitInstances();
+      }
       // Webhooks page mount effects — fired here (post-loadConfig)
       // rather than from restoreFromHash since restoreFromHash runs
       // before instances are populated. Both refresh-on-#webhooks
@@ -270,6 +276,12 @@ function app() {
       this.currentPage = page;
       localStorage.setItem('resolvarr-page', page);
       this.pushNav();
+      // qBit instances feed the qBit S/E one-off sub-tab + the schedule
+      // / QFA qBit S/E step dropdowns — load on Scan-tab entry so they
+      // are present without first visiting Webhooks / Settings.
+      if (page === 'scan') {
+        this.loadQbitInstances();
+      }
       // Schedules feed both the Run mode rules grid AND the History scan
       // filter chips — load + poll whenever the user is anywhere on the
       // Scan tab. Stop the poll when leaving the Scan tab entirely.
@@ -5858,6 +5870,7 @@ function app() {
                section === 'audio'  || section === 'video'  ||
                section === 'missing-episodes' ||
                section === 'tba-refresh' ||
+               section === 'qbit-se' ||
                section === 'history';
       }
       // Radarr: every visible section EXCEPT the Sonarr-only ones.
@@ -9145,6 +9158,7 @@ function app() {
         missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
         plexSync:         this.snapshotDefaultPlexSync(),
         tbaRefresh:       this.snapshotDefaultTbaRefresh(),
+        qbitSe:           this.snapshotDefaultQbitSe(),
         releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       this.ruleEditor = { open: true, isCreate: true, isQuickFix: false, step: 0, activeTab: 'basics', appType: wizardAppType, busy: false, error: '', cronError: '', nextFires: [], fixedAction: '' };
@@ -9241,6 +9255,7 @@ function app() {
         missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
         plexSync:         this.snapshotDefaultPlexSync(),
         tbaRefresh:       this.snapshotDefaultTbaRefresh(),
+        qbitSe:           this.snapshotDefaultQbitSe(),
         releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       // Merge restored state over defaults. Bucket snapshots use
@@ -9263,6 +9278,7 @@ function app() {
             missingEpisodes: this._mergeBucketSnapshot(restored.missingEpisodes, defaults.missingEpisodes),
             plexSync: (restored.plexSync && typeof restored.plexSync === 'object') ? restored.plexSync : this.snapshotDefaultPlexSync(),
             tbaRefresh: (restored.tbaRefresh && typeof restored.tbaRefresh === 'object') ? restored.tbaRefresh : this.snapshotDefaultTbaRefresh(),
+            qbitSe: (restored.qbitSe && typeof restored.qbitSe === 'object') ? restored.qbitSe : this.snapshotDefaultQbitSe(),
             releaseGroupIds: Array.isArray(restored.releaseGroupIds)
               ? restored.releaseGroupIds
               : defaults.releaseGroupIds,
@@ -9301,6 +9317,7 @@ function app() {
           missingEpisodes: rule.missingEpisodes,
           plexSync: rule.plexSync,
           tbaRefresh: rule.tbaRefresh,
+          qbitSe: rule.qbitSe,
           releaseGroupIds: rule.releaseGroupIds || [],
         };
         localStorage.setItem(this._qfaStateKey(arrType), JSON.stringify(persist));
@@ -9495,6 +9512,7 @@ function app() {
         missingEpisodes:  this.snapshotGlobalMissingEpisodes(),
         plexSync:         this.snapshotDefaultPlexSync(),
         tbaRefresh:       this.snapshotDefaultTbaRefresh(),
+        qbitSe:           this.snapshotDefaultQbitSe(),
         releaseGroupIds:  this.snapshotGlobalRGIds(inst),
       };
       // Overlay the SCAN-LOCAL remembered config for this action (set by
@@ -9644,6 +9662,7 @@ function app() {
       if (!copy.videoTags)       copy.videoTags       = this.snapshotGlobalVideoTags();
       if (!copy.dvDetail)        copy.dvDetail        = this.snapshotGlobalDvDetail();
       if (!copy.missingEpisodes) copy.missingEpisodes = this.snapshotGlobalMissingEpisodes();
+      if (!copy.qbitSe) copy.qbitSe = this.snapshotDefaultQbitSe();
       if (!copy.plexSync)        copy.plexSync        = this.snapshotDefaultPlexSync();
       if (!copy.tbaRefresh)      copy.tbaRefresh      = this.snapshotDefaultTbaRefresh();
       if (!copy.releaseGroupIds) copy.releaseGroupIds = this.snapshotGlobalRGIds(copy.instanceId);
@@ -10663,6 +10682,7 @@ function app() {
       { value: 'missingepisodes', label: 'Find missing episodes',               appliesTo: ['sonarr'] },
       { value: 'plexsync',        label: 'Sync to Plex',                        appliesTo: ['radarr', 'sonarr'], optIn: true },
       { value: 'tbarefresh',      label: 'TBA refresh',                         appliesTo: ['sonarr'], optIn: true },
+      { value: 'qbitsetag',       label: 'qBit S/E tags',                       appliesTo: ['sonarr'], optIn: true },
     ],
     ruleEditorInstanceType() {
       // Locked at open-time on ruleEditor.appType (Create/QFA seed from
@@ -11025,7 +11045,11 @@ function app() {
       // automatically the moment the user picks the function on
       // Basics — same affects-X gate logic the other steps use.
       if (tabId === 'grabrename') return isWebhook && this.ruleAffectsGrabRename();
-      if (tabId === 'qbitse')     return isWebhook && this.ruleAffectsQbitSe();
+      // qBit S/E step is visible for webhook rules (function ticked) AND
+      // for schedule/QFA rules (qbitsetag phase chosen). Sonarr-only on
+      // both: the webhook function + the combined-mode catalog entry are
+      // each gated to Sonarr, so ruleAffectsQbitSe implies Sonarr here.
+      if (tabId === 'qbitse')     return this.ruleAffectsQbitSe();
       if (tabId === 'qbitcategoryfix') return isWebhook && this.ruleAffectsQbitCategoryFix();
       if (tabId === 'plexlabelsync') return isWebhook && this.ruleAffectsPlexLabelSync();
       // Plex sync — dedicated step for schedule + QFA rules (combined
@@ -11239,6 +11263,7 @@ function app() {
       if (!copy.videoTags)       copy.videoTags       = this.snapshotGlobalVideoTags();
       if (!copy.dvDetail)        copy.dvDetail        = this.snapshotGlobalDvDetail();
       if (!copy.missingEpisodes) copy.missingEpisodes = this.snapshotGlobalMissingEpisodes();
+      if (!copy.qbitSe) copy.qbitSe = this.snapshotDefaultQbitSe();
       if (!copy.plexSync)        copy.plexSync        = this.snapshotDefaultPlexSync();
       if (!copy.tbaRefresh)      copy.tbaRefresh      = this.snapshotDefaultTbaRefresh();
       if (!Array.isArray(copy.releaseGroupIds)) copy.releaseGroupIds = this.snapshotGlobalRGIds(copy.instanceId);
@@ -11433,8 +11458,26 @@ function app() {
       return !!o.fnGrabRename;
     },
     ruleAffectsQbitSe() {
-      const o = (this.editingRule && this.editingRule.options) || {};
-      return !!o.fnQbitSeTag;
+      const r = this.editingRule;
+      if (!r) return false;
+      // Webhook rule: the qBit S/E tag function is ticked.
+      if (r.options && r.options.fnQbitSeTag) return true;
+      // Schedule / QFA: qbitsetag is the chosen mode or a chain phase.
+      if (r.mode === 'qbitsetag') return true;
+      if (r.mode === 'combined' && ((r.options && r.options.combinedModes) || []).includes('qbitsetag')) return true;
+      return false;
+    },
+    // Default qBit S/E config for schedule / QFA rules (Sonarr). Same
+    // shape the webhook rule + one-off run use; all three rules seeded
+    // on so a fresh schedule tags out of the box. qbitInstanceId stays
+    // blank until the user picks one (validated on save).
+    snapshotDefaultQbitSe() {
+      return {
+        qbitInstanceId: '',
+        episodeEnabled: true,  episodeTag: 'Episode',
+        seasonEnabled: true,   seasonTag: 'Season',
+        unmatchedEnabled: true, unmatchedTag: 'Unmatched',
+      };
     },
     ruleAffectsQbitCategoryFix() {
       const o = (this.editingRule && this.editingRule.options) || {};
@@ -12204,6 +12247,8 @@ function app() {
       // inline in Review. Send snapshot whenever the phase is in
       // combinedModes so the backend persists it on the saved rule.
       if (this.ruleAffectsMissingEpisodes() && r.missingEpisodes) body.missingEpisodes = JSON.parse(JSON.stringify(r.missingEpisodes));
+      // qBit S/E — Sonarr-only qbitsetag phase (editingRule.qbitSe).
+      if (this.ruleAffectsQbitSe() && r.qbitSe) body.qbitSe = JSON.parse(JSON.stringify(r.qbitSe));
       // Plex sync — dedicated wizard step (editingRule.plexSync). Send
       // whenever the phase is selected so the backend persists the
       // snapshot on the saved schedule.
@@ -12294,6 +12339,8 @@ function app() {
       // inline in Review. Send snapshot whenever the phase is in
       // combinedModes so the backend persists it on the saved rule.
       if (this.ruleAffectsMissingEpisodes() && r.missingEpisodes) body.missingEpisodes = JSON.parse(JSON.stringify(r.missingEpisodes));
+      // qBit S/E — Sonarr-only qbitsetag phase (editingRule.qbitSe).
+      if (this.ruleAffectsQbitSe() && r.qbitSe) body.qbitSe = JSON.parse(JSON.stringify(r.qbitSe));
       // Tag-source ("Source of release groups") — persist the user's
       // pick so it survives save -> reopen. Previously only filter-only
       // was sent, so picking active / discover was silently dropped and
@@ -13163,6 +13210,7 @@ function app() {
     // previous rule.
     openQbitSeBacklog(rule) {
       this.qbitSeBacklogRule = rule;
+      this.qbitSeBacklogConfig = null;
       this.qbitSeBacklogOpen = true;
       this.qbitSeBacklogPreview = null;
       this.qbitSeBacklogApplyResult = null;
@@ -13175,10 +13223,44 @@ function app() {
     closeQbitSeBacklog() {
       this.qbitSeBacklogOpen = false;
       this.qbitSeBacklogRule = null;
+      this.qbitSeBacklogConfig = null;
       this.qbitSeBacklogPreview = null;
       this.qbitSeBacklogApplyResult = null;
       this.qbitSeBacklogSelected = {};
       this.qbitSeBacklogError = '';
+    },
+
+    // openQbitSeRunFromConfig drives the SAME backlog-scan modal from
+    // the Tag Library one-off "qBit S/E tags" sub-tab: it builds an
+    // inline QbitSe config from the sub-tab form (no saved rule), opens
+    // the modal, and runs the preview immediately. The preview/apply
+    // methods branch on qbitSeBacklogConfig to hit the inline-config
+    // endpoints (/api/qbit-se/run/*) instead of the webhook-rule ones.
+    openQbitSeRunFromConfig() {
+      const f = this.qbitSeRunForm || {};
+      if (!f.qbitInstanceId) {
+        this.showToast('Pick a qBittorrent instance first', 'error');
+        return;
+      }
+      if (!f.episodeEnabled && !f.seasonEnabled && !f.unmatchedEnabled) {
+        this.showToast('Enable at least one of Episode / Season / Unmatched', 'error');
+        return;
+      }
+      this.qbitSeBacklogConfig = {
+        qbitInstanceId:   f.qbitInstanceId,
+        episodeEnabled:   !!f.episodeEnabled, episodeTag: (f.episodeTag || '').trim(),
+        seasonEnabled:    !!f.seasonEnabled,  seasonTag: (f.seasonTag || '').trim(),
+        unmatchedEnabled: !!f.unmatchedEnabled, unmatchedTag: (f.unmatchedTag || '').trim(),
+      };
+      this.qbitSeBacklogRule = null;
+      this.qbitSeBacklogOpen = true;
+      this.qbitSeBacklogPreview = null;
+      this.qbitSeBacklogApplyResult = null;
+      this.qbitSeBacklogSelected = {};
+      this.qbitSeBacklogCategoryFilter = (f.categoryFilter || '').trim();
+      this.qbitSeBacklogFilter = 'taggable';
+      this.qbitSeBacklogError = '';
+      this.runQbitSeBacklogPreview();
     },
 
     // Run the preview pass. Pre-selects every taggable row by
@@ -13186,7 +13268,7 @@ function app() {
     // user can flip them on if they want, though already-tagged is
     // a no-op on apply and skipped has no proposed tag).
     async runQbitSeBacklogPreview() {
-      if (!this.qbitSeBacklogRule) return;
+      if (!this.qbitSeBacklogRule && !this.qbitSeBacklogConfig) return;
       // Re-entry guard — the disabled binding on the button already
       // handles UI-layer double-clicks but defence-in-depth at the
       // function boundary catches Alpine error-recovery retries.
@@ -13198,11 +13280,14 @@ function app() {
       // stale results.
       this.qbitSeBacklogApplyResult = null;
       try {
-        const body = {
-          ruleId: this.qbitSeBacklogRule.id,
-          categoryFilter: (this.qbitSeBacklogCategoryFilter || '').trim(),
-        };
-        const r = await this.apiFetch('/api/webhook-rules/qbit-se-backlog/preview', {
+        const catFilter = (this.qbitSeBacklogCategoryFilter || '').trim();
+        const body = this.qbitSeBacklogConfig
+          ? { qbitSe: this.qbitSeBacklogConfig, categoryFilter: catFilter }
+          : { ruleId: this.qbitSeBacklogRule.id, categoryFilter: catFilter };
+        const url = this.qbitSeBacklogConfig
+          ? '/api/qbit-se/run/preview'
+          : '/api/webhook-rules/qbit-se-backlog/preview';
+        const r = await this.apiFetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -13234,7 +13319,7 @@ function app() {
     // honours the filter; without it apply would tag every taggable
     // item regardless of UI selection.
     async runQbitSeBacklogApply() {
-      if (!this.qbitSeBacklogRule || !this.qbitSeBacklogPreview) return;
+      if ((!this.qbitSeBacklogRule && !this.qbitSeBacklogConfig) || !this.qbitSeBacklogPreview) return;
       if (this.qbitSeBacklogApplying) return;
       const selected = Object.keys(this.qbitSeBacklogSelected || {})
         .filter(h => this.qbitSeBacklogSelected[h]);
@@ -13245,12 +13330,14 @@ function app() {
       this.qbitSeBacklogApplying = true;
       this.qbitSeBacklogError = '';
       try {
-        const body = {
-          ruleId: this.qbitSeBacklogRule.id,
-          categoryFilter: (this.qbitSeBacklogCategoryFilter || '').trim(),
-          selectedHashes: selected,
-        };
-        const r = await this.apiFetch('/api/webhook-rules/qbit-se-backlog/apply', {
+        const catFilter = (this.qbitSeBacklogCategoryFilter || '').trim();
+        const body = this.qbitSeBacklogConfig
+          ? { qbitSe: this.qbitSeBacklogConfig, categoryFilter: catFilter, selectedHashes: selected }
+          : { ruleId: this.qbitSeBacklogRule.id, categoryFilter: catFilter, selectedHashes: selected };
+        const url = this.qbitSeBacklogConfig
+          ? '/api/qbit-se/run/apply'
+          : '/api/webhook-rules/qbit-se-backlog/apply';
+        const r = await this.apiFetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -13435,7 +13522,10 @@ function app() {
       // TBA refresh — Sonarr-only file rename. Preview + (apply-mode)
       // rename-all, via the same endpoints the standalone tab uses.
       const runTbaRefresh = has('tbarefresh');
-      if (headPhases.length === 0 && autoPhases.length === 0 && !runMissingEpisodes && !runPlexSync && !runTbaRefresh) {
+      // qBit S/E tags — Sonarr-only qBit-tagging phase via the shared
+      // one-off endpoints. Own bucket like plexsync / tbarefresh.
+      const runQbitSe = has('qbitsetag');
+      if (headPhases.length === 0 && autoPhases.length === 0 && !runMissingEpisodes && !runPlexSync && !runTbaRefresh && !runQbitSe) {
         this.ruleEditor.error = 'No phases to run';
         this.ruleEditor.busy = false;
         return;
@@ -13821,6 +13911,31 @@ function app() {
           results.phases.push(phaseRow);
         }
 
+        // Phase 6 — qBit S/E tags (Sonarr only). Tag every torrent in
+        // the chosen qBit instance by Season / Episode / Unmatched via
+        // the shared one-off endpoints. Apply tags all taggable torrents
+        // (no per-row selection in the chain); preview reports the plan.
+        if (runQbitSe && !isCancelled() && r.qbitSe) {
+          const phaseRow = { phase: 'qbitsetag', ok: true, instanceId: r.instanceId };
+          try {
+            const url = runMode === 'apply' ? '/api/qbit-se/run/apply' : '/api/qbit-se/run/preview';
+            const res = await this.apiFetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ qbitSe: r.qbitSe }),
+            });
+            if (!res.ok) {
+              const d = await res.json().catch(() => ({}));
+              throw new Error(`qbitsetag: ${d.error || 'HTTP ' + res.status}`);
+            }
+            phaseRow.response = await res.json();
+          } catch (e) {
+            phaseRow.ok = false;
+            phaseRow.error = String((e && e.message) || e);
+          }
+          results.phases.push(phaseRow);
+        }
+
         results.finishedAt = new Date().toISOString();
         results.ok = true;
         // Stamp the run's overlay onto every phase response so the
@@ -13838,6 +13953,7 @@ function app() {
         if (runMissingEpisodes) ranList.push('missingepisodes');
         if (runPlexSync) ranList.push('plexsync');
         if (runTbaRefresh) ranList.push('tbarefresh');
+        if (runQbitSe) ranList.push('qbitsetag');
         // Toast wording: per-action wizards (fixedAction) use the
         // action's display name so the toast matches what the user
         // clicked. QFA proper keeps the chain wording. Apply-after-
