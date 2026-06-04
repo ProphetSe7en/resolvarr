@@ -308,6 +308,21 @@ func (s *Server) executeWebhookRule(
 		if !matches {
 			continue
 		}
+		// qBit Category Fix is deferred to a background goroutine so its
+		// history-retry + grace-poll (up to ~20s) never block the Connect
+		// webhook response. Sonarr/Radarr wait on that response, which
+		// serialised per-file imports on a season pack. Schedule it + add
+		// a placeholder result so History shows it was queued.
+		if fn == core.WebhookFnQbitCategoryFix {
+			s.scheduleDeferredCategoryFix(rule, inst, env, body)
+			secs := int(s.categoryFixDeferDelay(rule) / time.Second)
+			results = append(results, functionResult{
+				Function: core.WebhookFnQbitCategoryFix,
+				OK:       true,
+				Summary:  fmt.Sprintf("scheduled, runs in the background ~%ds after import so it does not delay Sonarr/Radarr", secs),
+			})
+			continue
+		}
 		// Fetch tag-details on first auto-tag function we see.
 		// Cached per-instance keyed by inst.ID — different webhook
 		// rules on the same Arr share one lookup. Errors are stored

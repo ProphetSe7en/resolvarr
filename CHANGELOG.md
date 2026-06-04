@@ -2,6 +2,10 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.40-dev — qBit Category Fix no longer slows imports (2026-06-04)
+
+**qBit Category Fix no longer holds up Sonarr/Radarr imports.** It used to run inline while Sonarr/Radarr waited for resolvarr to answer the import notification, and on a season pack (one event per episode) those waits stacked up and made imports crawl. It now runs in the background a short while after import (default 30 seconds, tunable 5 to 600 on the qBit Category Fix step), so the import notification returns instantly. The delay also gives the Arr time to do its own category swap first, so the fix usually finds nothing left to do. It still records its result in History and sends its notification when it finishes.
+
 ## v0.6.39-dev — qBit S/E tags sub-tab is Sonarr-only (2026-06-04)
 
 **Fixed: the qBit S/E tags sub-tab showed under Library scan for Radarr.** qBit Season/Episode tagging is Sonarr-only (Radarr has no per-episode model), but the new sub-tab from v0.6.38-dev appeared on Radarr too. It now shows only when Library scan is set to a Sonarr instance. Quick fix-all and Schedule were already correct.

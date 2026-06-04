@@ -9247,6 +9247,21 @@
               &#9888; <span x-text="qbitCategoryFixWarning()"></span>
             </div>
           </template>
+
+          <!-- Background-defer delay — keeps the Connect webhook reply
+               instant so this never slows Sonarr/Radarr's import. -->
+          <div class="form-group" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border-subtle)">
+            <label class="label" style="font-size:13px;color:var(--text-primary);font-weight:500;margin-bottom:4px">Run in the background, this many seconds after import</label>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+              <input class="input" type="number" min="5" max="600" step="1"
+                     x-model.number="editingRule.qbitCategoryFix.deferSeconds"
+                     placeholder="30" style="width:120px;font-size:13px">
+              <span style="font-size:11px;color:var(--text-secondary)">Default: 30 · Range: 5–600 seconds</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-secondary);line-height:1.5;max-width:520px">
+              The fix runs this many seconds after the import, in the background, so the webhook reply is instant and never delays Sonarr/Radarr (Connect notifications hold up the import until they get a reply). The delay also gives the Arr time to do its own category swap first, so most of the time the fix finds nothing left to do.
+            </div>
+          </div>
         </div>
       </template>
 

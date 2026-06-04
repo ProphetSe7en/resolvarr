@@ -38,6 +38,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -354,4 +355,55 @@ func (s *Server) resolveQbitCategories(
 	// was never populated (rule saved before snapshot fields landed —
 	// shouldn't happen via the validator, but defensive).
 	return cfgRule.PreImportCategorySnapshot, cfgRule.PostImportCategorySnapshot
+}
+
+// categoryFixDeferDelay resolves how long after the import event the
+// deferred category-fix runs. 0 / unset → 30s default; clamped to 600s.
+func (s *Server) categoryFixDeferDelay(rule *core.WebhookRule) time.Duration {
+	secs := 30
+	if rule.QbitCategoryFix != nil && rule.QbitCategoryFix.DeferSeconds > 0 {
+		secs = rule.QbitCategoryFix.DeferSeconds
+	}
+	if secs > 600 {
+		secs = 600
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// scheduleDeferredCategoryFix runs the qBit category-fix in the
+// background `delay` after the import event, instead of inline in the
+// Connect webhook dispatch. The webhook response returns immediately so
+// Sonarr/Radarr's import notification never blocks on the fix's
+// history-retry + grace-poll (which serialised per-file imports on a
+// season pack). The deferred run records its own single-function history
+// entry + notification when it completes.
+//
+// Inputs are snapshotted (the request body + structs must survive past
+// the HTTP response; config is re-read fresh at fire-time). Pending
+// timers are lost on container restart — acceptable for a best-effort
+// workaround for an Arr-side category-swap bug.
+func (s *Server) scheduleDeferredCategoryFix(rule *core.WebhookRule, inst *core.Instance, env *connectEventEnvelope, body []byte) {
+	if rule == nil || inst == nil || env == nil {
+		return
+	}
+	delay := s.categoryFixDeferDelay(rule)
+	ruleCopy := *rule
+	instCopy := *inst
+	envCopy := *env
+	bodyCopy := append([]byte(nil), body...)
+	started := time.Now().UTC()
+	time.AfterFunc(delay, func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				fmt.Fprintf(os.Stderr, "resolvarr: deferred qBit category-fix panicked for rule %s: %v\n", ruleCopy.ID, rec)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		cfg := s.App.Config.Get()
+		res := s.dispatchQbitCategoryFix(ctx, &ruleCopy, cfg, &envCopy, bodyCopy)
+		run := buildWebhookRuleRun(&envCopy, bodyCopy, started, []functionResult{res})
+		s.fireWebhookNotifications(&ruleCopy, &instCopy, &envCopy, bodyCopy, []functionResult{res}, run)
+		s.appendWebhookRuleRunsBatch([]pendingRuleRun{{ruleID: ruleCopy.ID, run: run}})
+	})
 }

@@ -572,6 +572,16 @@ type QbitCategoryFixRules struct {
 	// the time the rule was saved. Same fallback role + UI refresh
 	// flow as the pre-import snapshot.
 	PostImportCategorySnapshot string `json:"postImportCategorySnapshot"`
+
+	// DeferSeconds runs the category-fix this many seconds AFTER the
+	// import event, in a background goroutine, so the Connect webhook
+	// response returns immediately and never delays Sonarr/Radarr's
+	// import. The fix's history-retry + grace-poll (up to ~20s) used to
+	// run inline and block the webhook response, which Sonarr/Radarr
+	// wait on — serialising per-file imports on a season pack. 0 = the
+	// default (30s). The delay also gives the Arr time to do its own
+	// category swap first, so the deferred check usually no-ops.
+	DeferSeconds int `json:"deferSeconds,omitempty"`
 }
 
 // WebhookRule is one saved webhook workflow — InstanceID + Functions +
