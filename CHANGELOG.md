@@ -2,6 +2,10 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.43-dev — Sonarr wording fixes (2026-06-06)
+
+**Fixed: two spots said "Radarr" on a Sonarr instance.** The Recover result panel's "Trigger rename after fix" checkbox and the Preview-vs-Apply help text both named Radarr regardless of the active instance. They now read correctly for Sonarr.
+
 ## v0.6.42-dev — Grab Rename for season packs + two Sonarr Recover fixes (2026-06-06)
 
 **Grab Rename can now rename the files inside a season pack (Sonarr).** Sonarr scores a season pack per file at import, by each file's own name, so renaming only the torrent name didn't help when the files inside were scene-named (for example `web` instead of `WEB-DL`, or missing `NF`) and the import scored low or got stuck. A new "Rename files inside the torrent (needed for season packs)" option on the Sonarr Grab Rename step renames each episode file to match the release title, so each file scores the same at import as it did at grab. "Torrent name only" stays the default and is fine for single-episode grabs.

@@ -95,7 +95,7 @@
           <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-bottom:12px;padding:10px 14px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px">
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-body)">
               <input type="checkbox" x-model="recoverRename" style="accent-color:var(--accent-blue)">
-              <span>Trigger Radarr rename after fix</span>
+              <span>Trigger <span x-text="(recoverResults.instance && recoverResults.instance.type === 'sonarr') ? 'Sonarr' : 'Radarr'"></span> rename after fix</span>
             </label>
             <div style="flex:1;font-size:12px;color:var(--text-secondary)">
               <span x-text="recoverApplySelectedCount() + ' of ' + recoverApplyableCount() + ' selected'"></span>
