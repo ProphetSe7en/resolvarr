@@ -821,6 +821,40 @@ func (c *Client) ListEpisodefiles(ctx context.Context, seriesID int) ([]EpisodeF
 	return out, nil
 }
 
+// Episode is the minimal /api/v3/episode shape the recover flow needs to
+// join episodefiles back to episode IDs. Sonarr's /episodefile endpoint
+// omits the episode link (its episodes field is always null), but /episode
+// carries episodeFileId per episode — so this is the join that lets recover
+// match series history by episodeId. Without it the per-episode filter never
+// fires and recover falls back to fragile sourceTitle matching, which a
+// season-pack grab (named "Show.S02", no episode number) can never satisfy.
+type Episode struct {
+	ID            int `json:"id"`
+	EpisodeFileID int `json:"episodeFileId"`
+	SeasonNumber  int `json:"seasonNumber"`
+	EpisodeNumber int `json:"episodeNumber"`
+}
+
+// ListEpisodes fetches every episode for a Sonarr series (GET
+// /api/v3/episode?seriesId=N). Used to build the episodeFileId → []episodeId
+// map the recover flow attaches to each EpisodeFile.Episodes.
+func (c *Client) ListEpisodes(ctx context.Context, seriesID int) ([]Episode, error) {
+	path := fmt.Sprintf("/api/v3/episode?seriesId=%d", seriesID)
+	resp, err := c.do(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var out []Episode
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("parse episodes: %w", err)
+	}
+	return out, nil
+}
+
 // SonarrRenameRecord is the subset of /api/v3/rename we need. Sonarr
 // returns ONLY files whose on-disk name differs from what the series'
 // naming pattern would produce. That's exactly the TBA-refresh signal:

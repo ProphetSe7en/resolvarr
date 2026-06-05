@@ -837,7 +837,11 @@ func (s *Server) dispatchRecover(
 	}
 	ed := extractDownload(rule.AppType, payload)
 	if !ed.OK {
-		return functionResult{Function: core.WebhookFnRecover, OK: true, Summary: "skipped (no movieFile on event payload)"}
+		fileField := "movieFile"
+		if rule.AppType == "sonarr" {
+			fileField = "episodeFile"
+		}
+		return functionResult{Function: core.WebhookFnRecover, OK: true, Summary: "skipped (no " + fileField + " on event payload)"}
 	}
 
 	// Already-populated releaseGroup → bash skips (line 951-952 of

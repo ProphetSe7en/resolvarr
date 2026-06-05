@@ -146,6 +146,30 @@ func (s *Server) runRecoverSonarr(ctx context.Context, inst *core.Instance, req 
 		}
 		resp.Totals.RecoverAffected += len(affected)
 
+		// Join episodefiles back to their episode IDs. Sonarr's
+		// /episodefile endpoint returns episodes:null, so without this the
+		// per-episode history filter (Strategy A in filterHistoryForEpisode
+		// file) never fires and recover falls back to sourceTitle matching
+		// — which a season-pack grab (named "Show.S02", no episode number)
+		// can never satisfy, surfacing every pack episode as a false
+		// "failed-verify". /api/v3/episode carries episodeFileId per episode;
+		// build the reverse map and attach the IDs each affected file covers.
+		// Non-fatal on error: the per-epfile filter degrades to sourceTitle
+		// matching exactly as before.
+		if eps, eErr := client.ListEpisodes(ctx, ser.ID); eErr == nil {
+			byFile := make(map[int][]arr.EpisodeRef, len(eps))
+			for _, ep := range eps {
+				if ep.EpisodeFileID > 0 {
+					byFile[ep.EpisodeFileID] = append(byFile[ep.EpisodeFileID], arr.EpisodeRef{ID: ep.ID})
+				}
+			}
+			for i := range affected {
+				if refs := byFile[affected[i].ID]; len(refs) > 0 {
+					affected[i].Episodes = refs
+				}
+			}
+		}
+
 		// Series-level history fetched once and re-used across every
 		// affected epfile in this series. Bash same — saves N*M curls.
 		history, hErr := client.ListHistoryForSeries(ctx, ser.ID)
@@ -339,7 +363,10 @@ func filterHistoryForEpisodefile(history []arr.HistoryRecord, ef arr.EpisodeFile
 			}
 		}
 		if len(out) > 0 {
-			return out
+			// Re-attach grab + import events the episodeId filter dropped
+			// because Sonarr tagged them to a sibling episode of the same
+			// download (season packs) — see attachDownloadIDLinkedEvents.
+			return attachDownloadIDLinkedEvents(out, history, want)
 		}
 	}
 	// Strategy B: sourceTitle pattern fallback.
@@ -354,4 +381,72 @@ func filterHistoryForEpisodefile(history []arr.HistoryRecord, ef arr.EpisodeFile
 		}
 	}
 	return out
+}
+
+// attachDownloadIDLinkedEvents re-includes grab and import events from the
+// full series history whose downloadId matches a downloadId already on one
+// of the episode's matched events, but which the per-episode episodeId
+// filter (Strategy A) dropped because Sonarr tagged them to a sibling
+// episode of the same download.
+//
+// A season pack breaks per-episode narrowing in two ways, both of which
+// surface as a false "failed-verify" for the affected episodes even though
+// the file plainly came from the pack:
+//
+//   - the grab may be a single season-level event with no per-episode
+//     episodeId — the filter drops it, leaving the import with no grab to
+//     verify against; and
+//   - the import may be a single downloadFolderImported event tagged only
+//     to the pack's FIRST episode — the filter drops it for every other
+//     episode, leaving those episodes with a grab but no import, so the
+//     verifier's "find newest import" step (FindImportedGrabGroup) fails.
+//
+// The real Legion S02 case was the second: each episode had its own grab
+// but the lone import event was tagged to E01, so E02-E11 reported
+// failed-verify. Re-attaching every grab/import event sharing the episode's
+// downloadId restores the import+grab pairing the verifier needs — the same
+// complete-history view the Radarr/bash path has naturally, since it never
+// narrows per-movie history. Events already pulled in by Strategy A (their
+// own episodeId matched) are skipped so they aren't duplicated.
+func attachDownloadIDLinkedEvents(matched, full []arr.HistoryRecord, matchedEpisodeIDs map[int]bool) []arr.HistoryRecord {
+	wantDL := make(map[string]bool)
+	for _, h := range matched {
+		if dl := strings.TrimSpace(h.DownloadID); dl != "" {
+			wantDL[dl] = true
+		}
+	}
+	if len(wantDL) == 0 {
+		return matched
+	}
+	for _, h := range full {
+		if !isGrabOrImportEvent(h.EventType) {
+			continue
+		}
+		// Already pulled in by Strategy A (its own episodeId matched).
+		if h.EpisodeID > 0 && matchedEpisodeIDs[h.EpisodeID] {
+			continue
+		}
+		dl := strings.TrimSpace(h.DownloadID)
+		if dl == "" || !wantDL[dl] {
+			continue
+		}
+		matched = append(matched, h)
+	}
+	return matched
+}
+
+// isGrabOrImportEvent reports whether an event type is a grab or one of the
+// import-confirmation events FindImportedGrabGroup anchors on. Mirrors the
+// engine's HistoryEvent* constants (grabbed / downloadFolderImported /
+// movieFileImported / episodeFileImported).
+func isGrabOrImportEvent(t string) bool {
+	switch t {
+	case "grabbed",
+		"downloadFolderImported",
+		"movieFileImported",
+		"episodeFileImported":
+		return true
+	default:
+		return false
+	}
 }

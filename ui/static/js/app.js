@@ -6416,7 +6416,7 @@ function app() {
 
     async saveAudioTags() {
       if (this.audioTagPrefixInvalid()) {
-        this.showToast('Audio prefix has invalid characters — Radarr only allows a-z, 0-9, and -', 'error');
+        this.showToast('Audio prefix has invalid characters — tag names only allow a-z, 0-9, and -', 'error');
         return;
       }
       try {
@@ -6669,7 +6669,7 @@ function app() {
     async saveVideoTags() {
       const invalid = ['resolution', 'codec', 'hdr'].filter(b => this.videoTagPrefixInvalid(b));
       if (invalid.length > 0) {
-        this.showToast(invalid[0] + ' prefix has invalid characters — Radarr only allows a-z, 0-9, and -', 'error');
+        this.showToast(invalid[0] + ' prefix has invalid characters — tag names only allow a-z, 0-9, and -', 'error');
         return;
       }
       try {
@@ -6865,9 +6865,10 @@ function app() {
     // Run-mode label as it'll behave on dispatch.
     reviewRunModeLabel() {
       if (!this.editingRule) return '';
+      const app = (this.ruleEditor && this.ruleEditor.appType === 'sonarr') ? 'Sonarr' : 'Radarr';
       const m = this.editingRule.options && this.editingRule.options.runMode;
-      if (m === 'preview') return 'Preview (read-only — nothing is written to Radarr)';
-      return 'Apply (writes tag changes to Radarr)';
+      if (m === 'preview') return `Preview (read-only — nothing is written to ${app})`;
+      return `Apply (writes tag changes to ${app})`;
     },
 
     // Resolve the secondary instance that sync / auto-tags-on-secondary

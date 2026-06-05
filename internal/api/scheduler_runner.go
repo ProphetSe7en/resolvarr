@@ -1493,7 +1493,11 @@ func summarizeRecoverResponse(resp *scanResponse) core.RunSummary {
 		parts = append(parts, fmt.Sprintf("%d fix-failed", t.RecoverFixFailed))
 	}
 	if len(parts) == 0 {
-		parts = append(parts, "no movies needed recovery")
+		noun := "movies"
+		if resp.Instance.Type == "sonarr" {
+			noun = "episode files"
+		}
+		parts = append(parts, "no "+noun+" needed recovery")
 	}
 	return core.RunSummary{
 		Status:  status,

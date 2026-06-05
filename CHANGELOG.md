@@ -2,6 +2,14 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.41-dev — Recover handles Sonarr season packs (2026-06-05)
+
+**Fixed: Recover wrongly reported "failed verify" on Sonarr season packs.** When a whole season was downloaded as one pack, every episode after the first showed "failed verify" and never got its release group restored, even though the group was sitting right there in the download history. Recover now follows the pack's grab and import across the whole series, so all episodes in the pack recover their release group. Same behaviour in a one-off scan, a Quick fix-all, and a scheduled run. Webhook recover was already correct. Files with no grab or import in history (nothing to recover from) still report honestly and are left untouched.
+
+**Clearer wording on Sonarr.** A few labels and messages were written for Radarr and showed the wrong word on a Sonarr instance, for example a Quick fix-all review that said "nothing is written to Radarr" and a recover summary that counted "movies". They now say Sonarr, series, or episode files as appropriate.
+
+**Large Sonarr scans no longer time out as easily.** Recover and Audio/Video tagging walk every series, so on a big or error-heavy library a run could hit a "context deadline exceeded" error partway through. The time budget is raised from 60 to 180 seconds so those runs finish.
+
 ## v0.6.40-dev — qBit Category Fix no longer slows imports (2026-06-04)
 
 **qBit Category Fix no longer holds up Sonarr/Radarr imports.** It used to run inline while Sonarr/Radarr waited for resolvarr to answer the import notification, and on a season pack (one event per episode) those waits stacked up and made imports crawl. It now runs in the background a short while after import (default 30 seconds, tunable 5 to 600 on the qBit Category Fix step), so the import notification returns instantly. The delay also gives the Arr time to do its own category swap first, so the fix usually finds nothing left to do. It still records its result in History and sends its notification when it finishes.

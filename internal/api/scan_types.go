@@ -588,10 +588,16 @@ type scanDebugBucket struct {
 // scanTimeout is the upper bound for a single /api/scan/run invocation.
 // Tag-mode against a ~5000-movie library against a LAN Radarr takes a few
 // seconds (one GET /movie + one GET /tag/detail + a handful of editor
-// batches). 60 seconds is generous for preview and realistic for apply
-// even on slow indexers. Schedules running this as a background job can
-// use a larger timeout — that path lands in a later commit.
-const scanTimeout = 60 * time.Second
+// batches). The Sonarr paths (Recover, Audio/Video tagging) are heavier:
+// they walk series, fetching each series' episode files (and, for series
+// that need recovery, the grab history too), so on a large or
+// error-heavy library the whole pass can run past a minute and hit a
+// "context deadline exceeded" on whichever request is in flight. 180s
+// gives those a realistic budget. Interim measure: the proper fix is a
+// cancellable live-progress scan (see docs/resolvarr/live-scan-design.md)
+// so a long scan streams results + can be cancelled instead of blocking
+// the HTTP response on one deadline.
+const scanTimeout = 180 * time.Second
 
 // Compile-time guard: this file uses arr.Item which must carry MovieFile.
 // If the field is removed or renamed we want a build break here, not

@@ -33,7 +33,7 @@
                           <div style="flex:1;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                             <code style="color:var(--accent-blue);font-size:13px;font-weight:600" x-text="c.label"></code>
                             <span style="font-size:11px;color:var(--text-secondary)">tag id: <span x-text="c.tagId"></span></span>
-                            <span style="font-size:11px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:2px 8px;border-radius:8px">0 movies</span>
+                            <span style="font-size:11px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:2px 8px;border-radius:8px" x-text="(cleanupResults && cleanupResults.instance && cleanupResults.instance.type === 'sonarr') ? '0 series' : '0 movies'"></span>
                           </div>
                           <button class="btn btn-sm btn-danger"
                                   @click="deleteOneCleanup(c.label)"
