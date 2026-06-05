@@ -249,13 +249,30 @@ func (s *Server) runRecoverSonarr(ctx context.Context, inst *core.Instance, req 
 				continue
 			}
 
-			// status == RecoverFound — populate import-event metadata.
+			// status == RecoverFound. Sonarr-only safety: if the newest
+			// import event has no downloadId, the file on disk came from a
+			// MANUAL import (Sonarr's Manual Import, or a hand-placed file
+			// picked up on rescan) — not a tracked download. With no
+			// downloadId to anchor on, FindImportedGrabGroup falls back to a
+			// title+year match against an OLDER grab that belongs to the
+			// previous, since-replaced file, and would wrongly attribute
+			// that grab's release group (the Overlord/baptisterio + manual-
+			// replace reports). The current file didn't come from that grab,
+			// so don't recover — report failed-verify so it's visible and
+			// not auto-applied. Radarr keeps the bash-proven behaviour; this
+			// guard lives only on the Sonarr path, where the manual-replace
+			// case was reported and where the /episode-join surfaces it.
+			importEv := newestImportEvent(engHistory)
+			if importEv == nil || strings.TrimSpace(importEv.DownloadID) == "" {
+				row.Status = "failed-verify"
+				resp.Totals.RecoverFailedVerify++
+				resp.Recover = append(resp.Recover, row)
+				continue
+			}
 			row.RecoveredGroup = recoveredGroup
-			if importEv := newestImportEvent(engHistory); importEv != nil {
-				row.ImportSourceTitle = importEv.SourceTitle
-				if !importEv.Date.IsZero() {
-					row.ImportDate = importEv.Date.UTC().Format(time.RFC3339)
-				}
+			row.ImportSourceTitle = importEv.SourceTitle
+			if !importEv.Date.IsZero() {
+				row.ImportDate = importEv.Date.UTC().Format(time.RFC3339)
 			}
 
 			if req.Mode == "preview" {

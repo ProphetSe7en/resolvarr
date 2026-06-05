@@ -16,6 +16,7 @@ package engine
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -311,4 +312,91 @@ func MatchCustomTokens(current, grab string, customTokens []CompiledCustomToken)
 type CompiledCustomToken struct {
 	Label   string
 	Pattern *regexp.Regexp
+}
+
+// ---------------------------------------------------------------------------
+// Season-pack per-file rename ("files" target) — Sonarr only.
+//
+// Sonarr scores a season pack per file at import, not by the torrent
+// name, so a torrent-name rename can't fix scene-stripped inner files.
+// The "files" target renames each episode file to the release title
+// with that file's SxxEyy substituted in, so each file parses with the
+// full release tokens (NF, WEB-DL, group, ...). These two helpers are
+// the pure transform; the per-file trigger loop + qBit calls live in
+// the API adapter.
+// ---------------------------------------------------------------------------
+
+// seasonEpisodeTokenRE pulls the SxxEyy span (incl. multi-episode
+// continuations S03E01E02 / S03E01-E02) out of a file name. Group 1 is
+// the season digits.
+var seasonEpisodeTokenRE = regexp.MustCompile(`(?i)\bS(\d{1,4})E\d{1,3}(?:[-E]+\d{1,3})*\b`)
+
+// ParseSeasonEpisodeToken extracts the canonical SxxEyy token from a
+// file name (e.g. "the.last.kingdom.s03e01.proper...mkv" → "S03E01",
+// season 3). Multi-episode spans are preserved ("S03E01E02"). Returns
+// ("", 0, false) when the name carries no SxxEyy.
+func ParseSeasonEpisodeToken(name string) (token string, season int, ok bool) {
+	m := seasonEpisodeTokenRE.FindStringSubmatch(name)
+	if m == nil {
+		return "", 0, false
+	}
+	s, err := strconv.Atoi(m[1])
+	if err != nil {
+		return "", 0, false
+	}
+	// m[0] is the whole SxxEyy(+) span; upper-case so the rebuilt title
+	// is consistent regardless of the file's casing.
+	return strings.ToUpper(m[0]), s, true
+}
+
+// BuildSeasonPackEpisodeTitle takes a season-level grab title (e.g.
+// "The Last Kingdom S03 1080p Proper NF WEB-DL DD+ 5.1 x264-STRiFE")
+// and a per-episode token parsed from a file inside the pack ("S03E01",
+// season 3) and returns the grab title with the season token expanded to
+// that episode token:
+//
+//	"The Last Kingdom S03 1080p ... -STRiFE" + "S03E01"
+//	  → "The Last Kingdom S03E01 1080p ... -STRiFE"
+//
+// Matches the season token as "S03"/"S3" or "Season 03"/"Season 3" for
+// the season episodeToken belongs to. Only a season-ONLY token is
+// replaced (not one already followed by E<n>), so a grab title that is
+// already per-episode is left alone (returns false → caller uses the
+// title as-is or skips). Returns ("", false) when episodeToken is
+// malformed or no matching season token exists — caller skips that file
+// rather than guessing.
+func BuildSeasonPackEpisodeTitle(grabTitle, episodeToken string, season int) (string, bool) {
+	episodeToken = strings.ToUpper(strings.TrimSpace(episodeToken))
+	if grabTitle == "" || episodeToken == "" || season <= 0 {
+		return "", false
+	}
+	n := strconv.Itoa(season)
+	sxx := regexp.MustCompile(`(?i)\bS0*` + n + `\b`)
+	seasonWord := regexp.MustCompile(`(?i)\bSeason\s+0*` + n + `\b`)
+
+	if loc := firstSeasonOnlyMatch(grabTitle, sxx); loc != nil {
+		return grabTitle[:loc[0]] + episodeToken + grabTitle[loc[1]:], true
+	}
+	if loc := seasonWord.FindStringIndex(grabTitle); loc != nil {
+		return grabTitle[:loc[0]] + episodeToken + grabTitle[loc[1]:], true
+	}
+	return "", false
+}
+
+// firstSeasonOnlyMatch returns the first Sxx match that is NOT already
+// followed by an episode marker (E<digit>) — a genuine season-only
+// token, not the "Sxx" half of an existing "SxxEyy". RE2 has no negative
+// lookahead, so matches are filtered here.
+func firstSeasonOnlyMatch(s string, re *regexp.Regexp) []int {
+	for _, loc := range re.FindAllStringIndex(s, -1) {
+		end := loc[1]
+		if end < len(s) {
+			rest := s[end:]
+			if len(rest) >= 2 && (rest[0] == 'E' || rest[0] == 'e') && rest[1] >= '0' && rest[1] <= '9' {
+				continue // already SxxEyy
+			}
+		}
+		return loc
+	}
+	return nil
 }

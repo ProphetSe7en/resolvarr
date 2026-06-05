@@ -137,6 +137,43 @@ func TestFilterHistoryReattachesSeasonPackImport(t *testing.T) {
 	}
 }
 
+// TestManualImportNewestHasNoDownloadID locks in the Sonarr manual-
+// replace guard. When the file on disk was manually imported (Sonarr
+// Manual Import, or a hand-placed file picked up on rescan), the newest
+// import event carries no downloadId. FindImportedGrabGroup then can't
+// downloadId-match, falls back to a title+year match against the OLDER
+// grab, and WRONGLY recovers that grab's group (the Overlord/baptisterio
+// + manual-replace reports). runRecoverSonarr guards on
+// newestImportEvent().DownloadID == "" to drop these to failed-verify.
+// This documents both signals the guard relies on.
+func TestManualImportNewestHasNoDownloadID(t *testing.T) {
+	oldGrab := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	oldImport := time.Date(2024, 1, 1, 11, 0, 0, 0, time.UTC)
+	manual := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
+
+	hist := []engine.HistoryRecord{
+		{EventType: engine.HistoryEventGrabbed, Date: oldGrab, SourceTitle: "Overlord.S01E05.1080p.WEB-DL-baptisterio", DownloadID: "DL1", ReleaseGroup: "baptisterio"},
+		{EventType: engine.HistoryEventDownloadFolderImported, Date: oldImport, SourceTitle: "Overlord.S01E05.1080p.WEB-DL-baptisterio", DownloadID: "DL1"},
+		// Manual import of a user-supplied file — no downloadId.
+		{EventType: engine.HistoryEventEpisodeFileImported, Date: manual, SourceTitle: "Overlord.S01E05.mkv", DownloadID: ""},
+	}
+
+	// Precondition: the engine alone (wrongly) recovers the old group via
+	// its title+year fallback, because the newest import has no downloadId
+	// to anchor a precise match.
+	rg, status := engine.FindImportedGrabGroup(hist, "Overlord", 0)
+	if status != engine.RecoverFound || rg != "baptisterio" {
+		t.Fatalf("precondition: engine should fall back to the old grab; got (%q, %v)", rg, status)
+	}
+
+	// Guard signal: the newest import is the manual one, with no
+	// downloadId — runRecoverSonarr uses exactly this to skip recovery.
+	ev := newestImportEvent(hist)
+	if ev == nil || ev.DownloadID != "" {
+		t.Fatalf("expected newest import to be the manual event with empty downloadId; got %+v", ev)
+	}
+}
+
 // TestFilterHistoryNoCrossContamination confirms the re-attach only pulls
 // grabs sharing the episode's own import downloadId — a different pack's
 // grab (other downloadId) must not bleed in.

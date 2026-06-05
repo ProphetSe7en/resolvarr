@@ -2,6 +2,14 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.42-dev — Grab Rename for season packs + two Sonarr Recover fixes (2026-06-06)
+
+**Grab Rename can now rename the files inside a season pack (Sonarr).** Sonarr scores a season pack per file at import, by each file's own name, so renaming only the torrent name didn't help when the files inside were scene-named (for example `web` instead of `WEB-DL`, or missing `NF`) and the import scored low or got stuck. A new "Rename files inside the torrent (needed for season packs)" option on the Sonarr Grab Rename step renames each episode file to match the release title, so each file scores the same at import as it did at grab. "Torrent name only" stays the default and is fine for single-episode grabs.
+
+**Fixed: Recover's Exclude now takes effect right away.** Excluding a series, season, or movie in a Recover result did save the exclusion for the next scan, but the row stayed on screen and still counted toward Apply, so it looked like nothing happened. Excluded items now drop out of the result immediately (into "Show excluded") and are left out of Apply.
+
+**Fixed: Recover no longer puts the wrong release group on a manually-imported episode (Sonarr).** If you replaced an episode with your own file via Sonarr's Manual Import, Recover could attribute the previous download's release group to the new file. It now recognises a manually-imported file (no download attached) and reports it as "failed verify" instead of guessing a group. Normal downloads and season packs are unaffected.
+
 ## v0.6.41-dev — Recover handles Sonarr season packs (2026-06-05)
 
 **Fixed: Recover wrongly reported "failed verify" on Sonarr season packs.** When a whole season was downloaded as one pack, every episode after the first showed "failed verify" and never got its release group restored, even though the group was sitting right there in the download history. Recover now follows the pack's grab and import across the whole series, so all episodes in the pack recover their release group. Same behaviour in a one-off scan, a Quick fix-all, and a scheduled run. Webhook recover was already correct. Files with no grab or import in history (nothing to recover from) still report honestly and are left untouched.

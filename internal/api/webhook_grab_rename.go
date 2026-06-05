@@ -25,7 +25,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"regexp"
+	"sort"
 	"strings"
 
 	"resolvarr/internal/core"
@@ -110,10 +112,15 @@ func (s *Server) dispatchGrabRename(
 	if renameTarget == "" {
 		renameTarget = core.GrabRenameTargetTorrent
 	}
-	if renameTarget != core.GrabRenameTargetTorrent {
+	// "file" target renames each episode file inside the torrent — wired
+	// for Sonarr only (it exists to fix season-pack per-file scoring,
+	// where Sonarr parses each file by its own name). "both" + Radarr
+	// file rename aren't wired yet.
+	filesMode := renameTarget == core.GrabRenameTargetFile && strings.EqualFold(rule.AppType, "sonarr")
+	if renameTarget != core.GrabRenameTargetTorrent && !filesMode {
 		return functionResult{
 			Function: core.WebhookFnGrabRename, OK: false,
-			Summary: fmt.Sprintf("rename target %q is configured but not yet supported (only 'torrent' is wired in v1)", renameTarget),
+			Summary: fmt.Sprintf("rename target %q not supported (use 'torrent', or 'file' on a Sonarr rule for season packs)", renameTarget),
 		}
 	}
 
@@ -185,6 +192,13 @@ func (s *Server) dispatchGrabRename(
 			Summary: fmt.Sprintf("skipped (torrent hash %s not in qbit after retries — already removed?)", hash),
 		}
 	}
+	// Season-pack files mode (Sonarr): rename each episode file inside
+	// the torrent. The torrent must exist (waitForTorrent above confirmed
+	// it); the per-file work runs off ListTorrentFiles, not the name.
+	if filesMode {
+		return s.dispatchGrabRenameFiles(ctx, client, hash, grabTitle, rg, criteria, qbitInst.Name)
+	}
+
 	currentName := current.Name
 	if currentName == grabTitle {
 		return functionResult{Function: core.WebhookFnGrabRename, OK: true, Summary: "skipped (torrent name already equals grab title)"}
@@ -361,6 +375,135 @@ func evaluateGrabRenameTriggers(currentName, grabTitle, rg string, c *core.GrabR
 	}
 
 	return reasons
+}
+
+// videoFileRE matches the container extensions we rename inside a
+// season pack. Non-video files (nfo / sample / subs) are left alone.
+var videoFileRE = regexp.MustCompile(`(?i)\.(mkv|mp4|avi|m4v|mov|wmv|flv|webm|ts|mpg|mpeg)$`)
+
+// dispatchGrabRenameFiles is the "file" rename target (Sonarr season
+// packs). Sonarr scores a season pack per file at import — by each
+// file's own name, not the torrent display name — so a scene-stripped
+// inner file (e.g. "web" instead of "WEB-DL", missing "NF") scores far
+// below the grab and the import can get stuck. This renames each
+// episode file to the release title with that file's SxxEyy substituted
+// in, so every file parses with the full release tokens.
+//
+// Per file: parse SxxEyy → build the per-episode title → run the SAME
+// triggers the torrent path uses (comparing the file name to the grab
+// title) → rename only files where ≥1 trigger fires (or TriggerAlways).
+// Files with no SxxEyy, or when the grab title has no matching season
+// token, are skipped (never guessed). One file's rename failure doesn't
+// abort the rest.
+func (s *Server) dispatchGrabRenameFiles(ctx context.Context, client *qbit.Client, hash, grabTitle, rg string, criteria *core.GrabRenameCriteria, qbitInstName string) functionResult {
+	files, err := client.ListTorrentFiles(ctx, hash)
+	if err != nil {
+		return functionResult{Function: core.WebhookFnGrabRename, OK: false, Summary: "qbit list files", Err: err}
+	}
+	if len(files) == 0 {
+		return functionResult{Function: core.WebhookFnGrabRename, OK: true, Summary: "skipped (torrent has no files listed yet)"}
+	}
+
+	var renamed, skipped, failed int
+	var lastErr error
+	var firstFrom, firstTo string
+	reasonSet := map[string]bool{}
+	// Guard against two files mapping to the same target name (e.g. a
+	// pack carrying a dupe of an episode, or a sample that parses to a
+	// real SxxEyy). qBit would reject the second with 409; skip it
+	// ourselves so the tally stays honest and we don't churn the API.
+	usedTargets := map[string]bool{}
+
+	for _, f := range files {
+		if !videoFileRE.MatchString(f.Name) {
+			continue
+		}
+		base := path.Base(f.Name)
+		token, season, ok := engine.ParseSeasonEpisodeToken(base)
+		if !ok {
+			skipped++
+			continue
+		}
+		perEp, ok := engine.BuildSeasonPackEpisodeTitle(grabTitle, token, season)
+		if !ok {
+			skipped++
+			continue
+		}
+		reasons := evaluateGrabRenameTriggers(base, grabTitle, rg, criteria)
+		if criteria.TriggerAlways && len(reasons) == 0 {
+			reasons = append(reasons, "always-rename")
+		}
+		if len(reasons) == 0 {
+			skipped++
+			continue
+		}
+		newBase := engine.NormalizeRgSegment(perEp, rg) + path.Ext(f.Name)
+		newPath := newBase
+		if dir := path.Dir(f.Name); dir != "." && dir != "" {
+			newPath = dir + "/" + newBase
+		}
+		if newPath == f.Name {
+			skipped++
+			continue
+		}
+		if usedTargets[newPath] {
+			// Another file in this pass already took this target name.
+			skipped++
+			continue
+		}
+		if err := client.RenameFile(ctx, hash, f.Name, newPath); err != nil {
+			failed++
+			lastErr = err
+			continue
+		}
+		usedTargets[newPath] = true
+		renamed++
+		for _, r := range reasons {
+			reasonSet[r] = true
+		}
+		if firstFrom == "" {
+			firstFrom, firstTo = base, newBase
+		}
+	}
+
+	if renamed == 0 {
+		if failed > 0 {
+			return functionResult{
+				Function: core.WebhookFnGrabRename, OK: false,
+				Summary: fmt.Sprintf("no files renamed (%d failed)", failed), Err: lastErr,
+			}
+		}
+		return functionResult{
+			Function: core.WebhookFnGrabRename, OK: true,
+			Summary: fmt.Sprintf("skipped (no episode files needed renaming; %d files examined)", len(files)),
+		}
+	}
+
+	reasonList := make([]string, 0, len(reasonSet))
+	for r := range reasonSet {
+		reasonList = append(reasonList, r)
+	}
+	sort.Strings(reasonList)
+
+	summary := fmt.Sprintf("renamed %d episode file(s) inside the pack", renamed)
+	if skipped > 0 {
+		summary += fmt.Sprintf(", skipped %d", skipped)
+	}
+	if failed > 0 {
+		summary += fmt.Sprintf(", %d failed", failed)
+	}
+	summary += fmt.Sprintf(" (triggers: %s)", strings.Join(reasonList, ", "))
+
+	return functionResult{
+		Function: core.WebhookFnGrabRename, OK: true, Changed: true,
+		Summary: summary,
+		Detail: GrabRenameDetail{
+			From:         firstFrom,
+			To:           firstTo,
+			Triggers:     reasonList,
+			QbitInstance: qbitInstName,
+		},
+	}
 }
 
 // compileCustomTokens converts the rule's user-supplied "Label:regex"

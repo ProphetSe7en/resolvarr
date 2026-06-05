@@ -2002,6 +2002,21 @@ function app() {
       return false;
     },
 
+    // isRecoverItemExcluded reports whether a recover result ROW is
+    // currently excluded, so the active result view + apply selection
+    // drop it the instant the user clicks Exclude — not only on the next
+    // scan. Sonarr rows match by series/season (whole-series covered by
+    // isSeasonExcluded); Radarr rows are movies, matched by movie id
+    // (= row id, what excludeMovie(it.id) wrote).
+    isRecoverItemExcluded(it) {
+      if (!it) return false;
+      if (this.recoverResults && this.recoverResults.instance && this.recoverResults.instance.type === 'sonarr') {
+        if (typeof it.seasonNumber === 'number') return this.isSeasonExcluded(it.seriesId, it.seasonNumber);
+        return this.isSeriesExcluded(it.seriesId);
+      }
+      return this.isMovieExcluded(it.id);
+    },
+
     // Add-to-exclusions wrappers. Each takes the relevant identity,
     // POSTs to the API, and refreshes local state. Toast on success
     // so the user knows the click registered (the result-panel UI
@@ -3225,7 +3240,18 @@ function app() {
         this.showToast('Run a fresh Recover before applying — current panel is a snapshot.', 'error');
         return;
       }
-      const ids = Object.keys(this.recoverApplySelected).filter(k => !!this.recoverApplySelected[k]).map(k => parseInt(k, 10));
+      // Drop any selected id whose row is now excluded — excluding after
+      // ticking must never apply that row (belt-and-braces; the backend
+      // also re-checks exclusions on the apply scan).
+      const excludedIds = new Set(
+        (this.recoverResults.recover || [])
+          .filter(it => this.isRecoverItemExcluded(it))
+          .map(it => it.id)
+      );
+      const ids = Object.keys(this.recoverApplySelected)
+        .filter(k => !!this.recoverApplySelected[k])
+        .map(k => parseInt(k, 10))
+        .filter(id => !excludedIds.has(id));
       if (ids.length === 0) return;
       // Apply against the SAME instance the preview ran on, not the
       // Library-scan-global selector. The result panel can be opened by
@@ -3426,6 +3452,7 @@ function app() {
     recoverApplyableCount() {
       if (!this.recoverResults) return 0;
       return (this.recoverResults.recover || [])
+        .filter(it => !this.isRecoverItemExcluded(it))
         .filter(it => it.status === 'would-fix' || it.status === 'fix-failed')
         .length;
     },
@@ -3452,6 +3479,7 @@ function app() {
     recoverSelectAllApply() {
       const next = {};
       for (const it of (this.recoverResults?.recover || [])) {
+        if (this.isRecoverItemExcluded(it)) continue;
         if (it.status === 'would-fix' || it.status === 'fix-failed') next[it.id] = true;
       }
       this.recoverApplySelected = next;
@@ -3471,7 +3499,10 @@ function app() {
       // via recoverExcludedDisplay()) — return [] here so the regular
       // chip render path doesn't double-show anything.
       if (this.recoverFilter === 'excluded') return [];
-      const list = this.recoverResults.recover || [];
+      // Drop currently-excluded rows from the active view — they move to
+      // the "Show excluded" panel the moment Exclude is clicked, so the
+      // user gets immediate feedback (the row disappears here).
+      const list = (this.recoverResults.recover || []).filter(it => !this.isRecoverItemExcluded(it));
       if (this.recoverFilter === 'all') return list;
       return list.filter(it => it.status === this.recoverFilter);
     },

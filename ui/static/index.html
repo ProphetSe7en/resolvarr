@@ -8813,19 +8813,32 @@
             </template>
           </div>
 
-          <!-- Rename target — v1 only torrent rename is wired. file +
-               both lands when torrent-only proves insufficient (struct
-               comment :182). Display only the torrent option to avoid
-               surfacing radio buttons we can't honour yet. -->
+          <!-- Rename target. "Torrent name only" (default) relabels the
+               qBit torrent display name — enough for single-episode grabs
+               (Sonarr reads the torrent name). "Rename files inside the
+               torrent" is Sonarr-only: a season pack is imported per file
+               and scored by each file's own name, so the torrent name
+               can't rescue scene-stripped inner files — see help text. -->
           <div class="form-group">
             <label style="font-size:13px;color:var(--text-primary);font-weight:500;display:block;margin-bottom:6px">Rename target</label>
             <div style="display:flex;flex-direction:column;gap:6px">
               <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body)">
                 <input type="radio" name="rule-grabrename-target" value="torrent" x-model="editingRule.grabRename.renameTarget" style="accent-color:var(--accent-blue)">
-                <span><strong>Torrent name only</strong> <span style="color:var(--text-secondary)">— renames qBit's display name; file on disk untouched</span></span>
+                <span><strong>Torrent name only</strong> <span style="color:var(--text-secondary)">— relabels qBit's display name; files on disk untouched</span></span>
               </label>
+              <template x-if="ruleEditorInstanceType() === 'sonarr'">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body)">
+                  <input type="radio" name="rule-grabrename-target" value="file" x-model="editingRule.grabRename.renameTarget" style="accent-color:var(--accent-blue)">
+                  <span><strong>Rename files inside the torrent</strong> <span style="color:var(--text-secondary)">— needed for season packs</span></span>
+                </label>
+              </template>
             </div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">File rename ("rename the actual file on disk") + Both target are not yet supported — they land in a follow-up release if torrent-only proves insufficient for Radarr's import-time filename parser.</div>
+            <template x-if="ruleEditorInstanceType() === 'sonarr'">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Sonarr scores a season pack <strong>per file</strong> at import, not by the torrent name. If the files inside are scene-named (for example <code>web</code> instead of <code>WEB-DL</code>, or missing <code>NF</code>), the score drops and the import can get stuck. "Rename files inside the torrent" renames each episode file to match the release title so each one scores the same as the grab did. Single-episode grabs work fine with "Torrent name only".</div>
+            </template>
+            <template x-if="ruleEditorInstanceType() !== 'sonarr'">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:6px">Relabels qBit's torrent display name when a trigger below fires. (Renaming the files inside the torrent is a Sonarr-only option, used for season packs.)</div>
+            </template>
           </div>
 
           <!-- Trigger checkboxes — each maps 1:1 to a TriggerOn* field

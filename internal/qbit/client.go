@@ -288,7 +288,21 @@ type Torrent struct {
 const (
 	listTorrentsMaxBytes = 50 << 20 // 50 MiB
 	getTorrentMaxBytes   = 64 << 10 // 64 KiB
+	// listFilesMaxBytes caps /torrents/files. A season pack is a few
+	// dozen files × ~200 bytes/entry; 8 MiB is huge headroom while
+	// still bounding a compromised endpoint.
+	listFilesMaxBytes = 8 << 20 // 8 MiB
 )
+
+// TorrentFile is the subset of /api/v2/torrents/files we need to rename
+// individual files inside a (season-pack) torrent. Name is the path
+// RELATIVE to the torrent root (e.g. "Season 03/the.last.kingdom.s03e01
+// ...mkv") — exactly the oldPath /renameFile expects.
+type TorrentFile struct {
+	Index int    `json:"index"`
+	Name  string `json:"name"`
+	Size  int64  `json:"size"`
+}
 
 // ListTorrents fetches every torrent matching the optional filter.
 // Pass empty string for filter to get all torrents (typical Test
@@ -403,6 +417,83 @@ func (c *Client) RenameTorrent(ctx context.Context, hash, newName string) error 
 		return fmt.Errorf("renameTorrent HTTP %d", resp.StatusCode)
 	}
 	return fmt.Errorf("renameTorrent HTTP %d: %s", resp.StatusCode, snippet)
+}
+
+// ListTorrentFiles returns the files inside a torrent (their paths
+// relative to the torrent root, plus index + size). Used by the Grab
+// Rename "files" target to rename each episode file inside a season
+// pack so Sonarr scores it correctly at import.
+//
+// API: GET /api/v2/torrents/files?hash=<hash>. qBit has the file list
+// from torrent metadata as soon as the torrent is added (before the
+// download completes), so this works on an in-flight grab. Returns 404
+// when the hash isn't in the client.
+func (c *Client) ListTorrentFiles(ctx context.Context, hash string) ([]TorrentFile, error) {
+	if hash == "" {
+		return nil, fmt.Errorf("hash is required")
+	}
+	path := "/api/v2/torrents/files?hash=" + url.QueryEscape(hash)
+	resp, err := c.Do(ctx, "GET", path, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("listTorrentFiles HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var files []TorrentFile
+	if err := json.NewDecoder(io.LimitReader(resp.Body, listFilesMaxBytes)).Decode(&files); err != nil {
+		return nil, fmt.Errorf("decode listTorrentFiles response: %w", err)
+	}
+	return files, nil
+}
+
+// RenameFile renames a single file INSIDE a torrent (on disk), as
+// opposed to RenameTorrent which only relabels the torrent entry.
+// oldPath/newPath are relative to the torrent root (the same shape
+// ListTorrentFiles returns in Name). Works on incomplete torrents —
+// qBit renames the in-progress target path.
+//
+// API: POST /api/v2/torrents/renameFile with form-encoded
+// `hash=<hash>&oldPath=<old>&newPath=<new>`. 200 on success; 404 when
+// the hash isn't found; 409 when the new path is invalid / collides
+// (qBit's filename sanitiser).
+func (c *Client) RenameFile(ctx context.Context, hash, oldPath, newPath string) error {
+	if hash == "" {
+		return fmt.Errorf("hash is required")
+	}
+	if oldPath == "" || newPath == "" {
+		return fmt.Errorf("oldPath and newPath are required")
+	}
+	form := url.Values{}
+	form.Set("hash", hash)
+	form.Set("oldPath", oldPath)
+	form.Set("newPath", newPath)
+	body := strings.NewReader(form.Encode())
+	resp, err := c.Do(ctx, "POST", "/api/v2/torrents/renameFile", body, func(h http.Header) {
+		h.Set("Content-Type", "application/x-www-form-urlencoded")
+	})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 200 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	snippet := strings.TrimSpace(string(bodyBytes))
+	switch resp.StatusCode {
+	case 404:
+		return fmt.Errorf("renameFile: hash not found in qBit (HTTP 404): %s", snippet)
+	case 409:
+		return fmt.Errorf("renameFile: path rejected by qBit (HTTP 409): %s", snippet)
+	}
+	if snippet == "" {
+		return fmt.Errorf("renameFile HTTP %d", resp.StatusCode)
+	}
+	return fmt.Errorf("renameFile HTTP %d: %s", resp.StatusCode, snippet)
 }
 
 // AddTags adds one or more tags to the given torrent hashes. qBit

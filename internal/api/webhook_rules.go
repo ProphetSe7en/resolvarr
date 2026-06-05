@@ -360,11 +360,15 @@ func validateGrabRenameCriteria(c *core.GrabRenameCriteria, appType string) *api
 	if !core.ValidGrabRenameTarget(c.RenameTarget) {
 		return newAPIError(400, "grabRename.renameTarget must be 'torrent', 'file', 'both', or empty (defaults to torrent)")
 	}
-	// v1 limit: only "torrent" is wired in the adapter. Reject other
-	// values at save-time to prevent users saving a rule that silently
-	// no-ops because the file/both adapter paths aren't implemented yet.
-	if c.RenameTarget == core.GrabRenameTargetFile || c.RenameTarget == core.GrabRenameTargetBoth {
-		return newAPIError(400, "grabRename.renameTarget '"+c.RenameTarget+"' not yet supported in this version (file/both rename lands when torrent-only proves insufficient)")
+	// "file" renames each episode file inside the torrent — wired for
+	// Sonarr only (it fixes season-pack per-file scoring, where Sonarr
+	// parses each file by its own name). Reject it on Radarr, where it
+	// isn't wired. "both" isn't wired anywhere yet.
+	if c.RenameTarget == core.GrabRenameTargetFile && !strings.EqualFold(appType, "sonarr") {
+		return newAPIError(400, "grabRename.renameTarget 'file' is Sonarr-only — it renames each episode file inside a season pack so Sonarr scores it correctly at import")
+	}
+	if c.RenameTarget == core.GrabRenameTargetBoth {
+		return newAPIError(400, "grabRename.renameTarget 'both' not yet supported — use 'torrent', or 'file' on a Sonarr rule")
 	}
 	// Movie-version trigger is Radarr-only — applies to movie versions
 	// like Director's Cut / IMAX / Theatrical that TV releases don't use.
