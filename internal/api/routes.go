@@ -40,6 +40,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Tags
 	mux.HandleFunc("GET /api/instances/{id}/tags", s.handleListTags)
+	mux.HandleFunc("GET /api/instances/{id}/qbit-categories", s.handleReconcileQbitCategories)
 	mux.HandleFunc("GET /api/instances/{id}/tag-items", s.handleTagItems)
 	mux.HandleFunc("GET /api/instances/{id}/items-with-tags", s.handleItemsWithTags)
 	mux.HandleFunc("DELETE /api/instances/{id}/tags/{tagId}", s.handleDeleteTag)

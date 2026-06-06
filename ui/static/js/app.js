@@ -3226,6 +3226,169 @@ function app() {
       }
     },
 
+    // ===== Reconcile stuck downloads =====
+    // Preview reads the Arr queue + classifies each stuck (completed-but-
+    // not-imported) item as redundant (already satisfied by an equal/
+    // better file) or needs-attention. Apply changes the qBit category of
+    // the selected redundant downloads so the user's cleanup removes them.
+    // Open the reconcile config modal — seed instance from the page
+    // picker, auto-pick the qBit instance when there's only one, and
+    // pre-fetch the Arr's qBit download-client categories so the target
+    // category is pre-filled (override-able).
+    openReconcileWizard() {
+      const insts = this.scanAvailableInstances();
+      this.reconcileWizard = {
+        open: true,
+        instanceId: this.scanInstanceId || (insts[0] && insts[0].id) || '',
+        mode: 'preview',
+        busy: false,
+        error: '',
+      };
+      this.reconcileOnInstanceChange();
+    },
+    closeReconcileWizard() { this.reconcileWizard.open = false; },
+
+    // Called on open + whenever the modal's instance picker changes. When
+    // the instance actually changed (e.g. Sonarr → Radarr), reset the qBit
+    // instance + categories — a different Arr means a different download
+    // client + categories. Then re-fetch the categories and auto-pick the
+    // qBit instance when there's only one.
+    reconcileOnInstanceChange() {
+      const id = this.reconcileWizard.instanceId;
+      if (id !== this.reconcileLastInstanceId) {
+        this.reconcilePostCategory = '';
+        this.reconcilePreCategory = '';
+        this.reconcileQbitInstanceId = '';
+        this.reconcileLastInstanceId = id;
+      }
+      if (!this.reconcileQbitInstanceId && (this.qbitInstances || []).length === 1) {
+        this.reconcileQbitInstanceId = this.qbitInstances[0].id;
+      }
+      this.fetchReconcileCategories();
+    },
+
+    async fetchReconcileCategories() {
+      const id = this.reconcileWizard.instanceId;
+      if (!id) return;
+      try {
+        const r = await this.apiFetch('/api/instances/' + encodeURIComponent(id) + '/qbit-categories');
+        if (!r.ok) return;
+        const d = await r.json();
+        this.reconcilePreCategory = d.preImport || '';
+        if (!this.reconcilePostCategory.trim() && d.postImport) this.reconcilePostCategory = d.postImport;
+      } catch (e) { /* best-effort pre-fill */ }
+    },
+
+    // Run from the config modal. Preview opens the result panel (per-row
+    // select + Apply selected). Apply recategorises every redundant
+    // download immediately using the modal's qBit instance + category.
+    async runReconcileWizard() {
+      const id = this.reconcileWizard.instanceId;
+      if (!id) { this.reconcileWizard.error = 'Pick an instance'; return; }
+      const mode = this.reconcileWizard.mode;
+      if (mode === 'apply') {
+        if (!this.reconcileQbitInstanceId) { this.reconcileWizard.error = 'Pick the qBittorrent instance'; return; }
+        if (!this.reconcilePostCategory.trim()) { this.reconcileWizard.error = 'Enter the target category'; return; }
+      }
+      this.reconcileWizard.busy = true;
+      this.reconcileWizard.error = '';
+      this.reconcileError = '';
+      try {
+        const body = { instanceId: id, action: 'reconcile', mode };
+        if (mode === 'apply') {
+          body.reconcileQbitInstanceId = this.reconcileQbitInstanceId;
+          body.reconcilePostCategory = this.reconcilePostCategory.trim();
+          // empty reconcileApplyItems → backend acts on ALL redundant
+        }
+        const resp = await this.apiFetch('/api/scan/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          const t = await resp.text();
+          let msg = t; try { msg = JSON.parse(t).error || t; } catch {}
+          this.reconcileWizard.error = msg || ('HTTP ' + resp.status);
+          return;
+        }
+        this.reconcileResults = await resp.json();
+        this.reconcileInstanceId = id;
+        if (this.reconcileResults.reconcilePreCategory) this.reconcilePreCategory = this.reconcileResults.reconcilePreCategory;
+        if (!this.reconcilePostCategory.trim() && this.reconcileResults.reconcilePostCategory) this.reconcilePostCategory = this.reconcileResults.reconcilePostCategory;
+        // Default-select redundant rows for the result panel's per-row Apply.
+        const sel = {};
+        for (const it of (this.reconcileResults.reconcile || [])) {
+          if (it.status === 'redundant') sel[it.downloadId] = true;
+        }
+        this.reconcileApplySelected = sel;
+        if (mode === 'apply') {
+          const n = (this.reconcileResults.totals && this.reconcileResults.totals.reconcileRecategorised) || 0;
+          this.showToast('Recategorised ' + n + ' download' + (n === 1 ? '' : 's'), 'success');
+        }
+        this.reconcileWizard.open = false;
+      } catch (e) {
+        this.reconcileWizard.error = e.message || 'Reconcile failed';
+      } finally {
+        this.reconcileWizard.busy = false;
+      }
+    },
+
+    reconcileRedundantRows() {
+      if (!this.reconcileResults) return [];
+      return (this.reconcileResults.reconcile || []).filter(it => it.status === 'redundant' || it.status === 'recategorised');
+    },
+    reconcileNeedsAttentionRows() {
+      if (!this.reconcileResults) return [];
+      return (this.reconcileResults.reconcile || []).filter(it => it.status === 'needs-attention' || it.status === 'failed');
+    },
+    reconcileSelectedCount() {
+      return Object.keys(this.reconcileApplySelected).filter(k => !!this.reconcileApplySelected[k]).length;
+    },
+
+    async applyReconcile() {
+      if (!this.reconcileResults) return;
+      if (!this.reconcileQbitInstanceId) { this.showToast('Re-run the scan and pick a qBittorrent instance', 'error'); return; }
+      if (!this.reconcilePostCategory.trim()) { this.showToast('Re-run the scan and set a target category', 'error'); return; }
+      const ids = Object.keys(this.reconcileApplySelected).filter(k => !!this.reconcileApplySelected[k]);
+      if (ids.length === 0) { this.showToast('Select at least one redundant download', 'error'); return; }
+      this.reconcileApplying = true;
+      this.reconcileError = '';
+      try {
+        const resp = await this.apiFetch('/api/scan/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            instanceId: this.reconcileInstanceId || this.scanInstanceId,
+            action: 'reconcile',
+            mode: 'apply',
+            reconcileQbitInstanceId: this.reconcileQbitInstanceId,
+            reconcilePostCategory: this.reconcilePostCategory.trim(),
+            reconcileApplyItems: ids,
+          }),
+        });
+        if (!resp.ok) {
+          const body = await resp.text();
+          let msg = body; try { msg = JSON.parse(body).error || body; } catch {}
+          this.reconcileError = msg || ('HTTP ' + resp.status);
+          this.showToast('Reconcile apply failed: ' + this.reconcileError, 'error');
+          return;
+        }
+        this.reconcileResults = await resp.json();
+        const n = (this.reconcileResults.totals && this.reconcileResults.totals.reconcileRecategorised) || 0;
+        this.showToast('Recategorised ' + n + ' download' + (n === 1 ? '' : 's'), 'success');
+        const sel = {};
+        for (const it of (this.reconcileResults.reconcile || [])) {
+          if (it.status === 'redundant') sel[it.downloadId] = true;
+        }
+        this.reconcileApplySelected = sel;
+      } catch (e) {
+        this.reconcileError = e.message || 'Reconcile apply failed';
+        this.showToast(this.reconcileError, 'error');
+      } finally {
+        this.reconcileApplying = false;
+      }
+    },
+
     async runRecoverApply() {
       if (!this.recoverResults) return;
       // Function-boundary re-entry guard — same rationale as
@@ -5902,6 +6065,7 @@ function app() {
                section === 'missing-episodes' ||
                section === 'tba-refresh' ||
                section === 'qbit-se' ||
+               section === 'reconcile' ||
                section === 'history';
       }
       // Radarr: every visible section EXCEPT the Sonarr-only ones.

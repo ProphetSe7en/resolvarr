@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.44-dev — Find and clear stuck downloads (2026-06-06)
+
+**New "Stuck downloads" tool (Library scan, Radarr + Sonarr).** Finds downloads that finished but never imported, usually because a better release of the same thing imported first and left the first one sitting in the queue. For each it shows the score it had at grab, the score it gets at import, and the score of the file you already have, plus the plain-language reason it's stuck.
+
+Downloads that are redundant (you already have an equal or better file) can be moved to another qBittorrent category in one click, so your own cleanup handles them. Ones that still need attention (nothing imported yet, or the stuck one is actually better) are listed separately and left alone; you can still move them if you've decided they'll never import. Nothing is ever deleted. Pick the qBittorrent instance and target category once in the Run dialog; the category is pre-filled from your download client.
+
 ## v0.6.43-dev — Sonarr wording fixes (2026-06-06)
 
 **Fixed: two spots said "Radarr" on a Sonarr instance.** The Recover result panel's "Trigger rename after fix" checkbox and the Preview-vs-Apply help text both named Radarr regardless of the active instance. They now read correctly for Sonarr.

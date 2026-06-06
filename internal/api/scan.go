@@ -114,11 +114,20 @@ func (s *Server) handleScanRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "mode must be preview or apply")
 			return
 		}
+	case "reconcile":
+		// Reconcile stuck downloads: preview lists stuck queue items +
+		// verdict (redundant / needs-attention); apply changes the qBit
+		// category of selected redundant downloads. Apply requires a qBit
+		// instance + target category (validated in the handler).
+		if req.Mode != "preview" && req.Mode != "apply" {
+			writeError(w, 400, "mode must be preview or apply")
+			return
+		}
 	case "combined":
 		writeError(w, 501, fmt.Sprintf("action %q is not implemented yet", req.Action))
 		return
 	default:
-		writeError(w, 400, "action must be tag, discover, cleanup, recover, audiotags, videotags, or dvdetail")
+		writeError(w, 400, "action must be tag, discover, cleanup, recover, reconcile, audiotags, videotags, or dvdetail")
 		return
 	}
 
@@ -204,12 +213,11 @@ func (s *Server) handleScanRun(w http.ResponseWriter, r *http.Request) {
 		// every action supported
 	case "sonarr":
 		switch req.Action {
-		case "recover", "audiotags", "videotags":
-			// supported — recover (M3c) + audio/video tags (M-Sonarr).
-			// Audio/video walk series → episodefiles, aggregate per-bucket
-			// using SonarrAggregation, apply at series level.
+		case "recover", "audiotags", "videotags", "reconcile":
+			// supported — recover (M3c) + audio/video tags (M-Sonarr) +
+			// reconcile (reads the queue, works the same on both Arr types).
 		default:
-			writeError(w, 501, "Sonarr is supported for: recover, audiotags, videotags. Other actions are coming as separate milestones.")
+			writeError(w, 501, "Sonarr is supported for: recover, reconcile, audiotags, videotags. Other actions are coming as separate milestones.")
 			return
 		}
 	default:
@@ -235,6 +243,8 @@ func (s *Server) handleScanRun(w http.ResponseWriter, r *http.Request) {
 		s.handleScanCleanup(w, r, cfg, inst, appType, req)
 	case "recover":
 		s.handleScanRecover(w, r, inst, appType, req)
+	case "reconcile":
+		s.handleScanReconcile(w, r, cfg, inst, appType, req)
 	case "tag":
 		s.handleScanTag(w, r, cfg, inst, appType, filterCfg, req)
 	case "audiotags":

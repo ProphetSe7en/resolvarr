@@ -382,6 +382,22 @@ function appState() {
     recoverApplySelected: {},    // { [itemId]: true } — which would-fix rows to apply
     recoverRename: true,         // mirrors bash RENAME=true default
     recoverApplying: false,      // loading state for apply
+
+    // Reconcile stuck downloads (reconcile-stuck-downloads sub-tab).
+    // Config-modal pattern (like the cleanup wizard): launcher opens
+    // reconcileWizard, you pick instance + qBit instance + category +
+    // preview/apply, then Run. Preview shows the result panel with per-
+    // row select; Apply (from the modal) recategorises all redundant.
+    reconcileWizard: { open: false, instanceId: '', mode: 'preview', busy: false, error: '' },
+    reconcileApplying: false,
+    reconcileError: '',
+    reconcileResults: null,        // { instance, totals, reconcile: [{downloadId, status, stuckScore, importedScore, ...}] }
+    reconcileInstanceId: '',       // the Arr instance the current result ran against (used by per-row Apply)
+    reconcileApplySelected: {},    // { [downloadId]: true } — which redundant rows to recategorise
+    reconcileQbitInstanceId: '',   // which qBit client holds the downloads (set in the modal)
+    reconcilePostCategory: '',     // category to move redundant downloads to (set in the modal)
+    reconcilePreCategory: '',      // info: the category stuck downloads currently sit in
+    reconcileLastInstanceId: '',   // tracks which instance the qBit + categories were resolved for
     // Recover exclusions — per-instance "skip these in next scan"
     // list. User flags faulty / unfixable items via the Exclude
     // buttons in the result modal. Loaded from /api/recover/exclusions

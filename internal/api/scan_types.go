@@ -77,6 +77,15 @@ type scanRunRequest struct {
 	RecoverItems      []int `json:"recoverItems,omitempty"`      // optional movie-ID filter; empty = all affected (--movie parity)
 	RecoverApplyItems []int `json:"recoverApplyItems,omitempty"` // apply-only: when non-empty, restrict apply to these movie IDs from the would-fix set (per-row UI exclude support)
 
+	// Reconcile-action fields (reconcile-stuck-downloads). Preview lists
+	// stuck queue items + verdict (redundant / needs-attention) + scores
+	// + grab times. Apply changes the qBit category of selected redundant
+	// downloads to ReconcilePostCategory. The user picks the qBit instance
+	// + target category per run (no hidden global state).
+	ReconcileQbitInstanceID string   `json:"reconcileQbitInstanceId,omitempty"` // apply-only: which qBit client holds the downloads
+	ReconcilePostCategory   string   `json:"reconcilePostCategory,omitempty"`   // apply-only: category to set on redundant downloads
+	ReconcileApplyItems     []string `json:"reconcileApplyItems,omitempty"`     // apply-only: downloadIds (hashes) the user selected to act on
+
 	// Per-request overlay (rule-style). When set, these overrides win
 	// over the persisted globals for THIS run only. Used by the
 	// Quick fix-all wizard so the user can test alternative rules
@@ -284,6 +293,15 @@ type scanTotals struct {
 	RecoverFixFailed    int `json:"recoverFixFailed,omitempty"`    // apply-only: PUT or rename returned an error
 	RecoverRenameFailed int `json:"recoverRenameFailed,omitempty"` // apply-only: PUT succeeded but RenameFiles command failed
 
+	// Reconcile-mode bucket counts (reconcile-stuck-downloads). Each
+	// stuck queue item lands in redundant or needs-attention; apply adds
+	// recategorised / failed for the acted-on downloads.
+	ReconcileStuck          int `json:"reconcileStuck,omitempty"`          // stuck queue items examined
+	ReconcileRedundant      int `json:"reconcileRedundant,omitempty"`      // superseded — eligible to recategorise
+	ReconcileNeedsAttention int `json:"reconcileNeedsAttention,omitempty"` // not imported, or the stuck one is better
+	ReconcileRecategorised  int `json:"reconcileRecategorised,omitempty"`  // apply-only: qBit category changed
+	ReconcileFailed         int `json:"reconcileFailed,omitempty"`         // apply-only: category change errored
+
 	// Auto-tags totals (M4 — action="audiotags" / "videotags").
 	// AutoTagRollups is a per-bucket-tag rollup
 	// ("resolution:1080p" → 598 movies) used by the UI to render the
@@ -415,6 +433,38 @@ type scanRecoverItem struct {
 	ImportDate        string `json:"importDate,omitempty"`        // would-fix: ISO8601 of the matching import event date
 	RenameTriggered   bool   `json:"renameTriggered,omitempty"`   // apply-only: RenameFiles command sent successfully
 	Error             string `json:"error,omitempty"`             // populated when Status=fix-failed
+}
+
+// scanReconcileItem is one stuck queue item in a reconcile-stuck-downloads
+// result. DownloadID (the qBit hash) is the row identity AND the handle
+// the apply-mode category change uses. A Sonarr season pack appears as
+// one row per episode that all share the same DownloadID.
+type scanReconcileItem struct {
+	DownloadID    string `json:"downloadId"`
+	Title         string `json:"title"`             // the stuck release title
+	AppType       string `json:"appType,omitempty"` // radarr | sonarr
+	SeriesID      int    `json:"seriesId,omitempty"`
+	EpisodeID     int    `json:"episodeId,omitempty"`
+	MovieID       int    `json:"movieId,omitempty"`
+	TargetLabel   string `json:"targetLabel,omitempty"`   // "Show — S01E05" or the movie title
+	Status        string `json:"status"`                  // "redundant" | "needs-attention" | "recategorised" | "failed"
+	TrackedState  string `json:"trackedState,omitempty"`  // importPending | importBlocked
+	StatusMessage string `json:"statusMessage,omitempty"` // Arr's first queue status message
+	StuckScore       int  `json:"stuckScore"`              // the queued release's CF score (grab/release-title score)
+	ImportScore      int  `json:"importScore"`             // the queued release's CF score re-evaluated at import (manualimport) — differs from grab on scene-stripped files
+	ImportScoreKnown bool `json:"importScoreKnown"`        // true when the import evaluation was available
+	ImportedScore    int  `json:"importedScore"`           // the already-imported file-on-disk's CF score (0 if no file)
+	HasFile          bool `json:"hasFile"`                 // target currently has a file
+	// Rejection is Arr's plain-English reason the queued release can't
+	// import (from manualimport), e.g. "New: [...] (1675) do not improve
+	// on Existing: [...] (1775)". The clearest "why it's stuck".
+	Rejection string `json:"rejection,omitempty"`
+	// Grab timestamps (ISO8601) so the UI can show why a redundant item
+	// lost the race: e.g. stuck grabbed 01:04:42, the file-on-disk's
+	// release grabbed 01:05:40.
+	StuckGrabDate    string `json:"stuckGrabDate,omitempty"`
+	ImportedGrabDate string `json:"importedGrabDate,omitempty"`
+	Error            string `json:"error,omitempty"` // apply-only: category-change error
 }
 
 // scanCleanupCandidate is one tag label flagged for cleanup. Returned for
@@ -552,6 +602,12 @@ type scanResponse struct {
 	Applied    *scanApplied          `json:"applied,omitempty"`    // tag apply only
 	Discovered []scanDiscoveredGroup `json:"discovered,omitempty"` // discover only
 	Recover    []scanRecoverItem     `json:"recover,omitempty"`    // recover only
+	Reconcile  []scanReconcileItem   `json:"reconcile,omitempty"`  // reconcile-stuck-downloads only
+	// Reconcile category hints — the Arr's qBittorrent download-client
+	// pre/post-import categories, so the UI pre-fills the target category
+	// (post-import) instead of making the user retype it. Override-able.
+	ReconcilePreCategory  string `json:"reconcilePreCategory,omitempty"`
+	ReconcilePostCategory string `json:"reconcilePostCategory,omitempty"`
 	Debug      *scanDebug            `json:"debug,omitempty"`      // dev builds only — see scanDebug
 }
 

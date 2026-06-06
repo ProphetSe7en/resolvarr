@@ -688,6 +688,9 @@
         <template x-if="scanSectionVisible('qbit-se')">
           <a class="settings-nav" :class="scanSection === 'qbit-se' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'qbit-se' })" @click="setScanSection('qbit-se')" title="Tag qBittorrent torrents by Season / Episode / Unmatched, one-off sweep of the backlog">qBit S/E tags</a>
         </template>
+        <template x-if="scanSectionVisible('reconcile')">
+          <a class="settings-nav" :class="scanSection === 'reconcile' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'reconcile' })" @click="setScanSection('reconcile')" title="Find downloads stuck in the queue that a better release already replaced, and move them out of the way">Stuck downloads</a>
+        </template>
         <template x-if="scanSectionVisible('history')">
           <a class="settings-nav" :class="scanSection === 'history' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'history' })" @click="setScanSection('history')">History</a>
         </template>
@@ -3471,6 +3474,127 @@
           </template>
         </div>
 
+        <!-- ===== Stuck downloads (reconcile-stuck-downloads) ===== -->
+        <div x-show="scanSection === 'reconcile'" x-cloak>
+          <div class="settings-section-title">Stuck downloads</div>
+          <div class="settings-section-desc">
+            Finds downloads sitting in the queue that finished but never imported, usually because a better release of the same thing imported first (a higher-tier group grabbed seconds later). For each, this checks whether the episode or movie already has a file that scores as good or better. If it does, the stuck download is redundant and you can move it to another qBittorrent category so your cleanup handles it. Items that are NOT redundant (nothing imported, or the stuck one is actually better) are listed for you to look at, never touched. Nothing is deleted.
+          </div>
+
+          <div style="margin:14px 0">
+            <button class="btn btn-primary" @click="openReconcileWizard()">Run reconcile</button>
+          </div>
+
+          <template x-if="reconcileError">
+            <div style="padding:10px 14px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;color:var(--accent-red);font-size:13px;margin-bottom:14px" x-text="reconcileError"></div>
+          </template>
+
+          <template x-if="reconcileResults">
+            <div>
+              <!-- Summary line -->
+              <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+                <span x-text="(reconcileResults.totals.reconcileStuck || 0)"></span> stuck ·
+                <span class="v-num-keep" x-text="(reconcileResults.totals.reconcileRedundant || 0)"></span> redundant ·
+                <span class="v-num-add" x-text="(reconcileResults.totals.reconcileNeedsAttention || 0)"></span> need attention
+                <template x-if="(reconcileResults.totals.reconcileRecategorised || 0) > 0">
+                  <span style="color:var(--accent-green)"> · <span x-text="reconcileResults.totals.reconcileRecategorised"></span> recategorised</span>
+                </template>
+              </div>
+
+              <template x-if="(reconcileResults.reconcile || []).length === 0">
+                <div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:13px;border:1px dashed var(--border-subtle);border-radius:8px">No stuck downloads in the queue. Nothing to reconcile.</div>
+              </template>
+
+              <!-- Redundant (actionable) -->
+              <template x-if="reconcileRedundantRows().length > 0">
+                <div style="margin-bottom:18px">
+                  <div style="font-size:13px;font-weight:600;color:var(--text-body);margin-bottom:8px">Redundant — already replaced by an equal or better file</div>
+                  <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+                    <template x-for="it in reconcileRedundantRows()" :key="it.downloadId + '-' + (it.episodeId || it.movieId || '')">
+                      <div :style="'display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-bottom:1px solid var(--bg-muted)'">
+                        <input type="checkbox" :checked="!!reconcileApplySelected[it.downloadId]" @change="reconcileApplySelected[it.downloadId] = !reconcileApplySelected[it.downloadId]" :disabled="it.status === 'recategorised'" style="cursor:pointer;margin-top:3px">
+                        <div style="flex:1;min-width:0">
+                          <div style="font-size:13px;color:var(--text-body);font-weight:500;word-break:break-word" x-text="it.title"></div>
+                          <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;line-height:1.65">
+                            <div>
+                              <span style="color:var(--text-muted-secondary)">In queue:</span>
+                              grab <span class="v-num-keep" x-text="it.stuckScore"></span><template x-if="it.importScoreKnown"><span>, import <span class="v-num-remove" x-text="it.importScore"></span></span></template>
+                              <template x-if="it.stuckGrabDate"><span style="color:var(--text-muted-secondary)"> · grabbed <span x-text="new Date(it.stuckGrabDate).toLocaleString()"></span></span></template>
+                            </div>
+                            <div>
+                              <span style="color:var(--text-muted-secondary)">Already imported:</span>
+                              <span class="v-num-add" x-text="it.hasFile ? it.importedScore : 'no file'"></span>
+                              <template x-if="it.importedGrabDate"><span style="color:var(--text-muted-secondary)"> · grabbed <span x-text="new Date(it.importedGrabDate).toLocaleString()"></span></span></template>
+                            </div>
+                            <template x-if="it.rejection"><div style="color:var(--text-muted-secondary);font-style:italic;margin-top:1px" x-text="it.rejection"></div></template>
+                          </div>
+                        </div>
+                        <template x-if="it.status === 'recategorised'"><span style="font-size:11px;color:var(--accent-green);white-space:nowrap">✓ recategorised</span></template>
+                        <template x-if="it.status === 'failed'"><span style="font-size:11px;color:var(--accent-red);white-space:nowrap" :title="it.error">failed</span></template>
+                      </div>
+                    </template>
+                  </div>
+
+                </div>
+              </template>
+
+              <!-- Needs attention — selectable too, but unchecked by default
+                   and cautioned: these score higher than what's on disk (or
+                   aren't imported), so moving them discards a better / only
+                   release. -->
+              <template x-if="reconcileNeedsAttentionRows().length > 0">
+                <div style="margin-bottom:18px">
+                  <div style="font-size:13px;font-weight:600;color:var(--text-body);margin-bottom:4px">Needs attention — not imported, or the queued one scores higher than what's on disk</div>
+                  <div style="font-size:11px;color:var(--accent-orange);margin-bottom:8px">Moving one of these discards a better (or the only) release. Only tick it if you've decided that download will never import.</div>
+                  <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+                    <template x-for="it in reconcileNeedsAttentionRows()" :key="it.downloadId + '-' + (it.episodeId || it.movieId || '')">
+                      <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-bottom:1px solid var(--bg-muted)">
+                        <input type="checkbox" :checked="!!reconcileApplySelected[it.downloadId]" @change="reconcileApplySelected[it.downloadId] = !reconcileApplySelected[it.downloadId]" :disabled="it.status === 'recategorised'" style="cursor:pointer;margin-top:3px">
+                        <div style="flex:1;min-width:0">
+                          <div style="font-size:13px;color:var(--text-body);word-break:break-word" x-text="it.title"></div>
+                          <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;line-height:1.65">
+                            <div>
+                              <span style="color:var(--text-muted-secondary)">In queue:</span>
+                              grab <span class="v-num-keep" x-text="it.stuckScore"></span><template x-if="it.importScoreKnown"><span>, import <span class="v-num-remove" x-text="it.importScore"></span></span></template>
+                              · <span x-text="it.trackedState"></span>
+                            </div>
+                            <div>
+                              <span style="color:var(--text-muted-secondary)">Already imported:</span>
+                              <span class="v-num-add" x-text="it.hasFile ? it.importedScore : 'no file'"></span>
+                            </div>
+                            <template x-if="it.rejection"><div style="color:var(--text-muted-secondary);font-style:italic;margin-top:1px" x-text="it.rejection"></div></template>
+                            <template x-if="!it.rejection && it.statusMessage && it.statusMessage !== it.title"><div style="color:var(--text-muted-secondary);margin-top:1px" x-text="it.statusMessage"></div></template>
+                          </div>
+                        </div>
+                        <template x-if="it.status === 'recategorised'"><span style="font-size:11px;color:var(--accent-green);white-space:nowrap">✓ recategorised</span></template>
+                        <template x-if="it.status === 'failed'"><span style="font-size:11px;color:var(--accent-red);white-space:nowrap" :title="it.error">failed</span></template>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Shared apply footer — moves every ticked row (redundant
+                   default-checked + any needs-attention you tick) to the
+                   category chosen in the Run reconcile modal. -->
+              <template x-if="(reconcileResults.reconcile || []).length > 0">
+                <div>
+                  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:4px">
+                    <button class="btn btn-primary" @click="applyReconcile()" :disabled="reconcileApplying || reconcileSelectedCount() === 0 || !reconcilePostCategory.trim()">
+                      <span x-show="!reconcileApplying">Move <span x-text="reconcileSelectedCount()"></span> selected to <code x-text="reconcilePostCategory || '(set a category in Run)'"></code></span>
+                      <span x-show="reconcileApplying">Applying…</span>
+                    </button>
+                  </div>
+                  <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:6px">
+                    <template x-if="reconcilePreCategory"><span>Stuck downloads sit in category <code x-text="reconcilePreCategory"></code>. </span></template>
+                    Moves the ticked downloads to their new qBittorrent category — your own cleanup on that category does the rest. Never deletes. Change the instance / target in <strong>Run reconcile</strong>.
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
         <!-- ===== History sub-tab =====
              Pure scan-history view as of Step 5 — adhoc scan replays only.
              Saved rules + their per-run history moved to Run mode where
@@ -4197,6 +4321,74 @@
        Single-step pick-instance-and-run modal. Cleanup runs in
        preview style (lists tags with 0 usage); the result modal
        handles the per-tag delete / Delete-all step. -->
+  <!-- ============ RECONCILE STUCK DOWNLOADS — config modal ============ -->
+  <div class="modal-overlay" x-show="reconcileWizard.open" x-cloak @keydown.escape.window="if (reconcileWizard.open) closeReconcileWizard()">
+    <div class="modal" style="width:520px">
+      <div class="modal-title">Run reconcile</div>
+      <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:14px">
+        Reads the queue for downloads that finished but never imported, and works out which are redundant (the episode or movie already has an equal-or-better file). <strong>Preview</strong> shows the list so you can tick which redundant ones to move. <strong>Apply</strong> moves every redundant download at once.
+      </div>
+
+      <div class="form-group">
+        <label class="label">Instance</label>
+        <select class="input" x-model="reconcileWizard.instanceId" @change="reconcileOnInstanceChange()">
+          <template x-for="inst in scanAvailableInstances()" :key="inst.id">
+            <option :value="inst.id" x-text="inst.name"></option>
+          </template>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="label">qBittorrent instance</label>
+        <select class="input" x-model="reconcileQbitInstanceId">
+          <option value="">— pick —</option>
+          <template x-for="qi in (qbitInstances || [])" :key="qi.id">
+            <option :value="qi.id" x-text="qi.name"></option>
+          </template>
+        </select>
+        <template x-if="(qbitInstances || []).length === 0">
+          <div style="font-size:11px;color:var(--accent-orange);margin-top:4px">No qBittorrent instances configured (Settings → qBittorrent). You can still Preview; Apply needs one.</div>
+        </template>
+      </div>
+
+      <div class="form-group">
+        <label class="label">Move redundant downloads to category</label>
+        <input type="text" class="input" x-model="reconcilePostCategory" placeholder="e.g. tv-hd">
+        <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:4px">
+          <template x-if="reconcilePreCategory"><span>Stuck downloads sit in <code x-text="reconcilePreCategory"></code>. </span></template>
+          Pre-filled from this instance's qBittorrent post-import category; override if you want.
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="label">Mode</label>
+        <div style="display:flex;gap:18px">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-body)">
+            <input type="radio" name="reconcile-mode" value="preview" x-model="reconcileWizard.mode" style="accent-color:var(--accent-blue)">
+            <span>Preview <span style="color:var(--text-secondary)">— list + pick which to move</span></span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text-body)">
+            <input type="radio" name="reconcile-mode" value="apply" x-model="reconcileWizard.mode" style="accent-color:var(--accent-green)">
+            <span>Apply <span style="color:var(--text-secondary)">— move all redundant now</span></span>
+          </label>
+        </div>
+      </div>
+
+      <template x-if="reconcileWizard.error">
+        <div style="padding:8px 12px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;font-size:12px;color:var(--accent-red);margin-bottom:8px" x-text="reconcileWizard.error"></div>
+      </template>
+
+      <div class="modal-actions">
+        <div style="flex:1"></div>
+        <button class="btn" @click="closeReconcileWizard()" :disabled="reconcileWizard.busy">Cancel</button>
+        <button class="btn btn-primary" @click="runReconcileWizard()" :disabled="reconcileWizard.busy || !reconcileWizard.instanceId || (reconcileWizard.mode === 'apply' && (!reconcileQbitInstanceId || !reconcilePostCategory.trim()))">
+          <span x-show="!reconcileWizard.busy" x-text="reconcileWizard.mode === 'apply' ? 'Run + move redundant' : 'Run preview'"></span>
+          <span x-show="reconcileWizard.busy">Running…</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-overlay" x-show="cleanupWizardState.open" x-cloak @keydown.escape.window="if (cleanupWizardState.open) closeCleanupWizard()">
     <div class="modal" style="width:480px">
       <div class="modal-title">Find unused tags</div>

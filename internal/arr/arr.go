@@ -328,6 +328,10 @@ type MovieFile struct {
 	Size      int64      `json:"size,omitempty"`
 	MediaInfo *MediaInfo `json:"mediaInfo,omitempty"`
 	Quality   *Quality   `json:"quality,omitempty"`
+	// CustomFormatScore is the CF score Radarr assigned to this file on
+	// disk. Used by the reconcile-stuck-downloads check to compare what's
+	// imported against a stuck queue item's score.
+	CustomFormatScore int `json:"customFormatScore,omitempty"`
 }
 
 // MediaInfo is the subset of Radarr/Sonarr's mediaInfo struct that
@@ -793,6 +797,10 @@ type EpisodeFile struct {
 	// — onedr0p's tag-resolution.sh uses it for the same reason.
 	MediaInfo *MediaInfo `json:"mediaInfo,omitempty"`
 	Quality   *Quality   `json:"quality,omitempty"`
+	// CustomFormatScore is the CF score Sonarr assigned to this episode
+	// file on disk. Used by reconcile-stuck-downloads to compare the
+	// imported file against a stuck queue item's score.
+	CustomFormatScore int `json:"customFormatScore,omitempty"`
 }
 
 // EpisodeRef is just the ID — that's all the Sonarr recover flow needs
@@ -853,6 +861,172 @@ func (c *Client) ListEpisodes(ctx context.Context, seriesID int) ([]Episode, err
 		return nil, fmt.Errorf("parse episodes: %w", err)
 	}
 	return out, nil
+}
+
+// ============================================================================
+// Queue — reconcile-stuck-downloads support (Radarr + Sonarr)
+// ============================================================================
+
+// QueueItem is the subset of /api/v3/queue the reconcile-stuck-downloads
+// check needs. The Arr queue is the authoritative list of grabbed
+// downloads that haven't imported yet, and carries the stuck release's
+// customFormatScore + the target item id + the download hash in one call
+// (history's grab events often omit the CF score). Sonarr items carry
+// seriesId+episodeId; Radarr items carry movieId.
+type QueueItem struct {
+	DownloadID string `json:"downloadId"`
+	Title      string `json:"title"`
+	// Status is the download-client state: "completed" once the download
+	// finished. TrackedDownloadState is the Arr's import state:
+	// "importPending" / "importBlocked" when finished-but-not-imported
+	// (the stuck case), "imported" when done, "downloading" when in flight.
+	Status               string `json:"status"`
+	TrackedDownloadState string `json:"trackedDownloadState"`
+	CustomFormatScore    int    `json:"customFormatScore"`
+	SeriesID             int    `json:"seriesId,omitempty"`
+	EpisodeID            int    `json:"episodeId,omitempty"`
+	MovieID              int    `json:"movieId,omitempty"`
+	StatusMessages       []struct {
+		Title string `json:"title"`
+	} `json:"statusMessages,omitempty"`
+}
+
+// ListQueue fetches the Arr download queue (GET /api/v3/queue). The
+// include* params are accepted by whichever Arr applies (Sonarr:
+// series/episode; Radarr: movie) and ignored by the other. pageSize is
+// generous (1000) — a homelab queue is a handful of items; bounded so a
+// compromised endpoint can't stream forever.
+func (c *Client) ListQueue(ctx context.Context) ([]QueueItem, error) {
+	path := "/api/v3/queue?pageSize=1000&includeSeries=true&includeEpisode=true&includeMovie=true"
+	resp, err := c.do(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var page struct {
+		Records []QueueItem `json:"records"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return nil, fmt.Errorf("parse queue: %w", err)
+	}
+	return page.Records, nil
+}
+
+// ManualImportItem is the subset of /api/v3/manualimport we need: the
+// per-file IMPORT-time custom-format score (often the real reason a
+// download is stuck — e.g. a scene-stripped file scores far below the
+// release title) + the rejection reason(s), which spell out the New-vs-
+// Existing comparison in plain English. Episodes lets us match an item
+// to a specific stuck queue row (Sonarr packs return one item per file).
+type ManualImportItem struct {
+	CustomFormatScore int `json:"customFormatScore"`
+	Episodes          []struct {
+		ID int `json:"id"`
+	} `json:"episodes"`
+	Rejections []struct {
+		Reason string `json:"reason"`
+	} `json:"rejections"`
+}
+
+// ManualImportForDownload returns Arr's per-file import evaluation for a
+// download (GET /api/v3/manualimport?downloadId=<hash>): the import-time
+// custom-format score + why each file was rejected. Used by reconcile to
+// show the import score (distinct from the grab score) and the stuck
+// reason. downloadId is the full qBit hash.
+func (c *Client) ManualImportForDownload(ctx context.Context, downloadID string) ([]ManualImportItem, error) {
+	if downloadID == "" {
+		return nil, fmt.Errorf("downloadId is required")
+	}
+	path := fmt.Sprintf("/api/v3/manualimport?downloadId=%s", downloadID)
+	resp, err := c.do(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var out []ManualImportItem
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("parse manualimport: %w", err)
+	}
+	return out, nil
+}
+
+// MovieFilesForMovie fetches a movie's file record(s) (GET
+// /api/v3/moviefile?movieId=N). Radarr's /movie list embeds a movieFile
+// but OMITS its customFormatScore, so the reconcile check reads the
+// imported file's score from here instead of the list object.
+func (c *Client) MovieFilesForMovie(ctx context.Context, movieID int) ([]MovieFile, error) {
+	path := fmt.Sprintf("/api/v3/moviefile?movieId=%d", movieID)
+	resp, err := c.do(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var out []MovieFile
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("parse moviefiles: %w", err)
+	}
+	return out, nil
+}
+
+// QbitImportCategories returns the pre-import + post-import categories
+// configured on the Arr's enabled qBittorrent download client. Sonarr
+// uses tvCategory / tvImportedCategory; Radarr uses movieCategory /
+// movieImportedCategory. Empty strings when there's no qBittorrent client
+// or the field is unset. Best-effort: the reconcile UI uses these to
+// pre-fill the target category so the user doesn't retype it.
+func (c *Client) QbitImportCategories(ctx context.Context) (preImport, postImport string, err error) {
+	resp, err := c.do(ctx, "GET", "/api/v3/downloadclient", nil)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var clients []struct {
+		Implementation string `json:"implementation"`
+		Enable         bool   `json:"enable"`
+		Fields         []struct {
+			Name  string `json:"name"`
+			Value any    `json:"value"`
+		} `json:"fields"`
+	}
+	if derr := json.NewDecoder(resp.Body).Decode(&clients); derr != nil {
+		return "", "", fmt.Errorf("parse download clients: %w", derr)
+	}
+	var fbPre, fbPost string // fallback from a disabled qBit client
+	haveFb := false
+	for _, cl := range clients {
+		if !strings.EqualFold(cl.Implementation, "QBittorrent") {
+			continue
+		}
+		var pre, post string
+		for _, f := range cl.Fields {
+			s, _ := f.Value.(string)
+			switch f.Name {
+			case "tvCategory", "movieCategory":
+				pre = s
+			case "tvImportedCategory", "movieImportedCategory":
+				post = s
+			}
+		}
+		if cl.Enable {
+			return pre, post, nil // prefer the enabled client
+		}
+		if !haveFb {
+			fbPre, fbPost, haveFb = pre, post, true
+		}
+	}
+	return fbPre, fbPost, nil
 }
 
 // SonarrRenameRecord is the subset of /api/v3/rename we need. Sonarr
