@@ -218,17 +218,21 @@ func main() {
 // containers, it's truncated once it passes ~5 MiB; startup + the rare
 // Fatalf/panic line are tiny, so the live tail always survives.
 func setupProcessLog(configDir string) *os.File {
+	// gosec G703 (path traversal): the path is built from configDir, the
+	// operator-set CONFIG_DIR env var (default /config, a volume mount),
+	// never from request/user/network input. It's the same trust level
+	// as RunLogger's own /config/logs writes. Annotated known-safe.
 	dir := filepath.Join(configDir, "logs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { // #nosec G703 -- configDir is operator config (CONFIG_DIR env / default /config), not user input
 		log.Printf("warning: could not create log dir %s (logging to stderr only): %v", dir, err)
 		return nil
 	}
 	path := filepath.Join(dir, "resolvarr.log")
 	flags := os.O_APPEND | os.O_CREATE | os.O_WRONLY
-	if fi, err := os.Stat(path); err == nil && fi.Size() > 5*1024*1024 {
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 5*1024*1024 { // #nosec G703 -- configDir is operator config, not user input
 		flags = os.O_TRUNC | os.O_CREATE | os.O_WRONLY
 	}
-	f, err := os.OpenFile(path, flags, 0o644)
+	f, err := os.OpenFile(path, flags, 0o644) // #nosec G703 -- configDir is operator config (CONFIG_DIR env / default /config), not user input
 	if err != nil {
 		log.Printf("warning: could not open %s (logging to stderr only): %v", path, err)
 		return nil
