@@ -3427,7 +3427,8 @@
             <div style="max-width:660px">
               <div class="form-group">
                 <label class="label">qBittorrent instance</label>
-                <select class="input" x-model="qbitSeRunForm.qbitInstanceId" style="max-width:320px">
+                <select class="input" x-model="qbitSeRunForm.qbitInstanceId" style="max-width:320px"
+                        x-init="$nextTick(() => { if (!qbitSeRunForm.qbitInstanceId) { const d = defaultQbitForArr(scanInstanceId); if (d) qbitSeRunForm.qbitInstanceId = d } })">
                   <option value="">— pick an instance —</option>
                   <template x-for="q in qbitInstances" :key="q.id">
                     <option :value="q.id" x-text="q.name"></option>
@@ -7334,6 +7335,20 @@
         <input class="input" x-model="instForm.apiKey" placeholder="32-character API key" autocomplete="off">
       </div>
 
+      <div class="form-group">
+        <label>Default qBittorrent instance <span style="color:var(--text-muted-secondary);font-weight:400">(optional)</span></label>
+        <select class="input" x-model="instForm.defaultQbitInstanceId">
+          <option value="">— none —</option>
+          <template x-for="qi in (qbitInstances || [])" :key="qi.id">
+            <option :value="qi.id" x-text="qi.name"></option>
+          </template>
+        </select>
+        <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:4px">Locks a qBittorrent client to this instance. Every qBit choice (Stuck downloads, and webhook qBit functions / qBit S/E as they're wired up) defaults to it, so you don't pick it each time. You can still override per use.</div>
+        <template x-if="(qbitInstances || []).length === 0">
+          <div style="font-size:11px;color:var(--accent-orange);margin-top:4px">Add a qBittorrent instance under Settings → qBittorrent first.</div>
+        </template>
+      </div>
+
       <!-- Path mappings — collapsed by default. Only DV detail
            tagging needs file-system access today; aligned mounts
            (Unraid TRaSH-style /data layout) require no entries. The
@@ -8991,7 +9006,7 @@
               <select class="input"
                       x-model="editingRule.grabRename.qbitInstanceId"
                       :class="!editingRule.grabRename.qbitInstanceId && 'input-invalid'"
-                      x-init="$nextTick(() => { if (editingRule.grabRename && editingRule.grabRename.qbitInstanceId) $el.value = editingRule.grabRename.qbitInstanceId })"
+                      x-init="$nextTick(() => { if (editingRule.grabRename) { if (!editingRule.grabRename.qbitInstanceId) editingRule.grabRename.qbitInstanceId = defaultQbitForArr(editingRule.instanceId); $el.value = editingRule.grabRename.qbitInstanceId || '' } })"
                       style="max-width:320px">
                 <option value="">Select a qBit instance...</option>
                 <template x-for="q in (qbitInstances || [])" :key="q.id">
@@ -9197,7 +9212,7 @@
                   <select class="input"
                           x-model="editingRule.qbitSe.qbitInstanceId"
                           :class="!editingRule.qbitSe.qbitInstanceId && 'input-invalid'"
-                          x-init="$nextTick(() => { if (editingRule.qbitSe && editingRule.qbitSe.qbitInstanceId) $el.value = editingRule.qbitSe.qbitInstanceId })"
+                          x-init="$nextTick(() => { if (editingRule.qbitSe) { if (!editingRule.qbitSe.qbitInstanceId) editingRule.qbitSe.qbitInstanceId = defaultQbitForArr(editingRule.instanceId); $el.value = editingRule.qbitSe.qbitInstanceId || '' } })"
                           style="max-width:320px">
                     <option value="">Select a qBit instance...</option>
                     <template x-for="q in (qbitInstances || [])" :key="q.id">
@@ -9369,7 +9384,7 @@
               <select class="input"
                       x-model="editingRule.qbitCategoryFix.qbitInstanceId"
                       :class="!editingRule.qbitCategoryFix.qbitInstanceId && 'input-invalid'"
-                      x-init="$nextTick(() => { if (editingRule.qbitCategoryFix && editingRule.qbitCategoryFix.qbitInstanceId) $el.value = editingRule.qbitCategoryFix.qbitInstanceId })"
+                      x-init="$nextTick(() => { if (editingRule.qbitCategoryFix) { if (!editingRule.qbitCategoryFix.qbitInstanceId) editingRule.qbitCategoryFix.qbitInstanceId = defaultQbitForArr(editingRule.instanceId); $el.value = editingRule.qbitCategoryFix.qbitInstanceId || '' } })"
                       style="max-width:320px">
                 <option value="">Select a qBit instance...</option>
                 <template x-for="q in (qbitInstances || [])" :key="q.id">

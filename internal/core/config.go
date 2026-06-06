@@ -25,6 +25,13 @@ type Instance struct {
 	URL         string `json:"url"`
 	APIKey      string `json:"apiKey"`
 
+	// DefaultQbitInstanceID locks a qBittorrent instance to this Arr so
+	// every qBit pick-point (reconcile, webhook qBit functions, qBit S/E)
+	// defaults to it — set once instead of per rule/QFA/webhook. Empty =
+	// no default (the user picks per-context). References a
+	// Config.QbitInstances entry by ID.
+	DefaultQbitInstanceID string `json:"defaultQbitInstanceId,omitempty"`
+
 	// PathMappings translates paths reported by Arr's API into paths
 	// reachable from inside the tagarr container. Empty for the common
 	// "aligned mounts" Unraid setup where Radarr and tagarr both see

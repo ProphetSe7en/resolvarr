@@ -2,6 +2,14 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.45-dev — Plex label sync matches reliably + per-Arr qBittorrent default (2026-06-06)
+
+**Plex label sync now matches your shows and movies far more reliably.** It reads the database IDs (TVDB, TMDB, IMDb) directly from Plex and matches on those, with the folder on disk as a final fallback. Before, it leaned on the title and year, so an item whose Plex name or year differed from Radarr/Sonarr could be missed. Now a show or movie still gets its label even when Plex and Radarr/Sonarr hold different IDs, only one of them, or none in common. That last case is common for foreign or obscure titles, where Plex matched with the TMDB agent and Sonarr is TVDB-based, or where Plex and your library mount the same files at different paths. If a synced tag's count looked lower than expected before, it should line up now.
+
+**Lock a default qBittorrent instance to each Radarr/Sonarr.** In an instance's settings you can pick the qBittorrent it normally uses. The tools that need one (Stuck downloads, the qBittorrent category and season/episode tools) then pre-select it for that instance, so you stop choosing the same one every time.
+
+**Startup log on disk for troubleshooting.** Resolvarr now writes its startup and key events to /config/logs/resolvarr.log. If the container ever fails to start or misbehaves, that file holds the details even when the container's own log comes back empty, which makes a problem far easier to pin down.
+
 ## v0.6.44-dev — Find and clear stuck downloads (2026-06-06)
 
 **New "Stuck downloads" tool (Library scan, Radarr + Sonarr).** Finds downloads that finished but never imported, usually because a better release of the same thing imported first and left the first one sitting in the queue. For each it shows the score it had at grab, the score it gets at import, and the score of the file you already have, plus the plain-language reason it's stuck.

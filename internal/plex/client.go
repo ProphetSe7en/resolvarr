@@ -169,22 +169,60 @@ func (c *Client) GetLibraries(ctx context.Context) ([]Library, error) {
 // /library/sections/{key}/all on a show library yields shows, not
 // seasons or episodes. Series-only is intentional: per-season +
 // per-episode label sync is out of scope.
+// itemPath derives the on-disk folder for an item. Shows report it as
+// Location[].path (per-item endpoint only); movies report it as the
+// parent directory of Media[].Part[].file (present in the bulk listing).
+// Returns "" when Plex reported neither.
+func itemPath(m rawItem) string {
+	for _, loc := range m.Location {
+		if p := strings.TrimSpace(loc.Path); p != "" {
+			return p
+		}
+	}
+	for _, med := range m.Media {
+		for _, part := range med.Part {
+			file := strings.TrimSpace(part.File)
+			if file == "" {
+				continue
+			}
+			// Movie folder = parent dir of the file. Trim a trailing
+			// slash defensively, then strip the last path segment.
+			file = strings.TrimRight(file, "/")
+			if i := strings.LastIndexByte(file, '/'); i > 0 {
+				return file[:i]
+			}
+			return file
+		}
+	}
+	return ""
+}
+
 func (c *Client) GetItems(ctx context.Context, libraryKey string) ([]Item, error) {
 	if strings.TrimSpace(libraryKey) == "" {
 		return nil, fmt.Errorf("plex: library key required")
 	}
 	var resp itemsResponse
-	// includeMeta=1 + checkFiles=0 + includeChildren=0 — defensive
-	// parameter set asking Plex to include the full per-item metadata
-	// block (Label[], Genre[], Country[], etc.) without the per-file
-	// metadata or per-episode children. Without includeMeta on some
-	// Plex Server versions the Label array is omitted from the
-	// response — items appear unlabelled and the engine would treat
-	// every Arr-tagged item as "needs to add the label" even when
-	// Plex already carries it. includeChildren=0 keeps episode/season
-	// expansion off for show libraries (we only label series-level
-	// per the design).
-	path := fmt.Sprintf("/library/sections/%s/all?includeMeta=1&includeChildren=0&checkFiles=0",
+	// includeGuids=1 + includeMeta=1 + checkFiles=0 + includeChildren=0.
+	//
+	// includeGuids=1 is REQUIRED for matching: the bulk
+	// /library/sections/{key}/all listing omits the external Guid[]
+	// array (tmdb:// / tvdb:// / imdb://) entirely unless this is set —
+	// verified against a live server, every item came back with
+	// Guid=null without it and the full three-ID array with it. Since
+	// matchPlexItemToArrItem reads item.GUIDs (not the post-match
+	// per-item metadata fetch), dropping it collapses the whole 4-tier
+	// matcher down to tier 4 (title+year), so any show whose Plex
+	// title/year differs from the Arr side silently fails to match and
+	// never gets its label.
+	//
+	// includeMeta=1 asks Plex to include the per-item metadata block
+	// (Label[], Genre[], etc.). On some Plex Server versions the Label
+	// array is still omitted from the bulk list regardless — the engine
+	// falls back to a per-item /library/metadata fetch for labels — but
+	// it helps on the versions that honour it. includeChildren=0 keeps
+	// episode/season expansion off for show libraries (we only label
+	// series-level per the design).
+	path := fmt.Sprintf("/library/sections/%s/all?includeGuids=1&includeMeta=1&includeChildren=0&checkFiles=0",
 		url.PathEscape(libraryKey))
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, err
@@ -221,6 +259,7 @@ func (c *Client) GetItems(ctx context.Context, libraryKey string) ([]Item, error
 			GUIDs:       guids,
 			Labels:      labels,
 			Collections: collections,
+			Path:        itemPath(m),
 		})
 	}
 	return out, nil
@@ -303,6 +342,7 @@ func (c *Client) GetItemMetadata(ctx context.Context, ratingKey string) (Item, e
 		GUIDs:       guids,
 		Labels:      labels,
 		Collections: collections,
+		Path:        itemPath(m),
 	}, nil
 }
 

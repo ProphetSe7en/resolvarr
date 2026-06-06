@@ -393,3 +393,101 @@ func TestComputeDiff_WhitelistMissingFromArr_RemovesIfPlexHas(t *testing.T) {
 		t.Errorf("preempt-config whitelist label should remove if Plex has it; got remove=%v", diff.remove)
 	}
 }
+
+// ---------- tier 5: path match ----------
+
+func TestParsePathIDs(t *testing.T) {
+	cases := []struct {
+		path     string
+		wantTvdb int
+		wantTmdb int
+		wantImdb string
+	}{
+		{"/data/media/tv/hd/Berserk in the pioneers' waters (2016) {tvdb-307837}", 307837, 0, ""},
+		{"/data/media/movies/web/2 Guns (2013) {tmdb-136400}", 0, 136400, ""},
+		{"/tv/Some Show (2019) {imdb-tt0519792}", 0, 0, "tt0519792"},
+		{"/tv/Mixed (2020) {tvdb-111} {imdb-tt222}", 111, 0, "tt222"},
+		{"/tv/Bracket [tvdbid-99]", 99, 0, ""},
+		{"/tv/No Tokens Here (2021)", 0, 0, ""},
+	}
+	for _, c := range cases {
+		tvdb, tmdb, imdb := parsePathIDs(c.path)
+		if tvdb != c.wantTvdb || tmdb != c.wantTmdb || imdb != c.wantImdb {
+			t.Errorf("parsePathIDs(%q) = (%d,%d,%q); want (%d,%d,%q)",
+				c.path, tvdb, tmdb, imdb, c.wantTvdb, c.wantTmdb, c.wantImdb)
+		}
+	}
+}
+
+func TestPathBasename(t *testing.T) {
+	if got := pathBasename("/data/media/tv/Show (2016) {tvdb-1}/"); got != "Show (2016) {tvdb-1}" {
+		t.Errorf("pathBasename trailing-slash = %q", got)
+	}
+	if got := pathBasename("/x/y/Z"); got != "Z" {
+		t.Errorf("pathBasename = %q", got)
+	}
+}
+
+// Real reported case: Sonarr has tvdb-73454, the Plex item's metadata
+// GUID is a DIFFERENT tvdb (117850) so the ID tiers miss — but Sonarr's
+// folder carries {tvdb-73454}, so tier-5 5a (path ID token) matches.
+func TestMatchPlexPath_IDTokenBeatsDivergentGuid(t *testing.T) {
+	items := []arr.Item{
+		{ID: 7, Title: "Some Old Show", TvdbID: 73454,
+			Path: "/data/media/tv/hd/Some Old Show (1998) {tvdb-73454}"},
+	}
+	idx := buildPlexMatchIndex(items)
+	// Plex reports a different tvdb GUID, so the ID tiers fail.
+	if a, _ := matchPlexItemToArrItem(plex.Item{GUIDs: []string{"tvdb://117850"}}, idx); a != nil {
+		t.Fatalf("ID tier should miss on divergent tvdb; matched %d", a.ID)
+	}
+	// But the Plex file lives in Sonarr's folder, which carries the
+	// correct {tvdb-73454}.
+	a, tier := matchPlexPathToArrItem("/data/media/tv/hd/Some Old Show (1998) {tvdb-73454}", idx)
+	if a == nil || a.ID != 7 || tier != "path-tvdb" {
+		t.Fatalf("path ID-token match failed: item=%v tier=%q", a, tier)
+	}
+}
+
+// Berserk case: Sonarr tvdb-only, no folder ID token expected to differ;
+// confirms full-path + basename fallbacks when no ID token resolves.
+func TestMatchPlexPath_FullAndBasename(t *testing.T) {
+	items := []arr.Item{
+		{ID: 3, Title: "Localised Title", TvdbID: 999,
+			Path: "/data/media/tv/hd/Original Title (2016)"}, // no ID token in folder
+	}
+	idx := buildPlexMatchIndex(items)
+
+	// 5b: exact folder path (Plex and Arr mount at the same root).
+	if a, tier := matchPlexPathToArrItem("/data/media/tv/hd/Original Title (2016)", idx); a == nil || a.ID != 3 || tier != "path-full" {
+		t.Fatalf("full-path match failed: item=%v tier=%q", a, tier)
+	}
+	// 5c: basename only (Plex mounts the same storage at a different root).
+	if a, tier := matchPlexPathToArrItem("/plex/tv/Original Title (2016)", idx); a == nil || a.ID != 3 || tier != "path-base" {
+		t.Fatalf("basename match failed: item=%v tier=%q", a, tier)
+	}
+}
+
+func TestMatchPlexPath_NoMatch(t *testing.T) {
+	idx := buildPlexMatchIndex([]arr.Item{
+		{ID: 1, Title: "A", TvdbID: 1, Path: "/tv/A (2000)"},
+	})
+	if a, _ := matchPlexPathToArrItem("/tv/Totally Different (1999)", idx); a != nil {
+		t.Errorf("expected no path match, got %d", a.ID)
+	}
+	if a, _ := matchPlexPathToArrItem("", idx); a != nil {
+		t.Errorf("empty path must not match, got %d", a.ID)
+	}
+}
+
+func TestBuildPlexMatchIndex_PathMaps(t *testing.T) {
+	idx := buildPlexMatchIndex([]arr.Item{
+		{ID: 5, Title: "X", Path: "/tv/X (2010) {tvdb-5}/"},
+	})
+	if _, ok := idx.pathFull["/tv/X (2010) {tvdb-5}"]; !ok {
+		t.Error("pathFull should be keyed by the trailing-slash-trimmed path")
+	}
+	if _, ok := idx.pathBase["x (2010) {tvdb-5}"]; !ok {
+		t.Error("pathBase should be keyed by the lower-cased basename")
+	}
+}

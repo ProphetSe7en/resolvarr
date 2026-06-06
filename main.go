@@ -8,6 +8,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -47,6 +49,35 @@ func main() {
 	if configDir == "" {
 		configDir = "/config"
 	}
+
+	// Persistent process log — mirror everything the standard logger
+	// writes to /config/logs/resolvarr.log. `docker logs` can come back
+	// empty (crash-loop truncation, lost stdout, Unraid quirks), so a
+	// file under the mounted /config volume is the one artefact a tester
+	// can always send us to explain a failed start. Set up BEFORE config
+	// load so config/auth/env failures are captured too. Best-effort: if
+	// the log file can't be opened (e.g. /config not writable yet) we log
+	// a warning to stderr and carry on rather than blocking boot.
+	if logFile := setupProcessLog(configDir); logFile != nil {
+		defer logFile.Close()
+	}
+
+	// Top-level panic capture. A panic before the HTTP server is up would
+	// otherwise print only to stderr — which is exactly what goes missing
+	// in a crash-loop. Recover, write the panic + full stack to the
+	// persistent log, then exit non-zero so the orchestrator still sees
+	// the failure. Per-goroutine panics are already caught by
+	// utils.SafeGo; this covers the synchronous startup path in main.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("FATAL: panic during startup: %v\n%s", r, debug.Stack())
+			os.Exit(1)
+		}
+	}()
+
+	log.Printf("==== Resolvarr v%s starting (pid %d) ====", Version, os.Getpid())
+	log.Printf("startup: config_dir=%s port=%s", configDir, port)
+	logStartupEnv()
 
 	app, err := core.NewApp(configDir)
 	if err != nil {
@@ -176,6 +207,53 @@ func main() {
 	if app != nil && app.RunLog != nil {
 		app.RunLog.Close()
 	}
+}
+
+// setupProcessLog points the standard logger at both stderr (so
+// `docker logs` still works when it works) and /config/logs/resolvarr.log
+// (so there's a durable artefact when it doesn't). Returns the open file
+// for the caller to close on shutdown, or nil if the file couldn't be
+// opened — in which case logging falls back to stderr-only and boot
+// continues. To stop the file growing without bound on long-lived
+// containers, it's truncated once it passes ~5 MiB; startup + the rare
+// Fatalf/panic line are tiny, so the live tail always survives.
+func setupProcessLog(configDir string) *os.File {
+	dir := filepath.Join(configDir, "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("warning: could not create log dir %s (logging to stderr only): %v", dir, err)
+		return nil
+	}
+	path := filepath.Join(dir, "resolvarr.log")
+	flags := os.O_APPEND | os.O_CREATE | os.O_WRONLY
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 5*1024*1024 {
+		flags = os.O_TRUNC | os.O_CREATE | os.O_WRONLY
+	}
+	f, err := os.OpenFile(path, flags, 0o644)
+	if err != nil {
+		log.Printf("warning: could not open %s (logging to stderr only): %v", path, err)
+		return nil
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
+	return f
+}
+
+// logStartupEnv records the environment that most often explains a
+// failed or misbehaving start: the trust-boundary settings that shape
+// the auth/proxy/CSRF behaviour a tester hits behind a reverse proxy,
+// plus the timezone (so logged timestamps are unambiguous). Values are
+// infra config, not secrets — no API keys or passwords come from the
+// environment — so logging them verbatim to the operator's own /config
+// volume is safe and is exactly the context we ask for when a tester
+// reports "won't start" or "403".
+func logStartupEnv() {
+	show := func(name string) string {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v
+		}
+		return "(unset)"
+	}
+	log.Printf("startup: env TRUSTED_PROXIES=%s TRUSTED_NETWORKS=%s TZ=%s",
+		show("TRUSTED_PROXIES"), show("TRUSTED_NETWORKS"), show("TZ"))
 }
 
 // includeRE matches `<!--#include "path"-->` markers in index.html.

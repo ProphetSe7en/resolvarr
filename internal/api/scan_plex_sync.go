@@ -466,8 +466,34 @@ func (s *Server) runPlexLabelSync(
 		}
 		for _, plexItem := range items {
 			run.ItemsTotal++
-			// Match Plex item → Arr item via the 4-tier lookup.
+			// Match Plex item → Arr item via the ID + title tiers.
 			arrItem, matchType := matchPlexItemToArrItem(plexItem, idx)
+
+			// prefetched holds a per-item /library/metadata fetch when
+			// tier 5 needed it (shows don't carry their folder path in
+			// the bulk listing). Reused below for Label[]/Collection[]
+			// so a path-matched item isn't fetched twice.
+			var prefetched *plex.Item
+
+			// Tier 5: path match. Only fires when every ID + title tier
+			// missed. Shows lack Path in the bulk listing, so fetch the
+			// per-item metadata to learn the folder first — bounded
+			// cost, only for the unmatched gap.
+			if arrItem == nil {
+				path := plexItem.Path
+				if path == "" {
+					if full, err := plexClient.GetItemMetadata(ctx, plexItem.RatingKey); err == nil {
+						prefetched = &full
+						path = full.Path
+					}
+				}
+				if path != "" {
+					if a, t := matchPlexPathToArrItem(path, idx); a != nil {
+						arrItem, matchType = a, t
+					}
+				}
+			}
+
 			if arrItem == nil {
 				run.Unmatched++
 				continue
@@ -490,7 +516,11 @@ func (s *Server) runPlexLabelSync(
 			// ratingKey doesn't abort the run.
 			currentLabels := plexItem.Labels
 			currentCollections := plexItem.Collections
-			if full, err := plexClient.GetItemMetadata(ctx, plexItem.RatingKey); err != nil {
+			if prefetched != nil {
+				// Tier 5 already fetched this item — reuse it.
+				currentLabels = prefetched.Labels
+				currentCollections = prefetched.Collections
+			} else if full, err := plexClient.GetItemMetadata(ctx, plexItem.RatingKey); err != nil {
 				run.AppendError(fmt.Sprintf("fetch metadata for %q: %v", plexItem.Title, err))
 				// keep going with bulk values — better partial than aborted
 			} else {
@@ -688,11 +718,16 @@ func computePlexLabelDiff(
 	return diff
 }
 
-// plexMatchIndex carries the 4-tier lookup tables built once per run.
+// plexMatchIndex carries the 5-tier lookup tables built once per run.
 // Compound keys defend against Plex's occasional scrape errors where
 // one ID points at the wrong title; single-ID tiers catch items where
-// only one identifier is present; title+year is the last-resort
-// fallback.
+// only one identifier is present; title+year is a fallback; the path
+// tiers are the last resort for items whose external IDs are missing or
+// disagree between Plex and the Arr (Sonarr TVDB-primary vs a Plex item
+// matched by the TMDB agent, or two different TVDB entries for the same
+// show). pathFull/pathBase key the same Arr items by their on-disk
+// folder so the file location bridges them — the file is the same on
+// disk regardless of what ID each system assigned.
 type plexMatchIndex struct {
 	tmdbImdb map[plexCompoundKey]*arr.Item // (tmdbID, imdbID) → item
 	tvdbImdb map[plexCompoundKey]*arr.Item // (tvdbID, imdbID) → item
@@ -700,6 +735,8 @@ type plexMatchIndex struct {
 	tvdb     map[int]*arr.Item
 	imdb     map[string]*arr.Item
 	titleYr  map[plexTitleYearKey]*arr.Item // (normalisedTitle, year) → item
+	pathFull map[string]*arr.Item           // normalised Arr folder path → item
+	pathBase map[string]*arr.Item           // lower-cased folder basename → item (mount-agnostic)
 }
 
 type plexCompoundKey struct {
@@ -722,6 +759,8 @@ func buildPlexMatchIndex(items []arr.Item) *plexMatchIndex {
 		tvdb:     map[int]*arr.Item{},
 		imdb:     map[string]*arr.Item{},
 		titleYr:  map[plexTitleYearKey]*arr.Item{},
+		pathFull: map[string]*arr.Item{},
+		pathBase: map[string]*arr.Item{},
 	}
 	for i := range items {
 		it := &items[i]
@@ -746,6 +785,12 @@ func buildPlexMatchIndex(items []arr.Item) *plexMatchIndex {
 				title: normalisePlexTitle(it.Title),
 				year:  it.Year,
 			}] = it
+		}
+		if p := normalisePlexPath(it.Path); p != "" {
+			idx.pathFull[p] = it
+			if b := pathBasename(p); b != "" {
+				idx.pathBase[strings.ToLower(b)] = it
+			}
 		}
 	}
 	return idx
@@ -830,6 +875,99 @@ func parsePlexGUIDs(guids []string) (tmdbID int, tvdbID int, imdbID string) {
 		}
 	}
 	return
+}
+
+// normalisePlexPath trims whitespace + a trailing slash so two reports
+// of the same folder compare equal.
+func normalisePlexPath(p string) string {
+	return strings.TrimRight(strings.TrimSpace(p), "/")
+}
+
+// pathBasename returns the last path segment (the media folder name),
+// e.g. "/data/media/tv/Show (2016) {tvdb-1}" → "Show (2016) {tvdb-1}".
+func pathBasename(p string) string {
+	p = normalisePlexPath(p)
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
+// pathTvdbRE / pathTmdbRE / pathImdbRE pull an ID token out of a media
+// folder name. Sonarr/Radarr embed it in the folder ("{tvdb-307837}",
+// "{tmdb-114339}", "{imdb-tt0519792}", also "[tvdbid-...]" variants), so
+// even when the Plex metadata GUID disagrees with the Arr — different
+// TVDB entries for the same show, or a TMDB-only Plex match against a
+// TVDB-only Sonarr — the folder still carries the Arr's own ID. The
+// separator class allows the "-", "id-", ":" and brace/bracket variants.
+var (
+	pathTvdbRE = regexp.MustCompile(`(?i)tvdb[^0-9]{0,4}([0-9]+)`)
+	pathTmdbRE = regexp.MustCompile(`(?i)tmdb[^0-9]{0,4}([0-9]+)`)
+	pathImdbRE = regexp.MustCompile(`(?i)imdb[^0-9a-z]{0,4}(tt[0-9]+)`)
+)
+
+// parsePathIDs extracts any tvdb/tmdb/imdb ID token embedded in a media
+// folder path. Returns zero values for tokens that aren't present.
+func parsePathIDs(p string) (tvdbID int, tmdbID int, imdbID string) {
+	if m := pathTvdbRE.FindStringSubmatch(p); m != nil {
+		if v, err := strconv.Atoi(m[1]); err == nil {
+			tvdbID = v
+		}
+	}
+	if m := pathTmdbRE.FindStringSubmatch(p); m != nil {
+		if v, err := strconv.Atoi(m[1]); err == nil {
+			tmdbID = v
+		}
+	}
+	if m := pathImdbRE.FindStringSubmatch(p); m != nil {
+		imdbID = strings.ToLower(m[1])
+	}
+	return
+}
+
+// matchPlexPathToArrItem is tier 5 — the last-resort match for items
+// that missed every ID + title tier. It bridges Plex and the Arr via
+// the on-disk location, which is identical because Plex scans the very
+// files Sonarr/Radarr placed there. Three sub-steps, most precise first:
+//
+//	5a. ID token embedded in the folder ("{tvdb-307837}") — an exact
+//	    match against the Arr's own ID, authoritative even when the
+//	    Plex metadata GUID disagrees.
+//	5b. Exact folder path (Plex Location == Arr path).
+//	5c. Folder basename — mount-agnostic, so it still matches when Plex
+//	    and the Arr mount the same storage at different roots.
+//
+// Returns the matched item + a tier label, or (nil, "") on miss.
+func matchPlexPathToArrItem(plexPath string, idx *plexMatchIndex) (*arr.Item, string) {
+	p := normalisePlexPath(plexPath)
+	if p == "" {
+		return nil, ""
+	}
+	tvdbID, tmdbID, imdbID := parsePathIDs(p)
+	if tvdbID != 0 {
+		if a, ok := idx.tvdb[tvdbID]; ok {
+			return a, "path-tvdb"
+		}
+	}
+	if tmdbID != 0 {
+		if a, ok := idx.tmdb[tmdbID]; ok {
+			return a, "path-tmdb"
+		}
+	}
+	if imdbID != "" {
+		if a, ok := idx.imdb[imdbID]; ok {
+			return a, "path-imdb"
+		}
+	}
+	if a, ok := idx.pathFull[p]; ok {
+		return a, "path-full"
+	}
+	if b := pathBasename(p); b != "" {
+		if a, ok := idx.pathBase[strings.ToLower(b)]; ok {
+			return a, "path-base"
+		}
+	}
+	return nil, ""
 }
 
 // titleNormaliser strips punctuation + collapses whitespace so Plex's

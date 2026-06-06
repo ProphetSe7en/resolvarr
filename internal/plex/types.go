@@ -40,6 +40,16 @@ type Item struct {
 	// per rule via PlexLabelRule.TargetType. Same case-preservation +
 	// case-insensitive matching pattern as labels.
 	Collections []string
+	// Path is the on-disk folder this item lives in, used by the
+	// engine's tier-5 path match (the same file Sonarr/Radarr manages,
+	// so it bridges items whose external IDs disagree or are missing).
+	// For shows it comes from Location[].path; for movies it's the
+	// parent directory of Media[].Part[].file. Shows only carry
+	// Location on the per-item /library/metadata endpoint (not the
+	// bulk section listing), so this is empty for shows fetched via
+	// GetItems and populated via GetItemMetadata. Empty when Plex
+	// reported no path.
+	Path string
 }
 
 // itemTypeCode maps Plex's library-type strings to the numeric `type`
@@ -106,6 +116,12 @@ type rawItem struct {
 	// stays clean.
 	Guid             []rawGuid  `json:"Guid,omitempty"`
 	PlexInternalGUID string     `json:"guid,omitempty"` // absorbed — Plex's own GUID, unused
+	// Location holds the on-disk folder(s) for a show. Only present on
+	// the per-item /library/metadata endpoint, never the bulk section
+	// listing. Media holds the file parts for a movie (present in the
+	// bulk listing). itemPath() derives Item.Path from whichever is set.
+	Location         []rawLocation `json:"Location,omitempty"`
+	Media            []rawMedia    `json:"Media,omitempty"`
 	Label            []rawLabel `json:"Label,omitempty"`
 	// Plex's Collection array has the same shape as Label
 	// ({id, tag, filter}). Many users group movies by quality/release
@@ -122,6 +138,21 @@ type rawGuid struct {
 
 type rawLabel struct {
 	Tag string `json:"tag"`
+}
+
+// rawLocation is a show's on-disk folder ({"path": "/data/.../Show (2016)"}).
+type rawLocation struct {
+	Path string `json:"path"`
+}
+
+// rawMedia + rawPart carry a movie's file path. The movie folder is the
+// parent directory of Part.file.
+type rawMedia struct {
+	Part []rawPart `json:"Part,omitempty"`
+}
+
+type rawPart struct {
+	File string `json:"file"`
 }
 
 // identityResponse is the Plex /identity probe — used by Ping() to

@@ -58,10 +58,10 @@ func (r *schedulerRunner) RunSchedule(ctx context.Context, job core.ScheduledJob
 	// hand-edited resolvarr.json sneaks one through.
 	if appType == "sonarr" {
 		switch job.Mode {
-		case core.JobModeRecover, core.JobModeAudioTags, core.JobModeVideoTags, core.JobModeMissingEpisodes, core.JobModePlexSync, core.JobModeTbaRefresh, core.JobModeCombined:
+		case core.JobModeRecover, core.JobModeAudioTags, core.JobModeVideoTags, core.JobModeMissingEpisodes, core.JobModePlexSync, core.JobModeTbaRefresh, core.JobModeReconcile, core.JobModeCombined:
 			// supported
 		default:
-			return core.RunSummary{}, fmt.Errorf("Sonarr schedules support recover / audiotags / videotags / missingepisodes / plexsync / tbarefresh / combined only — got %q", job.Mode)
+			return core.RunSummary{}, fmt.Errorf("Sonarr schedules support recover / audiotags / videotags / missingepisodes / plexsync / tbarefresh / reconcile / combined only — got %q", job.Mode)
 		}
 	} else if appType != "radarr" {
 		return core.RunSummary{}, fmt.Errorf("schedule against unknown instance type %q", appType)
@@ -113,6 +113,8 @@ func (r *schedulerRunner) RunSchedule(ctx context.Context, job core.ScheduledJob
 		summary, runErr = r.runTbaRefreshSchedule(ctx, inst, appType, job)
 	case core.JobModeQbitSeTag:
 		summary, runErr = r.runQbitSeSchedule(ctx, cfg, inst, appType, job)
+	case core.JobModeReconcile:
+		summary, runErr = r.runReconcileSchedule(ctx, cfg, inst, appType, job)
 	case core.JobModeCombined:
 		summary, runErr = r.runCombinedSchedule(ctx, cfg, inst, appType, filterCfg, job)
 	default:
@@ -268,6 +270,30 @@ func (r *schedulerRunner) runRecoverSchedule(ctx context.Context, inst *core.Ins
 		return core.RunSummary{}, apiErr
 	}
 	out := summarizeRecoverResponse(resp)
+	out.Result = resp
+	return out, nil
+}
+
+// runReconcileSchedule runs the reconcile phase (clear stuck downloads),
+// Radarr + Sonarr. Mode from JobOptions.RunMode (preview default). Apply
+// moves every redundant download to the snapshot's category — per-row
+// select is UI-only, so a scheduled apply acts on all redundant.
+func (r *schedulerRunner) runReconcileSchedule(ctx context.Context, cfg core.Config, inst *core.Instance, appType string, job core.ScheduledJob) (core.RunSummary, error) {
+	req := scanRunRequest{
+		InstanceID: job.InstanceID,
+		Mode:       defaultMode(job.Options.RunMode, "preview"),
+		Action:     "reconcile",
+	}
+	if rc := job.Reconcile; rc != nil {
+		req.ReconcileQbitInstanceID = rc.QbitInstanceID
+		req.ReconcilePostCategory = rc.PostCategory
+	}
+	resp, apiErr := r.server.runReconcile(ctx, cfg, inst, appType, req)
+	r.server.auditScan("schedule:"+job.ID, "reconcile", inst, req, resp, errMsgOf(apiErr))
+	if apiErr != nil {
+		return core.RunSummary{}, apiErr
+	}
+	out := summarizeReconcileResponse(resp)
 	out.Result = resp
 	return out, nil
 }
@@ -1503,6 +1529,36 @@ func summarizeRecoverResponse(resp *scanResponse) core.RunSummary {
 		Status:  status,
 		Summary: strings.Join(parts, ", "),
 	}
+}
+
+// summarizeReconcileResponse builds the RunSummary line for a scheduled
+// reconcile phase from the bucket totals.
+func summarizeReconcileResponse(resp *scanResponse) core.RunSummary {
+	if resp == nil {
+		return core.RunSummary{Status: "error", Summary: "nil response"}
+	}
+	t := resp.Totals
+	parts := []string{}
+	if t.ReconcileRecategorised > 0 {
+		parts = append(parts, fmt.Sprintf("%d recategorised", t.ReconcileRecategorised))
+	}
+	if t.ReconcileRedundant > 0 {
+		parts = append(parts, fmt.Sprintf("%d redundant", t.ReconcileRedundant))
+	}
+	if t.ReconcileNeedsAttention > 0 {
+		parts = append(parts, fmt.Sprintf("%d need attention", t.ReconcileNeedsAttention))
+	}
+	if t.ReconcileFailed > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", t.ReconcileFailed))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "no stuck downloads")
+	}
+	status := "ok"
+	if t.ReconcileFailed > 0 {
+		status = "partial"
+	}
+	return core.RunSummary{Status: status, Summary: strings.Join(parts, ", ")}
 }
 
 func plural(n int) string {

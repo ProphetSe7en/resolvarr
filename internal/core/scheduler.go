@@ -490,16 +490,20 @@ func (s *Scheduler) pruneOrphanLogFiles() {
 		if _, ok := keep[name]; ok {
 			continue
 		}
-		// Audit log + adhoc scan dumps share /config/logs/ but are NOT
-		// scheduler output. They're managed by their own retention
-		// (runlog.pruneOldArchives — KeepDays-based). Touching them
-		// here wipes user-visible Activity tab history on every
-		// container restart. Match-and-skip the patterns this prune
-		// shouldn't see:
+		// Audit log + adhoc scan dumps + the process log share
+		// /config/logs/ but are NOT scheduler output. They're managed by
+		// their own retention (runlog.pruneOldArchives — KeepDays-based;
+		// the process log self-truncates at ~5 MiB). Touching them here
+		// wipes user-visible Activity tab history on every container
+		// restart — and would silently delete the process log moments
+		// after main.setupProcessLog creates it. Match-and-skip the
+		// patterns this prune shouldn't see:
 		//   runs.log              — current audit log
 		//   runs-YYYYMMDD.log     — rotated audit logs
 		//   scan-{action}-YYYYMMDD-HHMMSS.json — adhoc scan dumps
+		//   resolvarr.log         — process/startup log (main.setupProcessLog)
 		if name == "runs.log" ||
+			name == "resolvarr.log" ||
 			(strings.HasPrefix(name, "runs-") && strings.HasSuffix(name, ".log")) ||
 			(strings.HasPrefix(name, "scan-") && strings.HasSuffix(name, ".json")) {
 			continue

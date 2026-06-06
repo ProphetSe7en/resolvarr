@@ -1175,7 +1175,7 @@ function appState() {
     instVersion: {},
     instError: {},
     showInstModal: false,
-    instForm: { id: '', name: '', type: 'radarr', iconVariant: 'standard', url: '', apiKey: '', pathMappings: [] },
+    instForm: { id: '', name: '', type: 'radarr', iconVariant: 'standard', defaultQbitInstanceId: '', url: '', apiKey: '', pathMappings: [] },
     // Path-mappings editor expander — collapsed by default so the
     // common case (aligned mounts; no mappings needed) doesn't see
     // the noise. Click the header to expand.

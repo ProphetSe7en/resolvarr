@@ -471,3 +471,20 @@ func TestURL_EscapingForLibraryKey(t *testing.T) {
 		t.Error("PathEscape didn't escape — would corrupt URL")
 	}
 }
+
+func TestItemPath(t *testing.T) {
+	// Show: Location holds the series folder.
+	show := rawItem{Location: []rawLocation{{Path: "/data/media/tv/hd/Show (2016) {tvdb-1}"}}}
+	if got := itemPath(show); got != "/data/media/tv/hd/Show (2016) {tvdb-1}" {
+		t.Errorf("show itemPath = %q", got)
+	}
+	// Movie: parent dir of the file part.
+	movie := rawItem{Media: []rawMedia{{Part: []rawPart{{File: "/data/media/movies/2 Guns (2013) {tmdb-136400}/2.Guns.mkv"}}}}}
+	if got := itemPath(movie); got != "/data/media/movies/2 Guns (2013) {tmdb-136400}" {
+		t.Errorf("movie itemPath = %q", got)
+	}
+	// Neither: empty.
+	if got := itemPath(rawItem{}); got != "" {
+		t.Errorf("empty itemPath = %q", got)
+	}
+}

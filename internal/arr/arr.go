@@ -283,6 +283,15 @@ type Item struct {
 	// matches, plus single-ID IMDB fallback). Empty string when the
 	// Arr's metadata source didn't supply one.
 	ImdbID    string     `json:"imdbId,omitempty"`
+	// Path is the on-disk folder Radarr/Sonarr manages for this item
+	// (e.g. "/data/media/tv/hd/Show (2016) {tvdb-307837}"). Both
+	// /api/v3/movie and /api/v3/series report it. Used by the Plex
+	// label-sync engine's tier-5 path match: a Plex item whose media
+	// file lives under this folder is the same release, even when the
+	// two systems share no external ID (Sonarr is TVDB-primary, a Plex
+	// item matched by the TMDB agent carries only a tmdb:// GUID) and
+	// the titles differ (localised Plex title vs Arr title).
+	Path      string     `json:"path,omitempty"`
 	Tags      []int      `json:"tags"`
 	MovieFile *MovieFile `json:"movieFile,omitempty"`
 	// Sonarr-only — series statistics. Used by M-Sonarr Audio/Video

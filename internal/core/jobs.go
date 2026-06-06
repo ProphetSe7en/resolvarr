@@ -22,8 +22,20 @@ const (
 	JobModePlexSync        JobMode = "plexsync"        // Arr tags → Plex labels/collections; config on ScheduledJob.PlexSync
 	JobModeTbaRefresh      JobMode = "tbarefresh"      // Sonarr only — rename TBA-imported files; config on ScheduledJob.TbaRefresh
 	JobModeQbitSeTag       JobMode = "qbitsetag"       // Sonarr only — tag qBit torrents by Season/Episode; config on ScheduledJob.QbitSe
+	JobModeReconcile       JobMode = "reconcile"       // Radarr + Sonarr — clear stuck queue downloads; config on ScheduledJob.Reconcile
 	JobModeCombined        JobMode = "combined"
 )
+
+// ReconcileConfig is the per-schedule snapshot for the reconcile phase
+// (clear stuck downloads). Apply-mode moves redundant downloads to
+// PostCategory on the given qBit instance; preview-mode just reports.
+// QbitInstanceID empty + apply = the phase records an error (nothing to
+// act against). The run mode comes from JobOptions.RunMode like the
+// other phases.
+type ReconcileConfig struct {
+	QbitInstanceID string `json:"qbitInstanceId,omitempty"`
+	PostCategory   string `json:"postCategory,omitempty"`
+}
 
 // ValidJobMode returns true when m is one of the accepted values.
 // Used by handlers to reject garbage before saving a schedule.
@@ -252,6 +264,10 @@ type ScheduledJob struct {
 	// straight to runQbitSeScanWithRules. AggregationWindowSeconds is
 	// ignored here (it only matters for the webhook qBit-Add debounce).
 	QbitSe *QbitSeRules `json:"qbitSe,omitempty"`
+
+	// Reconcile is the per-schedule snapshot for the reconcile phase
+	// (clear stuck downloads). nil = phase not enabled.
+	Reconcile *ReconcileConfig `json:"reconcile,omitempty"`
 
 	// History holds the last N runs — N=5 today, configurable later.
 	// Runs older than the cap land in the log file (LogPath on each

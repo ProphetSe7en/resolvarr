@@ -3253,12 +3253,23 @@ function app() {
     // instance + categories — a different Arr means a different download
     // client + categories. Then re-fetch the categories and auto-pick the
     // qBit instance when there's only one.
+    // The qBit instance locked to an Arr instance (Settings → Instances →
+    // Default qBittorrent instance), if it still points to a real qBit.
+    defaultQbitForArr(arrInstanceId) {
+      const inst = (this.instances || []).find(i => i.id === arrInstanceId);
+      const id = inst && inst.defaultQbitInstanceId;
+      if (id && (this.qbitInstances || []).some(q => q.id === id)) return id;
+      return '';
+    },
+
     reconcileOnInstanceChange() {
       const id = this.reconcileWizard.instanceId;
       if (id !== this.reconcileLastInstanceId) {
         this.reconcilePostCategory = '';
         this.reconcilePreCategory = '';
-        this.reconcileQbitInstanceId = '';
+        // Prefer the qBit instance locked to this Arr; else fall through
+        // to the single-instance auto-pick below.
+        this.reconcileQbitInstanceId = this.defaultQbitForArr(id) || '';
         this.reconcileLastInstanceId = id;
       }
       if (!this.reconcileQbitInstanceId && (this.qbitInstances || []).length === 1) {
@@ -7346,6 +7357,7 @@ function app() {
         this.instForm = {
           id: inst.id, name: inst.name, type: inst.type,
           iconVariant: inst.iconVariant || 'standard',
+          defaultQbitInstanceId: inst.defaultQbitInstanceId || '',
           url: inst.url, apiKey: inst.apiKey,
           // Deep-copy pathMappings so editor mutations don't bleed
           // into the live instances array before save. Empty/missing
@@ -7357,6 +7369,7 @@ function app() {
       } else {
         this.instForm = {
           id: '', name: '', type: 'radarr', iconVariant: 'standard',
+          defaultQbitInstanceId: '',
           url: '', apiKey: '', pathMappings: [],
         };
       }
@@ -7387,6 +7400,7 @@ function app() {
       const body = {
         name: this.instForm.name, type: this.instForm.type,
         iconVariant: this.instForm.iconVariant,
+        defaultQbitInstanceId: this.instForm.defaultQbitInstanceId || '',
         url: this.instForm.url, apiKey: this.instForm.apiKey,
         pathMappings: mappings,
       };

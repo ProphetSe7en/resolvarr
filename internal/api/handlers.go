@@ -511,18 +511,23 @@ func (s *Server) handleUpdateAuth(w http.ResponseWriter, r *http.Request) {
 // ---- Instances ----
 
 type instanceRequest struct {
-	Name         string             `json:"name"`
-	Type         string             `json:"type"`
-	IconVariant  string             `json:"iconVariant"`
-	URL          string             `json:"url"`
-	APIKey       string             `json:"apiKey"`
-	PathMappings []core.PathMapping `json:"pathMappings,omitempty"`
+	Name                  string             `json:"name"`
+	Type                  string             `json:"type"`
+	IconVariant           string             `json:"iconVariant"`
+	URL                   string             `json:"url"`
+	APIKey                string             `json:"apiKey"`
+	DefaultQbitInstanceID string             `json:"defaultQbitInstanceId,omitempty"`
+	PathMappings          []core.PathMapping `json:"pathMappings,omitempty"`
 }
 
 func (req *instanceRequest) validate() error {
 	req.Name = strings.TrimSpace(req.Name)
 	req.URL = strings.TrimRight(strings.TrimSpace(req.URL), "/")
 	req.APIKey = strings.TrimSpace(req.APIKey)
+	// DefaultQbitInstanceID is optional and references a qBit instance by
+	// ID — not existence-checked here (qBit instances change independently;
+	// a stale ref just means no default, the UI falls back to a manual pick).
+	req.DefaultQbitInstanceID = strings.TrimSpace(req.DefaultQbitInstanceID)
 	if req.IconVariant == "" {
 		req.IconVariant = "standard"
 	}
@@ -579,13 +584,14 @@ func (s *Server) handleAddInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	inst := core.Instance{
-		ID:           genID(),
-		Name:         req.Name,
-		Type:         req.Type,
-		IconVariant:  req.IconVariant,
-		URL:          req.URL,
-		APIKey:       req.APIKey,
-		PathMappings: req.PathMappings,
+		ID:                    genID(),
+		Name:                  req.Name,
+		Type:                  req.Type,
+		IconVariant:           req.IconVariant,
+		URL:                   req.URL,
+		APIKey:                req.APIKey,
+		DefaultQbitInstanceID: req.DefaultQbitInstanceID,
+		PathMappings:          req.PathMappings,
 	}
 	if err := s.App.Config.Update(func(c *core.Config) {
 		c.Instances = append(c.Instances, inst)
@@ -628,6 +634,7 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request) {
 				c.Instances[i].Type = req.Type
 				c.Instances[i].IconVariant = req.IconVariant
 				c.Instances[i].URL = req.URL
+				c.Instances[i].DefaultQbitInstanceID = req.DefaultQbitInstanceID
 				c.Instances[i].PathMappings = req.PathMappings
 				// Preserve stored API key when the UI returns the mask or an
 				// empty value — the admin saved the form without editing the
