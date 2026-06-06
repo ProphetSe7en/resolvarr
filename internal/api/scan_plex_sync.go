@@ -736,7 +736,7 @@ type plexMatchIndex struct {
 	imdb     map[string]*arr.Item
 	titleYr  map[plexTitleYearKey]*arr.Item // (normalisedTitle, year) → item
 	pathFull map[string]*arr.Item           // normalised Arr folder path → item
-	pathBase map[string]*arr.Item           // lower-cased folder basename → item (mount-agnostic)
+	pathBase map[string]*arr.Item           // lower-cased folder basename → item (mount-agnostic); nil value = ambiguous (shared by 2+ items), never matched
 }
 
 type plexCompoundKey struct {
@@ -789,7 +789,16 @@ func buildPlexMatchIndex(items []arr.Item) *plexMatchIndex {
 		if p := normalisePlexPath(it.Path); p != "" {
 			idx.pathFull[p] = it
 			if b := pathBasename(p); b != "" {
-				idx.pathBase[strings.ToLower(b)] = it
+				key := strings.ToLower(b)
+				if _, seen := idx.pathBase[key]; seen {
+					// Two Arr items share this folder name (same
+					// title+year in different roots, a remake, etc.).
+					// Mark ambiguous (nil) so the basename tier refuses
+					// to guess — full-path + ID tiers still resolve them.
+					idx.pathBase[key] = nil
+				} else {
+					idx.pathBase[key] = it
+				}
 			}
 		}
 	}
@@ -963,7 +972,9 @@ func matchPlexPathToArrItem(plexPath string, idx *plexMatchIndex) (*arr.Item, st
 		return a, "path-full"
 	}
 	if b := pathBasename(p); b != "" {
-		if a, ok := idx.pathBase[strings.ToLower(b)]; ok {
+		// nil value = ambiguous (more than one Arr item has this folder
+		// name); skip rather than guess. Only a unique basename matches.
+		if a, ok := idx.pathBase[strings.ToLower(b)]; ok && a != nil {
 			return a, "path-base"
 		}
 	}

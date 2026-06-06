@@ -7572,11 +7572,6 @@
                 ⓘ At least one function must be enabled. Without one the rule has nothing to do — empty Function lists are rejected on save.
               </div>
             </template>
-            <template x-if="webhookDvWithoutVideoWarning()">
-              <div style="font-size:11px;color:var(--accent-orange);margin-top:6px;line-height:1.5">
-                ⚠ Tag DV Details is on but Tag Video is off. Tag Video → HDR is what emits the base <code>dv</code> tag — without it the file ends up with profile/layer/CM tags but no plain <code>dv</code>. Tick Tag Video too unless you really only want the detail tags.
-              </div>
-            </template>
           </div>
 
           <!-- Mirror-to-secondary as its own control — same layout as the

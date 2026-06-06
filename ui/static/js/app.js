@@ -11023,16 +11023,6 @@ function app() {
       }
       return '';
     },
-    // Soft warning — DV detail layers profile/layer/CM-version tags on
-    // top of the base `dv` tag, which Tag Video → HDR emits. Ticking
-    // DV detail alone leaves files with profile tags but no base dv
-    // tag. Surfaces as a hint under the checkbox list, not a hard
-    // block — the user may know what they want.
-    webhookDvWithoutVideoWarning() {
-      const o = (this.editingRule && this.editingRule.options) || {};
-      return !!o.fnTagDvDetail && !o.fnTagVideo;
-    },
-
     // ---- Mode / tab visibility helpers ----
     //
     // Each helper checks BOTH the legacy schedule-mode flag (mode +

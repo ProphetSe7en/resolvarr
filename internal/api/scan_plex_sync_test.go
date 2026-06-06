@@ -480,6 +480,23 @@ func TestMatchPlexPath_NoMatch(t *testing.T) {
 	}
 }
 
+// Two Arr items sharing a folder name must NOT match on basename — the
+// tier refuses to guess (full-path + ID tiers still resolve them).
+func TestMatchPlexPath_AmbiguousBasenameSkipped(t *testing.T) {
+	idx := buildPlexMatchIndex([]arr.Item{
+		{ID: 1, Title: "Clash", TvdbID: 11, Path: "/tv/hd/Clash (2019)"},
+		{ID: 2, Title: "Clash", TvdbID: 22, Path: "/tv/uhd/Clash (2019)"},
+	})
+	// Different mount root → full path misses; basename is ambiguous → no match.
+	if a, _ := matchPlexPathToArrItem("/plex/Clash (2019)", idx); a != nil {
+		t.Errorf("ambiguous basename must not match; got item %d", a.ID)
+	}
+	// Exact full path still resolves the right one.
+	if a, tier := matchPlexPathToArrItem("/tv/uhd/Clash (2019)", idx); a == nil || a.ID != 2 || tier != "path-full" {
+		t.Errorf("full-path should still resolve the ambiguous-basename item: item=%v tier=%q", a, tier)
+	}
+}
+
 func TestBuildPlexMatchIndex_PathMaps(t *testing.T) {
 	idx := buildPlexMatchIndex([]arr.Item{
 		{ID: 5, Title: "X", Path: "/tv/X (2010) {tvdb-5}/"},

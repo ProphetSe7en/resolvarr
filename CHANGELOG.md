@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.46-dev — Clearer DV detail note + Plex match hardening (2026-06-06)
+
+**Webhook rules: removed a confusing note about Tag DV Details and Tag Video.** The old note implied you had to enable Tag Video to use Tag DV Details. You don't. Tag DV Details is its own function and tags the Dolby Vision profile, layer and CM version on its own. Tag Video is separate and only adds the plain `dv` tag, so enable it as well only if you also want that base tag.
+
+**Plex label sync: the folder-name fallback no longer guesses on duplicates.** When a match falls back to the on-disk folder name, two library items that happen to share the same folder name are now left unmatched instead of risking the wrong one getting the label. Items matched by database ID, by an ID in the folder name, or by the full folder path are unaffected.
+
 ## v0.6.45-dev — Plex label sync matches reliably + per-Arr qBittorrent default (2026-06-06)
 
 **Plex label sync now matches your shows and movies far more reliably.** It reads the database IDs (TVDB, TMDB, IMDb) directly from Plex and matches on those, with the folder on disk as a final fallback. Before, it leaned on the title and year, so an item whose Plex name or year differed from Radarr/Sonarr could be missed. Now a show or movie still gets its label even when Plex and Radarr/Sonarr hold different IDs, only one of them, or none in common. That last case is common for foreign or obscure titles, where Plex matched with the TMDB agent and Sonarr is TVDB-based, or where Plex and your library mount the same files at different paths. If a synced tag's count looked lower than expected before, it should line up now.
