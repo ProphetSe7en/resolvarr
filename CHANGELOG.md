@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.47-dev — Webhook rule remembers its Plex instance + app icon (2026-06-07)
+
+**Fixed: re-opening a webhook rule now shows the Plex instance you picked for Plex label sync.** Your choice was always saved, but the instance picker came up blank on re-edit, which made it look lost (and re-saving from the blank picker could drop it). It now shows the saved instance, the same as the other instance pickers.
+
+**Added: an app icon.** The container now ships a resolvarr icon, so Unraid (and anything that reads the container image) shows the logo instead of a blank square.
+
 ## v0.6.46-dev — Clearer DV detail note + Plex match hardening (2026-06-06)
 
 **Webhook rules: removed a confusing note about Tag DV Details and Tag Video.** The old note implied you had to enable Tag Video to use Tag DV Details. You don't. Tag DV Details is its own function and tags the Dolby Vision profile, layer and CM version on its own. Tag Video is separate and only adds the plain `dv` tag, so enable it as well only if you also want that base tag.

@@ -9523,7 +9523,7 @@
                     @change="editingRule.plexLabelSync.libraryKeys = []">
               <option value="">— Pick a Plex instance —</option>
               <template x-for="pi in plexInstances" :key="pi.id">
-                <option :value="pi.id" x-text="pi.name + ((pi.libraries || []).length === 0 ? ' (libraries not fetched yet)' : '')"></option>
+                <option :value="pi.id" :selected="pi.id === editingRule.plexLabelSync.plexInstanceId" x-text="pi.name + ((pi.libraries || []).length === 0 ? ' (libraries not fetched yet)' : '')"></option>
               </template>
             </select>
             <template x-if="editingRule.plexLabelSync.plexInstanceId && plexLabelSyncWizardSelectedPlexLibraries().length === 0">
