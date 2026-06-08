@@ -720,6 +720,13 @@ func appendPlexSyncSection(fields []agents.PayloadField, d *PlexSyncDetail) []ag
 		Value:  plexHeader,
 		Inline: true,
 	})
+	if len(d.Libraries) > 0 {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Libraries",
+			Value:  strings.Join(d.Libraries, ", "),
+			Inline: true,
+		})
+	}
 	if addedTotal > 0 {
 		fields = append(fields, agents.PayloadField{
 			Name:   "Added on Plex",

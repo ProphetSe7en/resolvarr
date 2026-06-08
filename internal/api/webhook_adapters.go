@@ -1959,6 +1959,16 @@ func (s *Server) dispatchPlexLabelSync(
 			detail.Removed[k] = v
 		}
 	}
+	// Distinct libraries a label landed in this fire — lets the
+	// notification confirm every selected library was tagged, not just
+	// the first (multi-library rules write one change per library).
+	seenLib := map[string]bool{}
+	for _, c := range run.PerLabel {
+		if c.Library != "" && !seenLib[c.Library] {
+			seenLib[c.Library] = true
+			detail.Libraries = append(detail.Libraries, c.Library)
+		}
+	}
 
 	summary := fmt.Sprintf("+%d / -%d / %d in sync", totalAdded, totalRemoved, totalInSync)
 	if run.Status != "ok" {

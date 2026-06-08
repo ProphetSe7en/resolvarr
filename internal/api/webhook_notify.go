@@ -139,6 +139,11 @@ type PlexSyncDetail struct {
 	Removed          map[string]int
 	TargetTypes      []string // "label" / "collection"
 	PlexInstanceName string   // human-readable name from PlexInstance.Name
+	// Libraries are the distinct Plex library titles a label was
+	// written to this fire. Multi-library rules touch more than one;
+	// the notification lists them so the user can confirm every
+	// selected library was tagged, not just the first.
+	Libraries []string
 }
 
 // DiscoverDetail is the typed payload for WebhookFnDiscover results.

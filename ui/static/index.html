@@ -6743,6 +6743,9 @@
                         </template>
                         <span style="color:var(--text-secondary)">on</span>
                         <span x-text="change.title + (change.year ? ' (' + change.year + ')' : '')"></span>
+                        <template x-if="change.library">
+                          <span style="font-size:11px;color:var(--text-muted)" x-text="'in ' + change.library"></span>
+                        </template>
                       </div>
                     </template>
                     <template x-if="plexLabelRunFilteredPerLabel(plexLabelRunModal.result).length === 0">

@@ -170,18 +170,17 @@ func (s *Server) runPlexLabelSyncForItem(
 	// the Arr side, then look up in each library's items via the
 	// same matchPlexItemToArrItem helper.
 	idx := buildPlexMatchIndex([]arr.Item{arrItem})
-	var (
-		matchedPlex     plex.Item
-		matchedLibKey   string
-		matchedLibType  string
-		foundPlex       bool
-	)
-	// ItemsTotal = 1 for the per-item flow regardless of how many
-	// libraries we walked to find the match — the run represents one
-	// Arr item, not "items scanned across libraries". Increment-per-
-	// library would break the ItemsTotal = Matched + Unmatched
-	// invariant on miss.
+	// ItemsTotal = 1: the run represents one Arr item, regardless of how
+	// many target libraries hold a copy.
 	run.ItemsTotal = 1
+
+	targetTypes := rule.EffectiveTargetTypes()
+	matchedAny := false
+
+	// Apply to EVERY selected target library that holds this item — not
+	// just the first. A rule syncing to N libraries must label the item
+	// in all of them; the old break-on-first-match labelled only the
+	// first library and left the rest untouched.
 	for _, libKey := range tgt.LibraryKeys {
 		items, err := plexClient.GetItems(ctx, libKey)
 		if err != nil {
@@ -189,117 +188,125 @@ func (s *Server) runPlexLabelSyncForItem(
 			run.Status = "partial"
 			continue
 		}
+
+		// Find this library's copy of the Arr item, if present.
+		var matchedPlex plex.Item
+		found := false
 		for _, plexItem := range items {
 			if arr2, _ := matchPlexItemToArrItem(plexItem, idx); arr2 != nil {
 				matchedPlex = plexItem
-				matchedLibKey = libKey
-				matchedLibType = libTypeByKey[libKey]
-				if matchedLibType == "" {
-					matchedLibType = plexItem.Type
-				}
-				foundPlex = true
+				found = true
 				break
 			}
 		}
-		if foundPlex {
-			break
+		if !found {
+			// This selected library simply doesn't hold the item — not an
+			// error; skip and try the next.
+			continue
+		}
+		matchedAny = true
+
+		matchedLibType := libTypeByKey[libKey]
+		if matchedLibType == "" {
+			matchedLibType = matchedPlex.Type
+		}
+
+		// Per-item metadata fetch — Label[] + Collection[] are omitted
+		// from /all on many Plex versions; /library/metadata/{ratingKey}
+		// is the reliable read.
+		currentLabels := matchedPlex.Labels
+		currentCollections := matchedPlex.Collections
+		if full, err := plexClient.GetItemMetadata(ctx, matchedPlex.RatingKey); err != nil {
+			run.AppendError(fmt.Sprintf("fetch metadata for %q: %v", matchedPlex.Title, err))
+			// keep going with bulk values
+		} else {
+			currentLabels = full.Labels
+			currentCollections = full.Collections
+		}
+
+		// Per-target-type diff + apply for THIS library's copy. Mirrors
+		// the bulk path's per-item block; InSync recorded only on the
+		// first target pass so multi-target rules don't double-count.
+		for tIdx, targetType := range targetTypes {
+			currentTagsForDiff := currentLabels
+			if targetType == "collection" {
+				currentTagsForDiff = currentCollections
+			}
+			diff := computePlexLabelDiff(
+				arrItem.Tags,
+				currentTagsForDiff,
+				whitelistedTagIDs,
+				whitelistByLower,
+			)
+			if tIdx == 0 {
+				for _, lbl := range diff.inSync {
+					run.InSync[lbl]++
+				}
+			}
+			if len(diff.add) == 0 && len(diff.remove) == 0 {
+				continue
+			}
+			useCollection := targetType == "collection"
+			for _, lbl := range diff.add {
+				if runMode == "apply" {
+					var err error
+					if useCollection {
+						err = plexClient.AddCollection(ctx, libKey, matchedPlex.RatingKey, matchedLibType, lbl)
+					} else {
+						err = plexClient.AddLabel(ctx, libKey, matchedPlex.RatingKey, matchedLibType, lbl)
+					}
+					if err != nil {
+						run.AppendError(fmt.Sprintf("add %q (%s) on %q: %v", lbl, targetType, matchedPlex.Title, err))
+						run.Status = "partial"
+						continue
+					}
+				}
+				run.Added[lbl]++
+				run.Changed = true
+				run.AppendPerLabel(core.PlexLabelChange{
+					Title:   matchedPlex.Title,
+					Year:    matchedPlex.Year,
+					Label:   lbl,
+					Action:  "add",
+					Target:  targetType,
+					Library: libTitleByKey[libKey],
+				})
+			}
+			for _, lbl := range diff.remove {
+				if runMode == "apply" {
+					var err error
+					if useCollection {
+						err = plexClient.RemoveCollection(ctx, libKey, matchedPlex.RatingKey, matchedLibType, lbl)
+					} else {
+						err = plexClient.RemoveLabel(ctx, libKey, matchedPlex.RatingKey, matchedLibType, lbl)
+					}
+					if err != nil {
+						run.AppendError(fmt.Sprintf("remove %q (%s) on %q: %v", lbl, targetType, matchedPlex.Title, err))
+						run.Status = "partial"
+						continue
+					}
+				}
+				run.Removed[lbl]++
+				run.Changed = true
+				run.AppendPerLabel(core.PlexLabelChange{
+					Title:   matchedPlex.Title,
+					Year:    matchedPlex.Year,
+					Label:   lbl,
+					Action:  "remove",
+					Target:  targetType,
+					Library: libTitleByKey[libKey],
+				})
+			}
 		}
 	}
-	if !foundPlex {
+
+	if !matchedAny {
 		run.Unmatched = 1
 		run.Summary = summarisePlexLabelRun(run, missingFromArr)
 		run.DurationMs = time.Since(startedAt).Milliseconds()
 		return run
 	}
 	run.Matched = 1
-
-	// 4. Per-item metadata fetch — same reasoning as the bulk path
-	// (Label[] + Collection[] omitted from /all on many Plex
-	// versions; /library/metadata/{ratingKey} is the reliable read).
-	currentLabels := matchedPlex.Labels
-	currentCollections := matchedPlex.Collections
-	if full, err := plexClient.GetItemMetadata(ctx, matchedPlex.RatingKey); err != nil {
-		run.AppendError(fmt.Sprintf("fetch metadata for %q: %v", matchedPlex.Title, err))
-		// keep going with bulk values
-	} else {
-		currentLabels = full.Labels
-		currentCollections = full.Collections
-	}
-
-	// 5. Per-target-type diff + apply. Identical loop to the bulk
-	// path's per-item block — kept in sync deliberately. InSync
-	// recorded only on the first target pass so multi-target rules
-	// don't double-count the in-sync items.
-	targetTypes := rule.EffectiveTargetTypes()
-	for tIdx, targetType := range targetTypes {
-		currentTagsForDiff := currentLabels
-		if targetType == "collection" {
-			currentTagsForDiff = currentCollections
-		}
-		diff := computePlexLabelDiff(
-			arrItem.Tags,
-			currentTagsForDiff,
-			whitelistedTagIDs,
-			whitelistByLower,
-		)
-		if tIdx == 0 {
-			for _, lbl := range diff.inSync {
-				run.InSync[lbl]++
-			}
-		}
-		if len(diff.add) == 0 && len(diff.remove) == 0 {
-			continue
-		}
-		useCollection := targetType == "collection"
-		for _, lbl := range diff.add {
-			if runMode == "apply" {
-				var err error
-				if useCollection {
-					err = plexClient.AddCollection(ctx, matchedLibKey, matchedPlex.RatingKey, matchedLibType, lbl)
-				} else {
-					err = plexClient.AddLabel(ctx, matchedLibKey, matchedPlex.RatingKey, matchedLibType, lbl)
-				}
-				if err != nil {
-					run.AppendError(fmt.Sprintf("add %q (%s) on %q: %v", lbl, targetType, matchedPlex.Title, err))
-					run.Status = "partial"
-					continue
-				}
-			}
-			run.Added[lbl]++
-			run.Changed = true
-			run.AppendPerLabel(core.PlexLabelChange{
-				Title:  matchedPlex.Title,
-				Year:   matchedPlex.Year,
-				Label:  lbl,
-				Action: "add",
-				Target: targetType,
-			})
-		}
-		for _, lbl := range diff.remove {
-			if runMode == "apply" {
-				var err error
-				if useCollection {
-					err = plexClient.RemoveCollection(ctx, matchedLibKey, matchedPlex.RatingKey, matchedLibType, lbl)
-				} else {
-					err = plexClient.RemoveLabel(ctx, matchedLibKey, matchedPlex.RatingKey, matchedLibType, lbl)
-				}
-				if err != nil {
-					run.AppendError(fmt.Sprintf("remove %q (%s) on %q: %v", lbl, targetType, matchedPlex.Title, err))
-					run.Status = "partial"
-					continue
-				}
-			}
-			run.Removed[lbl]++
-			run.Changed = true
-			run.AppendPerLabel(core.PlexLabelChange{
-				Title:  matchedPlex.Title,
-				Year:   matchedPlex.Year,
-				Label:  lbl,
-				Action: "remove",
-				Target: targetType,
-			})
-		}
-	}
 
 	if runMode == "preview" {
 		run.Changed = false
@@ -592,11 +599,12 @@ func (s *Server) runPlexLabelSync(
 					run.Added[lbl]++
 					run.Changed = true
 					run.AppendPerLabel(core.PlexLabelChange{
-						Title:  plexItem.Title,
-						Year:   plexItem.Year,
-						Label:  lbl,
-						Action: "add",
-						Target: targetType,
+						Title:   plexItem.Title,
+						Year:    plexItem.Year,
+						Label:   lbl,
+						Action:  "add",
+						Target:  targetType,
+						Library: libTitleByKey[libKey],
 					})
 				}
 				for _, lbl := range diff.remove {
@@ -616,11 +624,12 @@ func (s *Server) runPlexLabelSync(
 					run.Removed[lbl]++
 					run.Changed = true
 					run.AppendPerLabel(core.PlexLabelChange{
-						Title:  plexItem.Title,
-						Year:   plexItem.Year,
-						Label:  lbl,
-						Action: "remove",
-						Target: targetType,
+						Title:   plexItem.Title,
+						Year:    plexItem.Year,
+						Label:   lbl,
+						Action:  "remove",
+						Target:  targetType,
+						Library: libTitleByKey[libKey],
 					})
 				}
 			}

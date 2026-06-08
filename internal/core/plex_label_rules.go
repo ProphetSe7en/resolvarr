@@ -385,6 +385,11 @@ type PlexLabelChange struct {
 	// result modal show "Add FEL as label on Abigail" vs "Add FEL
 	// as collection on Bee Movie" when a rule targets both.
 	Target string `json:"target,omitempty"`
+	// Library is the Plex library this change was applied in (its
+	// title). Multi-library rules record one change per library that
+	// holds the item, so the detail row shows which library each label
+	// landed in.
+	Library string `json:"library,omitempty"`
 }
 
 // PlexLabelRunErrorCap + PlexLabelRunPerLabelCap bound the slices on

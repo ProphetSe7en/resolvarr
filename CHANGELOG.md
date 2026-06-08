@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.48-dev — Plex label sync tags every selected library (2026-06-08)
+
+**Fixed: a webhook rule now applies the label to every selected Plex library, not just the first.** If a rule synced to more than one Plex library, only the first library that held the item got the label and the rest were skipped. Now each selected library that holds the item is tagged.
+
+**The result and notification name the libraries.** The sync result rows and the webhook notification now show which Plex library each label landed in, so you can confirm every selected library was tagged.
+
 ## v0.6.47-dev — Webhook rule remembers its Plex instance + app icon (2026-06-07)
 
 **Fixed: re-opening a webhook rule now shows the Plex instance you picked for Plex label sync.** Your choice was always saved, but the instance picker came up blank on re-edit, which made it look lost (and re-saving from the blank picker could drop it). It now shows the saved instance, the same as the other instance pickers.
