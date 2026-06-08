@@ -33,7 +33,7 @@ RUN go build -ldflags="-s -w -X main.Version=${VERSION}" -o resolvarr .
 # and explicit --enable-* flags — heavier maintenance burden for
 # marginal benefit. Final size is still well under mainstream Arr
 # helper containers (linuxserver/radarr ~190 MB, hotio/sonarr ~250 MB).
-FROM alpine:3.21 AS dv-tools
+FROM alpine:3.23 AS dv-tools
 
 ARG DOVI_VERSION=2.1.2
 
