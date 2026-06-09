@@ -150,7 +150,7 @@ func (r Runner) extractRPU(ctx context.Context, mediaPath, outRPU string) error 
 		"-loglevel", "error",
 		"-i", mediaPath,
 		"-c:v", "copy",
-		"-vbsf", "hevc_mp4toannexb",
+		"-bsf:v", "hevc_mp4toannexb",
 		"-f", "hevc",
 		"-frames:v", "100",
 		"-",

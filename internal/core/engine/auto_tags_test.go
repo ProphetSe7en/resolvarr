@@ -36,6 +36,15 @@ func TestResolutionBucket(t *testing.T) {
 		{"webhook 720p 2.40:1", 1280, "", 536, 0, "720p"},
 		{"webhook 480p NTSC", 720, "", 480, 0, "480p"},
 
+		// Sub-canonical widths — real WEB encodes sit a few pixels under
+		// the canonical width, so the tier bound must be permissive (the
+		// lower edge of the tier, not the exact canonical value). A
+		// strict `w >= 1920` dropped these one tier too low.
+		{"webhook 1080p ATVP 1918 wide (Cape Fear S01E01)", 1918, "", 816, 0, "1080p"},
+		{"webhook 1080p 1916 wide", 1916, "", 1036, 0, "1080p"},
+		{"webhook 4K scope 3838 wide", 3838, "", 1602, 0, "2160p"},
+		{"webhook 720p 1278 wide", 1278, "", 692, 0, "720p"},
+
 		// File-truth wins over Radarr's release-name-derived quality
 		// bucket. If quality.resolution says 2160 but the file is
 		// 1920x1080, the tag reflects the file — gives the user a
@@ -49,6 +58,7 @@ func TestResolutionBucket(t *testing.T) {
 		{"API 4K cinematic 2.40:1", 0, "3840x1600", 0, 0, "2160p"},
 		{"API 1080p 16:9", 0, "1920x1080", 0, 0, "1080p"},
 		{"API 1080p cinematic", 0, "1920x800", 0, 0, "1080p"},
+		{"API 1080p ATVP 1918x816 (Cape Fear S01E01)", 0, "1918x816", 0, 0, "1080p"},
 
 		// --- Height-fallback path (no width, no resolution string) ---
 		// Permissive thresholds: canonical heights are the UPPER bound

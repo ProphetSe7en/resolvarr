@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.49-dev — Base image and dependency refresh (2026-06-09)
+
+### Changed
+
+- Updated the container base system, the bundled ffmpeg, and the build toolchain to current versions, so the image ships with up-to-date security patches. Release-group tagging and Dolby Vision detection work exactly as before.
+
 ## v0.6.48-dev — Plex label sync tags every selected library (2026-06-08)
 
 **Fixed: a webhook rule now applies the label to every selected Plex library, not just the first.** If a rule synced to more than one Plex library, only the first library that held the item got the label and the rest were skipped. Now each selected library that holds the item is tagged.

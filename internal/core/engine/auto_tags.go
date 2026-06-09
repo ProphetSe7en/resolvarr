@@ -184,6 +184,14 @@ func parseResolutionWxH(s string) (width, height int) {
 // widths: 4K=3840, 1440p=2560, 1080p=1920, 720p=1280, 480p=720. Width
 // is the cleanest bucketing axis because letterbox / cinematic crops
 // shrink HEIGHT, not WIDTH (a 3840x1608 4K cinema cut still has w=3840).
+//
+// Thresholds are the LOWER bound of each tier (roughly the midpoint to
+// the tier below), NOT the canonical width. Real-world WEB encodes sit a
+// few pixels under canonical: ATVP ships 1080p at 1918, DCI 4K is 4096,
+// 720p sources land at 1278. A strict `w >= 1920` check dropped a 1918-
+// wide 1080p one tier to 720p. The permissive bounds catch the real
+// spread while staying well clear of the next tier down.
+//
 // Returns "" for non-positive width so callers can distinguish "no
 // signal" from a deliberate "sd" bucket; callers gate on `w > 0`
 // before invoking, but the guard makes the helper self-defensive.
@@ -192,15 +200,15 @@ func bucketByWidth(w int) string {
 		return ""
 	}
 	switch {
-	case w >= 3840:
+	case w >= 3200:
 		return "2160p"
-	case w >= 2560:
+	case w >= 2240:
 		return "1440p"
-	case w >= 1920:
+	case w >= 1600:
 		return "1080p"
-	case w >= 1280:
+	case w >= 1000:
 		return "720p"
-	case w >= 720:
+	case w >= 600:
 		return "480p"
 	}
 	return "sd"
