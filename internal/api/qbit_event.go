@@ -410,6 +410,10 @@ func (s *Server) flushQbitAggregated(ctx context.Context, ruleID string, events 
 	}
 
 	s.appendQbitAggregatedHistory(ruleID, startedAt, events, results, "", status)
+	// Notify on the qBit-add path itself; the tag was already applied
+	// here, so the Connect qbitSeTag stays silent (already-tagged) and
+	// this is the single notifying surface. Gated on OnGrab.
+	s.notifyQbitAddResult(ruleID, results, status)
 }
 
 // appendQbitAggregatedHistory writes ONE WebhookRuleRun summarising

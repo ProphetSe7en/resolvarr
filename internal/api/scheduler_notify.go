@@ -56,7 +56,7 @@ func (r *schedulerRunner) notifyScheduleResult(inst *core.Instance, job core.Sch
 	payload := core.NotificationPayload{
 		Title:    title,
 		Message:  plainMessage,
-		Color:    scheduleEmbedColor(severity),
+		Color:    scheduleEmbedColor(inst, severity),
 		Severity: severity,
 		Route:    core.NotificationRouteDefault,
 		Fields:   fields,
@@ -87,14 +87,15 @@ func scheduleEventMatches(agent core.NotificationAgent, runErr error) bool {
 // scheduleEmbedColor maps severity to the Discord-style accent color.
 // Orange for routine success matches the bash tagarr.sh palette so users
 // migrating from scripts see familiar coloring.
-func scheduleEmbedColor(severity core.NotificationSeverity) int {
-	switch severity {
-	case core.NotificationSeverityCritical:
-		return 15548997 // red
-	case core.NotificationSeverityWarning:
-		return 10070709 // gray
+func scheduleEmbedColor(inst *core.Instance, severity core.NotificationSeverity) int {
+	if severity == core.NotificationSeverityCritical {
+		return 15548997 // red: failed run stays red regardless of app
 	}
-	return 16753920 // orange — matches bash tagarr.sh
+	t := ""
+	if inst != nil {
+		t = inst.Type
+	}
+	return appColor(t) // Sonarr blue / Radarr gold
 }
 
 // buildScheduleFields constructs the embed-fields slice in bash tagarr.sh's

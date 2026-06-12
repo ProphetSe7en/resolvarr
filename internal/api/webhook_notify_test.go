@@ -334,183 +334,26 @@ func TestComposeTitle(t *testing.T) {
 // (tag > qBit > Discover > Recover).
 func TestPickColor(t *testing.T) {
 	cases := []struct {
-		name    string
-		event   core.WebhookConnectEvent
-		results []functionResult
-		want    int
+		name     string
+		event    core.WebhookConnectEvent
+		instType string
+		want     int
 	}{
-		{
-			name:    "Tag only → orange",
-			event:   core.WebhookEventDownload,
-			results: []functionResult{{Function: core.WebhookFnTagReleaseGroups, OK: true, Changed: true}},
-			want:    embedColorTagged,
-		},
-		{
-			name:    "Auto-tag only → orange (tag family)",
-			event:   core.WebhookEventDownload,
-			results: []functionResult{{Function: core.WebhookFnTagAudio, OK: true, Changed: true}},
-			want:    embedColorTagged,
-		},
-		{
-			name:    "Discover only → gold",
-			event:   core.WebhookEventDownload,
-			results: []functionResult{{Function: core.WebhookFnDiscover, OK: true, Changed: true}},
-			want:    embedColorDiscover,
-		},
-		{
-			name:    "Recover only → green",
-			event:   core.WebhookEventDownload,
-			results: []functionResult{{Function: core.WebhookFnRecover, OK: true, Changed: true}},
-			want:    embedColorRecover,
-		},
-		{
-			name:    "GrabRename only → blue (qBit-side)",
-			event:   core.WebhookEventGrab,
-			results: []functionResult{{Function: core.WebhookFnGrabRename, OK: true, Changed: true}},
-			want:    embedColorQbitSide,
-		},
-		{
-			name:    "qBit S/E only → blue",
-			event:   core.WebhookEventGrab,
-			results: []functionResult{{Function: core.WebhookFnQbitSeTag, OK: true, Changed: true}},
-			want:    embedColorQbitSide,
-		},
-		{
-			name:    "qBit Category Fix only → blue",
-			event:   core.WebhookEventDownload,
-			results: []functionResult{{Function: core.WebhookFnQbitCategoryFix, OK: true, Changed: true}},
-			want:    embedColorQbitSide,
-		},
-
-		// Priority: Tag wins over Discover when both fire.
-		{
-			name:  "Tag + Discover → orange (tag wins)",
-			event: core.WebhookEventDownload,
-			results: []functionResult{
-				{Function: core.WebhookFnTagReleaseGroups, OK: true, Changed: true},
-				{Function: core.WebhookFnDiscover, OK: true, Changed: true},
-			},
-			want: embedColorTagged,
-		},
-		// Priority: Tag wins over qBit-side when both fire.
-		{
-			name:  "Tag + GrabRename → orange (tag wins)",
-			event: core.WebhookEventDownload,
-			results: []functionResult{
-				{Function: core.WebhookFnTagReleaseGroups, OK: true, Changed: true},
-				{Function: core.WebhookFnGrabRename, OK: true, Changed: true},
-			},
-			want: embedColorTagged,
-		},
-		// Priority: qBit-side wins over Discover when no tag fires.
-		{
-			name:  "GrabRename + Discover → blue (qBit wins)",
-			event: core.WebhookEventGrab,
-			results: []functionResult{
-				{Function: core.WebhookFnGrabRename, OK: true, Changed: true},
-				{Function: core.WebhookFnDiscover, OK: true, Changed: true},
-			},
-			want: embedColorQbitSide,
-		},
-
-		// Delete events override everything → red.
-		{
-			name:    "MovieFileDelete → red (regardless of results)",
-			event:   core.WebhookEventMovieFileDelete,
-			results: nil,
-			want:    embedColorDelete,
-		},
-		{
-			name:    "EpisodeFileDeleteForUpgrade → red",
-			event:   core.WebhookEventEpisodeFileDeleteForUpgrade,
-			results: nil,
-			want:    embedColorDelete,
-		},
-		{
-			name:  "Delete event with stale Tag result → still red",
-			event: core.WebhookEventMovieFileDelete,
-			results: []functionResult{
-				// Hypothetical: the strip-on-delete adapter reports
-				// itself as a Tag-RG result. Delete-event override
-				// still wins — the color tells the user "this was a
-				// destructive cleanup", which is more important than
-				// "tag changed".
-				{Function: core.WebhookFnTagReleaseGroups, OK: true, Changed: true},
-			},
-			want: embedColorDelete,
-		},
-
-		// Failed/skipped results don't contribute color.
-		{
-			name:  "OK=true but Changed=false → safe default (orange)",
-			event: core.WebhookEventDownload,
-			results: []functionResult{
-				{Function: core.WebhookFnTagReleaseGroups, OK: true, Changed: false},
-			},
-			want: embedColorTagged,
-		},
-		{
-			name:  "Errored results (OK=false) → safe default (orange)",
-			event: core.WebhookEventDownload,
-			results: []functionResult{
-				{Function: core.WebhookFnTagReleaseGroups, OK: false},
-			},
-			want: embedColorTagged,
-		},
-		{
-			name:    "Empty results, non-delete → safe default (orange)",
-			event:   core.WebhookEventDownload,
-			results: nil,
-			want:    embedColorTagged,
-		},
+		{"Sonarr import -> blue", core.WebhookEventDownload, "sonarr", embedColorSonarr},
+		{"Radarr import -> gold", core.WebhookEventDownload, "radarr", embedColorRadarr},
+		{"Sonarr grab -> blue", core.WebhookEventGrab, "sonarr", embedColorSonarr},
+		{"Mixed-case app type -> blue", core.WebhookEventDownload, "Sonarr", embedColorSonarr},
+		{"Unknown app -> orange fallback", core.WebhookEventDownload, "", embedColorTagged},
+		{"Sonarr delete -> red (destructive override)", core.WebhookEventEpisodeFileDelete, "sonarr", embedColorDelete},
+		{"Radarr delete -> red", core.WebhookEventMovieFileDelete, "radarr", embedColorDelete},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := pickColor(tc.event, tc.results, nil)
-			if got != tc.want {
-				t.Errorf("pickColor() = %#x, want %#x", got, tc.want)
+			if got := pickColor(tc.event, tc.instType); got != tc.want {
+				t.Errorf("pickColor(%s, %q) = %#x, want %#x", tc.event, tc.instType, got, tc.want)
 			}
 		})
 	}
-
-	// Per-agent function filter (7.4b): color reflects what the
-	// agent will actually see, not what the rule fired.
-	t.Run("filter: Tag+Discover fires, agent subscribed only to Discover → gold (Discover-only after filter)", func(t *testing.T) {
-		results := []functionResult{
-			{Function: core.WebhookFnTagReleaseGroups, OK: true, Changed: true},
-			{Function: core.WebhookFnDiscover, OK: true, Changed: true},
-		}
-		// Without filter: Tag > Discover → orange.
-		// With Discover-only filter: only Discover remains → gold.
-		got := pickColor(core.WebhookEventDownload, results, []string{"discover"})
-		if got != embedColorDiscover {
-			t.Errorf("filtered to Discover only = %#x, want gold %#x", got, embedColorDiscover)
-		}
-	})
-
-	t.Run("filter: empty filter = no filter (backward compat)", func(t *testing.T) {
-		results := []functionResult{
-			{Function: core.WebhookFnTagReleaseGroups, OK: true, Changed: true},
-		}
-		gotNil := pickColor(core.WebhookEventDownload, results, nil)
-		gotEmpty := pickColor(core.WebhookEventDownload, results, []string{})
-		if gotNil != gotEmpty || gotNil != embedColorTagged {
-			t.Errorf("nil and empty filters should match; nil=%#x, empty=%#x", gotNil, gotEmpty)
-		}
-	})
-
-	t.Run("filter: delete event still red regardless of function filter", func(t *testing.T) {
-		// Delete-event red override happens BEFORE the function
-		// filter — the destructive nature is the headline, not the
-		// agent's subscription.
-		results := []functionResult{
-			{Function: core.WebhookFnTagReleaseGroups, OK: true, Changed: true},
-		}
-		got := pickColor(core.WebhookEventMovieFileDelete, results, []string{"grabRename"})
-		if got != embedColorDelete {
-			t.Errorf("delete-event color = %#x, want red %#x", got, embedColorDelete)
-		}
-	})
 }
 
 // TestAppendRuleSection verifies the Rule field — replaces the

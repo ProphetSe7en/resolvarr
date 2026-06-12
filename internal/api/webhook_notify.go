@@ -50,7 +50,27 @@ const (
 	embedColorRecover  = 0x2ECC71 // Green  — bash tagarr_import.sh Recover-only color
 	embedColorQbitSide = 0x3498DB // Blue   — resolvarr-only (no qBit-side in bash)
 	embedColorDelete   = 0xE74C3C // Red    — resolvarr-only (destructive cleanup)
+
+	// App-brand accent colors. The embed accent identifies the source
+	// app at a glance: Sonarr blue / Radarr gold. Used for every
+	// notification (Connect, qBit-add, schedule) except destructive
+	// delete events, which keep the red above.
+	embedColorSonarr = 0x35C5F4 // Sonarr brand blue
+	embedColorRadarr = 0xFFC230 // Radarr brand gold
 )
+
+// appColor returns the brand accent for an Arr instance type. Unknown /
+// empty types fall back to the bash-parity orange so a notification is
+// never colorless.
+func appColor(instType string) int {
+	switch strings.ToLower(strings.TrimSpace(instType)) {
+	case "sonarr":
+		return embedColorSonarr
+	case "radarr":
+		return embedColorRadarr
+	}
+	return embedColorTagged // orange fallback
+}
 
 // TagDetail is the typed payload for WebhookFnTagReleaseGroups results.
 // Populated by the Tag-RG adapter; consumed by the embed builder's
@@ -448,79 +468,20 @@ func titleLabelForFunctionAndEvent(fn core.WebhookFunction, event core.WebhookCo
 	return ""
 }
 
-// pickColor selects the embed accent color based on which function
-// outcomes actually changed state + the event type. File-delete
-// events always get red; other events use the highest-priority
-// outcome color from results where Changed=true.
+// pickColor selects the embed accent color by source app: Sonarr blue /
+// Radarr gold, so every notification is recognisable at a glance. The one
+// exception is destructive delete events, which keep the dedicated red
+// regardless of app (removal is the signal the user most needs to see).
 //
-// Priority order (tag-related > qBit-side > Discover > Recover) is
-// deliberate: a Download firing both Tag-RG and Discover is
-// "primarily a tag event" from the user's perspective (Discover is
-// auxiliary context); a Grab firing GrabRename + qBit S/E is
-// primarily qBit-side. The color tells the user the dominant action
-// at a glance without having to read the fields.
-//
-// Filters on Changed (not OK) so a successful no-op (Tag-Q-R decided
-// "already correct") doesn't pull the color into orange — if NOTHING
-// changed, the embed shouldn't fire in the first place (the caller
-// gates on Changed too), and if it does fire, the color falls
-// through to the safe default.
-//
-// `allowedFunctions` is the per-agent Functions whitelist (from
-// agents.Agent.Functions). Empty/nil = no filter; non-empty = color
-// is picked from the filtered subset only, so the agent's color
-// matches the sections it will receive.
-func pickColor(event core.WebhookConnectEvent, results []functionResult, allowedFunctions []string) int {
-	results = filterResultsByFunctions(results, allowedFunctions)
+// (Previously the accent was picked from which function changed:
+// tag/qBit/discover/recover buckets. That is replaced by app-brand
+// colouring per the consistent-notification-design decision; the bucket
+// constants remain for any caller that still wants a function accent.)
+func pickColor(event core.WebhookConnectEvent, instType string) int {
 	if isDeleteEvent(event) {
 		return embedColorDelete
 	}
-
-	var sawTag, sawQbit, sawDiscover, sawRecover bool
-	for _, r := range results {
-		if !r.Changed {
-			continue
-		}
-		switch r.Function {
-		case core.WebhookFnTagReleaseGroups,
-			core.WebhookFnTagAudio,
-			core.WebhookFnTagVideo,
-			core.WebhookFnTagDvDetail,
-			core.WebhookFnSyncToSecondary,
-			core.WebhookFnPlexLabelSync:
-			// Plex sync is the downstream half of a tag-event chain —
-			// the user perceives it as "the tag changes propagated" so
-			// it pulls the embed color into the tag bucket alongside
-			// the Arr-side mutations.
-			sawTag = true
-		case core.WebhookFnGrabRename,
-			core.WebhookFnQbitSeTag,
-			core.WebhookFnQbitCategoryFix:
-			sawQbit = true
-		case core.WebhookFnDiscover:
-			sawDiscover = true
-		case core.WebhookFnRecover:
-			sawRecover = true
-		}
-	}
-
-	switch {
-	case sawTag:
-		return embedColorTagged
-	case sawQbit:
-		return embedColorQbitSide
-	case sawDiscover:
-		return embedColorDiscover
-	case sawRecover:
-		return embedColorRecover
-	}
-	// Safe default: orange (matches bash). Reached when no result had
-	// Changed=true (or the filter eliminated every changed result for
-	// this agent) — embed body would be empty too, so the caller
-	// short-circuits dispatch via composeTitle's empty-return path.
-	// The color value only matters in the rare debug / hand-test case
-	// where a caller bypasses the short-circuit.
-	return embedColorTagged
+	return appColor(instType)
 }
 
 // (composeFooterSuffix deleted 2026-05-24 — rule name now lives in

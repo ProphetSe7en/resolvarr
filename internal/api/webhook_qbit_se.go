@@ -122,7 +122,7 @@ func (s *Server) dispatchQbitSeTag(
 
 	// Wait for the torrent to appear in qBit (retry-with-backoff —
 	// reuse the same helper Grab Rename uses).
-	_, found, err := waitForTorrent(ctx, client, hash)
+	torrent, found, err := waitForTorrent(ctx, client, hash)
 	if err != nil {
 		return functionResult{Function: core.WebhookFnQbitSeTag, OK: false, Summary: "qbit GetTorrent", Err: err}
 	}
@@ -133,11 +133,34 @@ func (s *Server) dispatchQbitSeTag(
 		}
 	}
 
+	// Already tagged → no state change, so Changed stays false and the
+	// notification dispatcher (which fires only on actual changes)
+	// correctly stays silent. AddTags is idempotent on the qBit side too.
+	if qbitHasTag(torrent.Tags, tag) {
+		return functionResult{
+			Function: core.WebhookFnQbitSeTag, OK: true,
+			Summary: fmt.Sprintf("already tagged %s with %q", hash, tag),
+		}
+	}
+
 	if err := client.AddTags(ctx, []string{hash}, []string{tag}); err != nil {
 		return functionResult{Function: core.WebhookFnQbitSeTag, OK: false, Summary: "qbit addTags", Err: err}
 	}
+	// Changed=true so the grab event actually notifies. A newly applied
+	// Season/Episode tag is a real change worth surfacing.
 	return functionResult{
-		Function: core.WebhookFnQbitSeTag, OK: true,
+		Function: core.WebhookFnQbitSeTag, OK: true, Changed: true,
 		Summary: fmt.Sprintf("tagged %s with %q", hash, tag),
 	}
+}
+
+// qbitHasTag reports whether tag is already present in a qBit torrent's
+// comma-separated Tags string (case-insensitive, whitespace-trimmed).
+func qbitHasTag(tagsCSV, tag string) bool {
+	for _, t := range strings.Split(tagsCSV, ",") {
+		if strings.EqualFold(strings.TrimSpace(t), strings.TrimSpace(tag)) {
+			return true
+		}
+	}
+	return false
 }

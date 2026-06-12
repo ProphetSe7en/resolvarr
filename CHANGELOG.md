@@ -2,6 +2,16 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.50-dev — qBit tag notifications and app-coloured notifications (2026-06-12)
+
+### Added
+
+- **Tagging a torrent Season or Episode in qBittorrent now sends a notification.** When resolvarr applies the Season-pack or single-Episode tag to a torrent in qBittorrent, you get a notification (Discord, Gotify, and the rest) in the same style as your other resolvarr notifications. This covers torrents added straight to qBittorrent, such as cross-seed, as well as normal grabs. It uses your notification agent's "On grab" event, so turn that on for the agent if you want these.
+
+### Changed
+
+- **Notifications are now coloured by app.** Sonarr notifications use Sonarr blue and Radarr notifications use Radarr gold, so you can tell at a glance which app a notification is about. Delete events stay red.
+
 ## v0.6.49-dev — Base image and dependency refresh (2026-06-09)
 
 ### Changed
