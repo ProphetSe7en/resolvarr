@@ -40,8 +40,8 @@ func TestBuildNotificationPayload(t *testing.T) {
 		if payload.Title != "Tagged + Auto-tagged - Dune: Part Two (2024)" {
 			t.Errorf("title = %q, want 'Tagged + Auto-tagged - Dune: Part Two (2024)'", payload.Title)
 		}
-		if payload.Color != embedColorTagged {
-			t.Errorf("color = %#x, want orange (%#x)", payload.Color, embedColorTagged)
+		if payload.Color != embedColorRadarr {
+			t.Errorf("color = %#x, want Radarr gold (%#x)", payload.Color, embedColorRadarr)
 		}
 		if payload.ThumbnailURL != "https://cdn.tmdb.example/poster.jpg" {
 			t.Errorf("thumbnail = %q, want poster URL", payload.ThumbnailURL)
@@ -169,8 +169,8 @@ func TestBuildNotificationPayload(t *testing.T) {
 		if payload.Title != "Discovered - Movie (2024)" {
 			t.Errorf("title = %q, want 'Discovered - Movie (2024)'", payload.Title)
 		}
-		if payload.Color != embedColorDiscover {
-			t.Errorf("color = %#x, want gold %#x (filtered to Discover-only)", payload.Color, embedColorDiscover)
+		if payload.Color != embedColorRadarr {
+			t.Errorf("color = %#x, want Radarr gold %#x (app colour, not function/filter)", payload.Color, embedColorRadarr)
 		}
 		// Post-2026-05-24: payload includes universal Tagged-in lead +
 		// Rule + Event suffix in addition to per-section fields. The
@@ -491,8 +491,8 @@ func TestFireWebhookNotificationsEndToEnd(t *testing.T) {
 	}
 	// Color: orange (tag-family wins over Discover via priority chain,
 	// but Discover is filtered out entirely anyway).
-	if e.Color != embedColorTagged {
-		t.Errorf("color = %#x, want orange %#x", e.Color, embedColorTagged)
+	if e.Color != embedColorRadarr {
+		t.Errorf("color = %#x, want Radarr gold %#x", e.Color, embedColorRadarr)
 	}
 	// Fields (post-2026-05-24 layout): Tagged in + Quality tag + Audio
 	// from the detail sections, then Rule + Event from the universal
