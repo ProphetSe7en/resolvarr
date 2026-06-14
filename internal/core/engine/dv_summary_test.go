@@ -256,28 +256,34 @@ func TestEmitDvDetailTags_NonVocabAllowedValuesIgnored(t *testing.T) {
 	}
 }
 
-func TestAllPossibleDvDetailTags_IgnoresEnabledAndAllowedValues(t *testing.T) {
-	// Cleanup safety-bound: every vocab value MUST appear in the
-	// map regardless of Enabled/AllowedValues, otherwise disabling
-	// the feature would orphan tags users already have. Same
-	// invariant pinned in extra_tags_test.go for ExtraTags.
-	cfg := DvDetailConfig{
+func TestAllPossibleDvDetailTags_EnabledIgnoresAllowedValues_DisabledEmpty(t *testing.T) {
+	// Orphan-removal bound: an ENABLED config contributes its whole vocab
+	// (ignoring AllowedValues, so unchecked values stay removable); a
+	// DISABLED config contributes nothing (hands-off — orphan removal must
+	// not strip tags from a feature the user switched off).
+	disabled := AllPossibleDvDetailTags(DvDetailConfig{
 		Enabled:       false,
-		AllowedValues: []string{"mel"}, // most filtered config possible
+		AllowedValues: []string{"mel"},
+	})
+	if len(disabled) != 0 {
+		t.Errorf("disabled dv-detail: got %d tags, want 0", len(disabled))
 	}
-	got := AllPossibleDvDetailTags(cfg)
-	if len(got) != len(vocabDvDetail) {
-		t.Errorf("got %d tags, want %d (all vocab)", len(got), len(vocabDvDetail))
+	enabled := AllPossibleDvDetailTags(DvDetailConfig{
+		Enabled:       true,
+		AllowedValues: []string{"mel"}, // most filtered config possible
+	})
+	if len(enabled) != len(vocabDvDetail) {
+		t.Errorf("enabled dv-detail: got %d tags, want %d (all vocab)", len(enabled), len(vocabDvDetail))
 	}
 	for _, v := range vocabDvDetail {
-		if got[v] != "dvdetail" {
-			t.Errorf("missing %q in safety-bound", v)
+		if enabled[v] != "dvdetail" {
+			t.Errorf("missing %q in enabled safety-bound", v)
 		}
 	}
 }
 
 func TestAllPossibleDvDetailTags_PrefixApplied(t *testing.T) {
-	cfg := DvDetailConfig{Prefix: "dv-"}
+	cfg := DvDetailConfig{Enabled: true, Prefix: "dv-"}
 	got := AllPossibleDvDetailTags(cfg)
 	if got["dv-fel"] != "dvdetail" {
 		t.Errorf("missing prefixed key dv-fel: %v", got)
@@ -435,7 +441,7 @@ func TestAllPossibleDvDetailTags_IncludesNoDv(t *testing.T) {
 	// labels resolvarr could ever emit). Otherwise an existing
 	// no-dv tag from a previous scan with different config wouldn't
 	// be cleaned up by RemoveOrphanedTags.
-	got := AllPossibleDvDetailTags(DvDetailConfig{Prefix: "p-"})
+	got := AllPossibleDvDetailTags(DvDetailConfig{Enabled: true, Prefix: "p-"})
 	if _, ok := got["p-no-dv"]; !ok {
 		t.Errorf("AllPossibleDvDetailTags missing p-no-dv: keys=%v", keysOf(got))
 	}

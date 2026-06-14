@@ -214,38 +214,15 @@ func bucketByWidth(w int) string {
 	return "sd"
 }
 
-// resolutionBucket maps a file's reported dimensions to a tier label.
-// Truth hierarchy (file-truth first, Radarr-classification last):
-//
-//  1. Width int — webhook payloads set this directly. Bucket on width.
-//  2. Width parsed from VideoResolution "WxH" string — API GET path.
-//  3. Permissive Height bucket — fallback when neither width source
-//     resolved. Canonical heights are the UPPER bound of the tier
-//     (1080p tops out at 1080), so the strict "h >= tier" check used
-//     to drop letterbox-cropped files one tier too low (a 1920x800
-//     1080p cinema cut tagged as 720p). Permissive uses
-//     "h > lower-tier-canonical" instead.
-//  4. quality.resolution int — last resort for pre-mediaInfo legacy
-//     imports where Arr never populated mediaInfo at all.
-//
-// File truth wins over Radarr's release-name-derived quality bucket on
-// purpose: differences between the tag and the quality profile become
-// a visible signal for misclassifications the user can hunt down.
-func resolutionBucket(width int, videoResolution string, mediaInfoHeight, qualityResolution int) string {
-	// 1. Width int — webhook-payload path.
-	if width > 0 {
-		return bucketByWidth(width)
-	}
-	// 2. Parse width from the "WxH" string — API-path.
-	if w, _ := parseResolutionWxH(videoResolution); w > 0 {
-		return bucketByWidth(w)
-	}
-	// 3. Height with permissive thresholds — letterbox-safe fallback.
-	h := mediaInfoHeight
-	if h == 0 {
-		h = qualityResolution
-	}
+// bucketByHeight maps a pixel height to a tier label using permissive
+// thresholds: canonical heights are the UPPER bound of the tier and
+// cinematic letterbox crops sit below, so "h > lower-tier-canonical"
+// avoids dropping a 1080p 2.40:1 cut to 720p. Returns "" for non-positive
+// height so callers can distinguish "no signal" from a real tier.
+func bucketByHeight(h int) string {
 	switch {
+	case h <= 0:
+		return ""
 	case h > 1440:
 		return "2160p"
 	case h > 1080:
@@ -254,10 +231,81 @@ func resolutionBucket(width int, videoResolution string, mediaInfoHeight, qualit
 		return "1080p"
 	case h > 480:
 		return "720p"
-	case h > 0:
+	default:
 		return "480p"
 	}
+}
+
+// higherResTier returns whichever of two tier labels ranks higher (per
+// tagRank). "" is not in tagRank so it ranks 0 and never beats a real
+// label; two empties return "".
+func higherResTier(a, b string) string {
+	if tagRank[a] >= tagRank[b] {
+		return a
+	}
+	return b
+}
+
+// tierFromQuality maps Arr's quality.resolution int (a clean tier value:
+// 2160 / 1080 / 720 / 576 / 480 / 360) to a tier label. EXACT >= bounds,
+// not the permissive letterbox thresholds bucketByHeight uses — a clean
+// 576 is SD-grade 480p, not "probably-720p-letterboxed".
+func tierFromQuality(q int) string {
+	switch {
+	case q >= 2160:
+		return "2160p"
+	case q >= 1440:
+		return "1440p"
+	case q >= 1080:
+		return "1080p"
+	case q >= 720:
+		return "720p"
+	case q >= 480:
+		return "480p"
+	case q > 0:
+		return "sd"
+	}
 	return ""
+}
+
+// resolutionBucket maps a file to a resolution tier label, preferring
+// Arr's own quality classification over re-deriving the tier ourselves.
+//
+// Verified against ~13.9k real files: Arr's quality.resolution is
+// mediainfo-derived, not release-name-derived. It nails cinematic crops
+// (1920x800 -> 1080), anamorphic (1440x1080 -> 1080), sub-canonical WEB
+// encodes, AND corrects mislabeled release names (a 1080p-named 4K file
+// reports 2160; a 2160p-named 1080 file reports 1080 — proven in the
+// Sonarr/Radarr Connect debug logs). It arrives as an int on BOTH
+// surfaces: the scan path (quality.quality.resolution) and the Connect
+// webhook (movieFile/episodeFile quality, parsed by the adapter). Leaning
+// on it removes a whole class of our own tier-derivation bugs.
+//
+// quality.resolution is the standard tier int (2160/1080/720/480...), so
+// tierFromQuality maps it with exact bounds (e.g. 576 -> 480p), unlike
+// the permissive thresholds bucketByHeight uses for raw dimensions.
+//
+// Fallback — only when Arr supplied no quality (Raw-HD / BR-DISK / DVD
+// with no resolution token, or pre-mediaInfo legacy imports): bucket the
+// raw file dimensions, taking max(width-tier, height-tier) so neither
+// cinematic crops (wide, short) nor anamorphic content (narrow, tall)
+// mis-tier. Width comes as an int (webhook) or parsed from "WxH" (API).
+func resolutionBucket(width int, videoResolution string, mediaInfoHeight, qualityResolution int) string {
+	if qualityResolution > 0 {
+		return tierFromQuality(qualityResolution)
+	}
+	w := width
+	h := mediaInfoHeight
+	if w == 0 || h == 0 {
+		pw, ph := parseResolutionWxH(videoResolution)
+		if w == 0 {
+			w = pw
+		}
+		if h == 0 {
+			h = ph
+		}
+	}
+	return higherResTier(bucketByWidth(w), bucketByHeight(h))
 }
 
 // codecBucket normalizes Radarr's videoCodec string into a stable label.

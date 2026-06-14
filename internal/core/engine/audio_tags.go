@@ -74,6 +74,11 @@ func AudioTagsForFile(mi MediaInfo, cfg AudioTagsConfig) []string {
 // Map shape: prefixed-tag → "audio" (single bucket name).
 func AllPossibleAudioTags(cfg AudioTagsConfig) map[string]string {
 	out := make(map[string]string)
+	// A disabled bucket is hands-off: nothing enters the managed set, so
+	// Remove orphaned tags never strips audio tags the user switched off.
+	if !cfg.Audio.Enabled {
+		return out
+	}
 	emit := func(values []string) {
 		for _, v := range values {
 			out[cfg.Audio.Prefix+cfg.Audio.label(v)] = "audio"

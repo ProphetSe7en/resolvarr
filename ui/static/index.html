@@ -3614,9 +3614,9 @@
           <div class="help-panel" x-show="helpOpen.history" x-cloak>
             <div class="help-section">
               <h4>What you do here</h4>
-              <p>This is the scan-history view. Every scan you run by hand — from Tag quality releases (Discover / Recover / tag / cleanup), Tag Audio, Tag Video, Tag DV Details, or Quick fix-all — saves a JSON dump under <code>/config/logs/scan-*.json</code>. Click any row to replay that result in its native panel without re-running the scan.</p>
+              <p>This is the scan-history view. Every scan you run by hand, from Tag quality releases (Discover / Recover / tag / cleanup), Tag Audio, Tag Video, Tag DV Details, or Quick fix-all, saves a result you can reopen here. Click any row to replay that result in its native panel without re-running the scan.</p>
+              <p>Runs from your saved schedules show up here too, marked <strong>Scheduled</strong> with the rule name. So whether a scan was manual or fired on a schedule, it lands in one list. Click a scheduled row to open its full result, same as a manual scan.</p>
               <p>Filter chips above the list narrow by action type. Retention follows the <strong>Settings → Logging</strong> Keep-days setting (default 14). The list is scoped to the currently-selected instance type — switch the instance picker at the top to flip the view.</p>
-              <p><strong>Saved rules + their per-run history live on the Run mode tab</strong>, where they're created. This tab is purely for adhoc scan replays.</p>
             </div>
           </div>
 
@@ -3665,18 +3665,27 @@
             </template>
             <template x-if="scanHistoryForCurrentApp().length > 0">
               <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden;background:var(--bg-page)">
-                <template x-for="(row, idx) in scanHistoryFiltered()" :key="row.file">
+                <template x-for="(row, idx) in scanHistoryFiltered()" :key="row.file || (row.scheduleId + '-' + row.timestamp)">
                   <div :style="idx % 2 === 0 ? 'background:var(--bg-page)' : 'background:var(--bg-card)'"
                        style="padding:10px 14px;border-bottom:1px solid var(--bg-muted);display:flex;align-items:center;gap:12px;flex-wrap:wrap;cursor:pointer"
                        @click="openScanHistory(row)">
                     <span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;background:var(--alpha-blue);color:var(--accent-sky);min-width:90px;text-align:center"
                           x-text="scanHistoryActionLabel(row.action)"></span>
                     <span style="font-size:13px;color:var(--text-body)" x-text="formatDate(row.timestamp)"></span>
+                    <template x-if="row.source === 'schedule'">
+                      <span style="font-size:10px;padding:2px 7px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;background:var(--bg-muted);color:var(--text-secondary)" title="Ran from a saved schedule, not a manual scan">Scheduled</span>
+                    </template>
+                    <template x-if="row.source === 'schedule' && row.scheduleName">
+                      <span style="font-size:12px;color:var(--text-secondary)" x-text="row.scheduleName"></span>
+                    </template>
                     <template x-if="row.instance">
                       <span style="font-size:12px;color:var(--text-secondary)">on <strong style="color:var(--text-body)" x-text="row.instance"></strong></span>
                     </template>
                     <template x-if="row.mode">
                       <span class="pill" :class="row.mode === 'apply' ? 'green' : 'amber'" style="text-transform:uppercase;font-size:10px" x-text="row.mode"></span>
+                    </template>
+                    <template x-if="row.source === 'schedule' && row.status">
+                      <span class="pill" :class="row.status === 'ok' ? 'green' : (row.status === 'partial' ? 'amber' : 'red')" style="text-transform:uppercase;font-size:10px" x-text="row.status"></span>
                     </template>
                     <div style="flex:1"></div>
                     <template x-if="row.itemCount">
@@ -8302,6 +8311,7 @@
               <h4>Remove orphaned audio tags on Apply</h4>
               <p><strong>Off</strong> (default): if you uncheck a value, new tags of that value stop being added but existing ones stay in place.</p>
               <p><strong>On</strong>: if you uncheck a value, existing tags of that value get removed on the next Apply. Use this if you want the checkboxes to be the source of truth for what's on your library.</p>
+              <p>This only ever touches the dimension while it's switched on. Turning the whole Audio section off leaves its tags alone, it never strips them. To clear a dimension on purpose, keep it on and uncheck every value.</p>
               <template x-if="ruleEditorIsWebhook()">
                 <p style="margin-top:6px;padding:8px 12px;background:var(--bg-page);border-left:3px solid var(--accent-sky);border-radius:0 4px 4px 0"><strong>One file at a time:</strong> webhook rules only work on the file Sonarr/Radarr just imported or upgraded. So if you uncheck a value here, the cleanup only happens on that one file the next time the rule runs on it — it doesn't go back through the rest of your library. If you want to clean up everything at once, use <strong>Tag Audio</strong> under the Library scan tab.</p>
               </template>
@@ -8493,6 +8503,7 @@
               <h4>Remove orphaned video tags on Apply</h4>
               <p><strong>Off</strong> (default): if you uncheck a value, new tags of that value stop being added but existing ones stay in place.</p>
               <p><strong>On</strong>: if you uncheck a value, existing tags of that value get removed on the next Apply. Use this if you want the checkboxes to be the source of truth for what's on your library.</p>
+              <p>This only ever touches a dimension while it's switched on. Turning Resolution, Codec, or HDR off leaves that dimension's tags alone, it never strips them. To clear a dimension on purpose, keep it on and uncheck every value.</p>
               <template x-if="ruleEditorIsWebhook()">
                 <p style="margin-top:6px;padding:8px 12px;background:var(--bg-page);border-left:3px solid var(--accent-sky);border-radius:0 4px 4px 0"><strong>One file at a time:</strong> webhook rules only work on the file Sonarr/Radarr just imported or upgraded. So if you uncheck a value here, the cleanup only happens on that one file the next time the rule runs on it — it doesn't go back through the rest of your library. If you want to clean up everything at once, use <strong>Tag Video</strong> under the Library scan tab.</p>
               </template>

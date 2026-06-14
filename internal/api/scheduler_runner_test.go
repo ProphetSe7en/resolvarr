@@ -82,6 +82,44 @@ func TestApplyRuleOverlay_VideoTagsWholesaleReplace(t *testing.T) {
 	}
 }
 
+// TestApplyRuleOverlay_LegacyAllSelectedNormalised pins the repair for the
+// pre-fix rule editor footgun: "all values selected" used to serialize as
+// SelectMode="select" + empty AllowedValues, which the engine reads as "tag
+// nothing" and strips every tag. An enabled select-mode bucket with no
+// allowed values can only be that legacy all-selected state (the rule editor
+// has no select-none), so the overlay must restore it to all-allowed.
+func TestApplyRuleOverlay_LegacyAllSelectedNormalised(t *testing.T) {
+	cfg := buildOverlayTestCfg()
+	video := &core.VideoTagsConfig{
+		Resolution: core.TagBucket{Enabled: true, SelectMode: "select", AllowedValues: nil},
+		Codec:      core.TagBucket{Enabled: true, SelectMode: "select", AllowedValues: []string{"x264"}},
+		HDR:        core.TagBucket{Enabled: false, SelectMode: "select", AllowedValues: nil},
+	}
+	audio := &core.AudioTagsConfig{
+		Audio: core.TagBucket{Enabled: true, SelectMode: "select", AllowedValues: nil},
+	}
+	dv := &core.DvDetailConfig{Enabled: true, SelectMode: "select", AllowedValues: nil}
+	out := applyRuleOverlay(cfg, nil, audio, video, dv, nil, "radarr", nil)
+
+	if out.VideoTags.Resolution.SelectMode != "" {
+		t.Errorf("Resolution legacy all-selected not normalised: SelectMode=%q, want \"\"", out.VideoTags.Resolution.SelectMode)
+	}
+	if out.AudioTags.Audio.SelectMode != "" {
+		t.Errorf("Audio legacy all-selected not normalised: SelectMode=%q, want \"\"", out.AudioTags.Audio.SelectMode)
+	}
+	if out.DvDetail.SelectMode != "" {
+		t.Errorf("DvDetail legacy all-selected not normalised: SelectMode=%q, want \"\"", out.DvDetail.SelectMode)
+	}
+	// A real partial select-list must be left exactly as-is.
+	if out.VideoTags.Codec.SelectMode != "select" || len(out.VideoTags.Codec.AllowedValues) != 1 {
+		t.Errorf("Codec partial select-list wrongly altered: mode=%q values=%v", out.VideoTags.Codec.SelectMode, out.VideoTags.Codec.AllowedValues)
+	}
+	// A disabled bucket is never normalised (enabled gate).
+	if out.VideoTags.HDR.SelectMode != "select" {
+		t.Errorf("Disabled HDR bucket wrongly normalised: SelectMode=%q, want select", out.VideoTags.HDR.SelectMode)
+	}
+}
+
 func TestApplyRuleOverlay_DvDetailWholesaleReplace(t *testing.T) {
 	cfg := buildOverlayTestCfg()
 	overlay := &core.DvDetailConfig{Enabled: true, Prefix: "dv-"}

@@ -557,7 +557,9 @@ func (s *Server) dispatchTagDvDetail(
 // snapshot-vs-global semantics.
 func pickDvDetailConfig(rule *core.WebhookRule, cfg core.Config) core.DvDetailConfig {
 	if rule.DvDetail != nil {
-		return *rule.DvDetail
+		dc := *rule.DvDetail
+		normalizeRuleDvDetailSelect(&dc)
+		return dc
 	}
 	return cfg.DvDetail
 }
@@ -1683,7 +1685,9 @@ func buildFileDeleteManagedSet(rule *core.WebhookRule, cfg core.Config) map[stri
 // core.WebhookRule.AudioTags.
 func pickAudioTagsConfig(rule *core.WebhookRule, cfg core.Config) core.AudioTagsConfig {
 	if rule.AudioTags != nil {
-		return *rule.AudioTags
+		ac := *rule.AudioTags
+		normalizeRuleBucketSelect(&ac.Audio)
+		return ac
 	}
 	return cfg.AudioTags
 }
@@ -1693,7 +1697,11 @@ func pickAudioTagsConfig(rule *core.WebhookRule, cfg core.Config) core.AudioTags
 // Codec + HDR rather than the single Audio bucket).
 func pickVideoTagsConfig(rule *core.WebhookRule, cfg core.Config) core.VideoTagsConfig {
 	if rule.VideoTags != nil {
-		return *rule.VideoTags
+		vc := *rule.VideoTags
+		normalizeRuleBucketSelect(&vc.Resolution)
+		normalizeRuleBucketSelect(&vc.Codec)
+		normalizeRuleBucketSelect(&vc.HDR)
+		return vc
 	}
 	return cfg.VideoTags
 }

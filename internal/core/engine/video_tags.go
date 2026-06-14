@@ -89,12 +89,19 @@ func VideoTagsForFile(mi MediaInfo, qualityResolution int, cfg VideoTagsConfig) 
 	return out
 }
 
-// AllPossibleVideoTags returns the universe of video tags this
-// configuration could ever emit, regardless of Enabled or
-// AllowedValues. Cleanup safety-bound.
+// AllPossibleVideoTags returns the universe of video tags the ENABLED
+// buckets could ever emit, ignoring AllowedValues so that even unchecked
+// values stay removable when Remove orphaned tags is on. A disabled
+// bucket contributes nothing: turning a dimension off means hands-off, so
+// orphan removal never strips tags from a bucket the user switched off.
+// To clear a whole dimension, keep the bucket enabled and select no
+// values. Cleanup safety-bound.
 func AllPossibleVideoTags(cfg VideoTagsConfig) map[string]string {
 	out := make(map[string]string)
 	emit := func(b BucketConfig, bucket string, values []string) {
+		if !b.Enabled {
+			return
+		}
 		for _, v := range values {
 			out[b.Prefix+b.label(v)] = bucket
 		}

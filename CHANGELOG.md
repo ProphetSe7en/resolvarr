@@ -2,6 +2,19 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.51-dev — Scheduled runs in History, Plex sync notifications, tagging fixes (2026-06-14)
+
+### Added
+
+- **Scheduled rule runs now show up in History.** Open Tag Library, then History, and runs that fired on a schedule appear in the same list as scans you start by hand, marked "Scheduled" with the rule name and result. Click any of them to open the full result, exactly like a manual scan. Before this, a scheduled run only logged to its own rule card, so the History list looked empty even when your rules were running on schedule.
+- **Plex label sync now sends a notification.** When a sync adds or removes Plex labels, you get a notification with a per-label count (for example "FEL: +60, 33 in sync"), in the same style as your other notifications. This works both for syncs that run on a schedule and syncs triggered by a webhook.
+
+### Fixed
+
+- **Selecting every value in a rule or scan no longer wipes your tags.** Picking all resolutions (or all audio formats, all codecs, and so on) used to be read as "tag nothing", which, with "Remove orphaned tags" on, removed every tag in that group. Selecting all now correctly means "tag all". Saved rules left in this state are repaired automatically on the next run.
+- **Resolution tags now follow the resolution your Arr reports.** Files like 1440x1080 were sometimes tagged 720p. Resolution now comes from the resolution Sonarr or Radarr already detected from the file, so unusual or anamorphic sizes get the right tag.
+- **Turning a tag group off now leaves its tags alone.** With "Remove orphaned tags" on, switching a group off (for example Codec) used to strip all of that group's tags. A group that is off is now left untouched. To clear a group on purpose, keep it on and select no values.
+
 ## v0.6.50-dev — qBit tag notifications and app-coloured notifications (2026-06-12)
 
 ### Added

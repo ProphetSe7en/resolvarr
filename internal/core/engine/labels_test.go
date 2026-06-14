@@ -90,8 +90,9 @@ func TestVideoTagsForFile_AppliesOverride(t *testing.T) {
 
 func TestAllPossibleAudioTags_FollowsConfiguredVocab(t *testing.T) {
 	cfg := AudioTagsConfig{Audio: BucketConfig{
-		Prefix: "audio-",
-		Labels: map[string]string{"truehd": "premium", "5-1": "surround"},
+		Enabled: true,
+		Prefix:  "audio-",
+		Labels:  map[string]string{"truehd": "premium", "5-1": "surround"},
 	}}
 	got := AllPossibleAudioTags(cfg)
 	if _, ok := got["audio-premium"]; !ok {
@@ -161,8 +162,9 @@ func TestEmitDvDetailTags_AppliesOverride(t *testing.T) {
 
 func TestAllPossibleDvDetailTags_FollowsConfiguredVocab(t *testing.T) {
 	cfg := DvDetailConfig{
-		Prefix: "dv-",
-		Labels: map[string]string{"dvprofile8": "profile8"},
+		Enabled: true,
+		Prefix:  "dv-",
+		Labels:  map[string]string{"dvprofile8": "profile8"},
 	}
 	got := AllPossibleDvDetailTags(cfg)
 	if _, ok := got["dv-profile8"]; !ok {

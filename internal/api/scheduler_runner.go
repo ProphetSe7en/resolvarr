@@ -342,6 +342,30 @@ func applyScheduleOverlay(cfg core.Config, job core.ScheduledJob, appType string
 	return applyRuleOverlay(cfg, job.Filters, job.AudioTags, job.VideoTags, job.DvDetail, job.ReleaseGroupIDs, appType, nil)
 }
 
+// normalizeRuleBucketSelect repairs a legacy rule-overlay state. The
+// pre-fix rule editor serialized "every value selected" as
+// SelectMode="select" with an empty AllowedValues list, which the engine
+// reads as "tag nothing" and (with Remove orphaned tags on) strips every
+// tag in the bucket. The rule editor has no "select none" affordance, so
+// an enabled bucket in select-mode with no allowed values can only be that
+// old all-selected state — restore it to all-allowed. This runs on rule
+// overlays only, so the global config keeps its own legitimate select-none.
+func normalizeRuleBucketSelect(b *core.TagBucket) {
+	if b.Enabled && b.SelectMode == "select" && len(b.AllowedValues) == 0 {
+		b.SelectMode = ""
+	}
+}
+
+// normalizeRuleDvDetailSelect is the DvDetail twin of
+// normalizeRuleBucketSelect (DvDetailConfig carries the same
+// Enabled/SelectMode/AllowedValues sentinel but is not a TagBucket).
+// Same rule-overlay-only scope, same legacy repair.
+func normalizeRuleDvDetailSelect(d *core.DvDetailConfig) {
+	if d.Enabled && d.SelectMode == "select" && len(d.AllowedValues) == 0 {
+		d.SelectMode = ""
+	}
+}
+
 // applyRuleOverlay returns a Config with the supplied rule-style
 // snapshots overlaid on the global cfg. The snapshots win when
 // present; nil fields fall through to global (back-compat for
@@ -371,12 +395,17 @@ func applyRuleOverlay(cfg core.Config, filters *engine.FilterConfig, audioTags *
 	}
 	if audioTags != nil {
 		cfg.AudioTags = *audioTags
+		normalizeRuleBucketSelect(&cfg.AudioTags.Audio)
 	}
 	if videoTags != nil {
 		cfg.VideoTags = *videoTags
+		normalizeRuleBucketSelect(&cfg.VideoTags.Resolution)
+		normalizeRuleBucketSelect(&cfg.VideoTags.Codec)
+		normalizeRuleBucketSelect(&cfg.VideoTags.HDR)
 	}
 	if dvDetail != nil {
 		cfg.DvDetail = *dvDetail
+		normalizeRuleDvDetailSelect(&cfg.DvDetail)
 	}
 	// nil = "use global RGs as-is"; non-empty = "restrict to this
 	// subset". Empty (`[]`) is treated as nil here because JSON decoding

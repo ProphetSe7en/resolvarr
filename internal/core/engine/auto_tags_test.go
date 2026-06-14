@@ -49,7 +49,21 @@ func TestResolutionBucket(t *testing.T) {
 		// bucket. If quality.resolution says 2160 but the file is
 		// 1920x1080, the tag reflects the file — gives the user a
 		// visible signal that Arr's classification is wrong.
-		{"webhook file-truth vs Arr misclassification", 1920, "", 1080, 2160, "1080p"},
+		// --- Arr quality.resolution is the source of truth (preferred) ---
+		// Verified mediainfo-derived across ~13.9k files; it already nails
+		// the hard cases, so we tag from it instead of re-deriving the
+		// tier. 1440x1080 is reported by Arr as 1080 — width-bucketing
+		// alone called it 720p (the reported bug).
+		{"scan 1440x1080: Arr quality drives, not width-bucketing", 0, "1440x1080", 0, 1080, "1080p"},
+		{"webhook 1440x1080 with Arr quality int", 1440, "", 1080, 1080, "1080p"},
+		{"scan cinematic 1920x800 via Arr quality", 0, "1920x800", 0, 1080, "1080p"},
+		{"Arr quality 576 is SD-grade 480p (not permissive 720p)", 0, "", 0, 576, "480p"},
+
+		// --- Fallback (quality=0): bucket raw dimensions, max(width,height)
+		// so cinematic crops AND anamorphic content both tier correctly.
+		{"fallback webhook 1440x1080 anamorphic (no quality int)", 1440, "", 1080, 0, "1080p"},
+		{"fallback webhook 960x720 4:3 (height wins over low width)", 960, "", 720, 0, "720p"},
+		{"fallback API 1440x1080 anamorphic", 0, "1440x1080", 0, 0, "1080p"},
 
 		// --- API-path (VideoResolution "WxH" string, no Width int) ---
 		// GET /api/v3/movie + /api/v3/episodefile return only the

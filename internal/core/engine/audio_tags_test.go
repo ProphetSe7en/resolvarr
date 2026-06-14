@@ -89,28 +89,34 @@ func TestAudioTagsForFile_AllowedValuesEmptyMeansAll(t *testing.T) {
 	}
 }
 
-func TestAllPossibleAudioTags_IgnoresEnabledAndAllowedValues(t *testing.T) {
-	// Cleanup safety-bound: every vocab value MUST appear in the map
-	// regardless of Enabled / AllowedValues so disabling the bucket
-	// doesn't orphan tags users already have.
-	cfg := AudioTagsConfig{
+func TestAllPossibleAudioTags_EnabledIgnoresAllowedValues_DisabledEmpty(t *testing.T) {
+	// Orphan-removal bound: an ENABLED bucket contributes its whole vocab
+	// (ignoring AllowedValues, so unchecked values stay removable); a
+	// DISABLED bucket contributes nothing (hands-off — orphan removal must
+	// not strip tags from a dimension the user switched off).
+	disabled := AllPossibleAudioTags(AudioTagsConfig{
 		Audio: BucketConfig{Enabled: false, AllowedValues: []string{"truehd"}},
+	})
+	if len(disabled) != 0 {
+		t.Errorf("disabled audio bucket: got %d tags, want 0", len(disabled))
 	}
-	got := AllPossibleAudioTags(cfg)
+	enabled := AllPossibleAudioTags(AudioTagsConfig{
+		Audio: BucketConfig{Enabled: true, AllowedValues: []string{"truehd"}},
+	})
 	codecs, channels, flags := AudioVocabulary()
 	want := len(codecs) + len(channels) + len(flags)
-	if len(got) != want {
-		t.Errorf("got %d tags, want %d (full vocab)", len(got), want)
+	if len(enabled) != want {
+		t.Errorf("enabled audio bucket: got %d tags, want %d (full vocab)", len(enabled), want)
 	}
 	for _, v := range codecs {
-		if got[v] != "audio" {
-			t.Errorf("missing %q in safety-bound", v)
+		if enabled[v] != "audio" {
+			t.Errorf("missing %q in enabled safety-bound", v)
 		}
 	}
 }
 
 func TestAllPossibleAudioTags_PrefixApplied(t *testing.T) {
-	cfg := AudioTagsConfig{Audio: BucketConfig{Prefix: "audio-"}}
+	cfg := AudioTagsConfig{Audio: BucketConfig{Enabled: true, Prefix: "audio-"}}
 	got := AllPossibleAudioTags(cfg)
 	if got["audio-truehd"] != "audio" {
 		t.Errorf("missing prefixed key audio-truehd: %v", got)

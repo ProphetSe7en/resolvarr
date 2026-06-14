@@ -233,23 +233,26 @@ func dvDetailAllowedValuesSet(allowed []string, selectMode string) map[string]bo
 	return out
 }
 
-// AllPossibleDvDetailTags returns the universe of tags this
-// configuration could ever emit, regardless of Enabled flag or
-// AllowedValues filter. Same role as ExtraTags.AllPossibleTags —
-// the cleanup safety-bound for orphan removal.
+// AllPossibleDvDetailTags returns the universe of tags an ENABLED
+// config could ever emit, ignoring the AllowedValues filter so that
+// even unchecked values stay removable when Remove orphaned tags is
+// on. Same role as ExtraTags.AllPossibleTags — the cleanup
+// safety-bound for orphan removal.
 //
 // Map shape: prefixed-tag → "dvdetail" (single bucket name; we
 // don't subdivide). Keys mean "this label is something the engine
 // COULD emit, so cleanup may treat it as ours". User-defined or
 // release-group tags are absent from the map and therefore safe.
 //
-// Deliberately ignores Enabled AND AllowedValues for the same
-// reason as the ExtraTags version: disabling the feature must NOT
-// orphan tags users already have unless they opt into cleanup
-// (RemoveOrphanedTags=true), in which case the cleanup pass
-// switches to EmittableDvDetailTags as its narrower bound.
+// A disabled config contributes nothing: turning the feature off is
+// hands-off, so orphan removal never strips DV-detail tags the user
+// switched off. To clear them, keep the feature enabled and select
+// no values.
 func AllPossibleDvDetailTags(cfg DvDetailConfig) map[string]string {
 	out := make(map[string]string, len(vocabDvDetail))
+	if !cfg.Enabled {
+		return out
+	}
 	for _, v := range vocabDvDetail {
 		out[cfg.Prefix+cfg.label(v)] = "dvdetail"
 	}

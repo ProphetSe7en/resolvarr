@@ -1752,6 +1752,27 @@ function app() {
     // historicalRunInfo is set after dispatch so the snapshot banner
     // + Apply-gating activate inside the modal regardless of phase.
     async openScanHistory(row) {
+      // Scheduled-rule rows drill in through the schedule run-result
+      // endpoint (keyed by schedule id + startedAt), not the adhoc
+      // per-file endpoint — they have no scan-*.json dump. Reuse the
+      // schedule run-details viewer, which handles combined runs +
+      // every phase. Prefer the loaded schedule object (carries the
+      // plexSync config for Apply-now); fall back to a minimal stub
+      // built from the row when the schedule list isn't loaded.
+      if (row.source === 'schedule') {
+        // Prefer the loaded schedule (carries the full rule config, so an
+        // Apply-now from the drill-in re-fires with the RULE's overlay,
+        // not the global config). Load it first if the list isn't in
+        // memory; only fall back to the config-less stub if that fails.
+        if (!this.schedules || this.schedules.length === 0) {
+          try { await this.loadSchedules(); } catch (e) { /* fall through to stub */ }
+        }
+        const sched = (this.schedules || []).find(s => s.id === row.scheduleId)
+          || { id: row.scheduleId, mode: row.action, instanceId: row.instanceId, name: row.scheduleName, plexSync: null };
+        const run = ((sched.history || []).find(h => h.startedAt === row.timestamp))
+          || { startedAt: row.timestamp, resultPath: 'schedule-run' };
+        return this.viewScheduleRunDetails(sched, run);
+      }
       try {
         const r = await this.apiFetch('/api/scan/history/' + encodeURIComponent(row.file));
         if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -7000,6 +7021,9 @@ function app() {
 
     ruleAudioTagValueChecked(value) {
       if (!this.editingRule || !this.editingRule.audioTags) return false;
+      // The rule editor has no select-none affordance (clearing a bucket
+      // disables it), so an empty allow-list always means "all values" —
+      // both the clean all-mode and the legacy select-mode + empty state.
       const av = this.editingRule.audioTags.audio && this.editingRule.audioTags.audio.allowedValues;
       if (!av || av.length === 0) return true;
       return av.includes(value);
@@ -7007,22 +7031,37 @@ function app() {
     ruleToggleAudioTagValue(value, fullVocab) {
       if (!this.editingRule || !this.editingRule.audioTags) return;
       const bucket = this.editingRule.audioTags.audio;
+      // Empty allow-list means "all" here, so seed the full vocab before
+      // toggling — unchecking one value then keeps the rest, instead of
+      // collapsing to just the one clicked.
       let av = bucket.allowedValues || [];
       if (av.length === 0) av = [...fullVocab];
       if (av.includes(value)) av = av.filter(v => v !== value);
       else                    av = [...av, value];
       if (av.length === 0) {
         bucket.enabled = false;
+        bucket.selectMode = '';
         bucket.allowedValues = [];
         this.showToast('Audio bucket disabled — no values were left allowed', 'info');
         return;
       }
-      const normalised = av.length === fullVocab.length && fullVocab.every(v => av.includes(v));
-      bucket.allowedValues = normalised ? [] : av;
+      // All selected → all-mode (empty + no select). Partial → explicit
+      // select-list. Setting selectMode is the fix: the old code left it
+      // as "select" with an empty list, which the engine read as "tag
+      // nothing" and stripped every tag.
+      if (av.length === fullVocab.length && fullVocab.every(v => av.includes(v))) {
+        bucket.selectMode = '';
+        bucket.allowedValues = [];
+      } else {
+        bucket.selectMode = 'select';
+        bucket.allowedValues = av;
+      }
     },
 
     ruleVideoTagValueChecked(bucketKey, value) {
       if (!this.editingRule || !this.editingRule.videoTags) return false;
+      // Empty allow-list = "all values" in the rule editor (no select-none
+      // affordance here), covering both clean all-mode and legacy state.
       const av = this.editingRule.videoTags[bucketKey] && this.editingRule.videoTags[bucketKey].allowedValues;
       if (!av || av.length === 0) return true;
       return av.includes(value);
@@ -7030,18 +7069,30 @@ function app() {
     ruleToggleVideoTagValue(bucketKey, value, fullVocab) {
       if (!this.editingRule || !this.editingRule.videoTags) return;
       const bucket = this.editingRule.videoTags[bucketKey];
+      // Empty allow-list means "all" — seed the full vocab before toggling
+      // so unchecking one value keeps the rest.
       let av = bucket.allowedValues || [];
       if (av.length === 0) av = [...fullVocab];
       if (av.includes(value)) av = av.filter(v => v !== value);
       else                    av = [...av, value];
       if (av.length === 0) {
         bucket.enabled = false;
+        bucket.selectMode = '';
         bucket.allowedValues = [];
         this.showToast(bucketKey + ' bucket disabled — no values were left allowed', 'info');
         return;
       }
-      const normalised = av.length === fullVocab.length && fullVocab.every(v => av.includes(v));
-      bucket.allowedValues = normalised ? [] : av;
+      // All selected → all-mode (empty + no select). Partial → explicit
+      // select-list. Setting selectMode is the fix: the old code left it
+      // as "select" with an empty list, which the engine read as "tag
+      // nothing" and stripped every tag.
+      if (av.length === fullVocab.length && fullVocab.every(v => av.includes(v))) {
+        bucket.selectMode = '';
+        bucket.allowedValues = [];
+      } else {
+        bucket.selectMode = 'select';
+        bucket.allowedValues = av;
+      }
     },
 
     ruleDvDetailValueChecked(value) {

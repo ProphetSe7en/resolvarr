@@ -202,25 +202,38 @@ func TestVideoTagsForFile_AllowedValuesFiltersHDRBucketAndDV(t *testing.T) {
 	}
 }
 
-func TestAllPossibleVideoTags_IgnoresEnabledAndAllowedValues(t *testing.T) {
+func TestAllPossibleVideoTags_EnabledIgnoresAllowedValues_DisabledExcluded(t *testing.T) {
+	// Orphan-removal bound: an ENABLED bucket contributes its whole vocab
+	// (ignoring AllowedValues, so unchecked values stay removable); a
+	// DISABLED bucket contributes nothing (hands-off — orphan removal must
+	// not strip tags from a dimension the user switched off).
 	cfg := VideoTagsConfig{
-		Resolution: BucketConfig{Enabled: false, AllowedValues: []string{"1080p"}},
+		Resolution: BucketConfig{Enabled: true, AllowedValues: []string{"1080p"}},
 		Codec:      BucketConfig{Enabled: false, AllowedValues: []string{"h265"}},
 		HDR:        BucketConfig{Enabled: false, AllowedValues: []string{"sdr"}},
 	}
 	got := AllPossibleVideoTags(cfg)
 	resolution, codec, hdr := VideoVocabulary()
-	want := len(resolution) + len(codec) + len(hdr)
-	if len(got) != want {
-		t.Errorf("got %d tags, want %d (full vocab)", len(got), want)
+	if len(got) != len(resolution) {
+		t.Errorf("got %d tags, want %d (enabled resolution vocab only)", len(got), len(resolution))
+	}
+	for _, v := range resolution {
+		if got[v] != "resolution" {
+			t.Errorf("enabled resolution missing %q despite AllowedValues", v)
+		}
+	}
+	for _, v := range append(append([]string{}, codec...), hdr...) {
+		if _, ok := got[v]; ok {
+			t.Errorf("disabled bucket leaked %q into safety-bound", v)
+		}
 	}
 }
 
 func TestAllPossibleVideoTags_PrefixApplied(t *testing.T) {
 	cfg := VideoTagsConfig{
-		Resolution: BucketConfig{Prefix: "res-"},
-		Codec:      BucketConfig{Prefix: "codec-"},
-		HDR:        BucketConfig{Prefix: "hdr-"},
+		Resolution: BucketConfig{Enabled: true, Prefix: "res-"},
+		Codec:      BucketConfig{Enabled: true, Prefix: "codec-"},
+		HDR:        BucketConfig{Enabled: true, Prefix: "hdr-"},
 	}
 	got := AllPossibleVideoTags(cfg)
 	if got["res-1080p"] != "resolution" {

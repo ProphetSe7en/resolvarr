@@ -182,6 +182,60 @@ func TestPickAudioTagsConfig_GlobalFallback(t *testing.T) {
 	}
 }
 
+// TestPickConfig_NormalizesLegacyAllSelected pins the webhook-pick twin of
+// the overlay legacy repair: a rule snapshot carrying the old
+// SelectMode="select"+empty all-selected state must be flipped to
+// all-allowed on the pick, and the caller's stored rule must NOT be mutated.
+func TestPickConfig_NormalizesLegacyAllSelected(t *testing.T) {
+	audioRule := &core.AudioTagsConfig{Audio: core.TagBucket{Enabled: true, SelectMode: "select"}}
+	videoRule := &core.VideoTagsConfig{
+		Resolution: core.TagBucket{Enabled: true, SelectMode: "select"},
+		Codec:      core.TagBucket{Enabled: true, SelectMode: "select", AllowedValues: []string{"h265"}}, // real partial — untouched
+	}
+	dvRule := &core.DvDetailConfig{Enabled: true, SelectMode: "select"}
+	rule := &core.WebhookRule{AudioTags: audioRule, VideoTags: videoRule, DvDetail: dvRule}
+
+	gotA := pickAudioTagsConfig(rule, core.Config{})
+	if gotA.Audio.SelectMode != "" {
+		t.Errorf("audio legacy all-selected not normalised: SelectMode=%q", gotA.Audio.SelectMode)
+	}
+	gotV := pickVideoTagsConfig(rule, core.Config{})
+	if gotV.Resolution.SelectMode != "" {
+		t.Errorf("video resolution legacy all-selected not normalised: SelectMode=%q", gotV.Resolution.SelectMode)
+	}
+	if gotV.Codec.SelectMode != "select" || len(gotV.Codec.AllowedValues) != 1 {
+		t.Errorf("video codec real partial wrongly altered: mode=%q values=%v", gotV.Codec.SelectMode, gotV.Codec.AllowedValues)
+	}
+	gotD := pickDvDetailConfig(rule, core.Config{})
+	if gotD.SelectMode != "" {
+		t.Errorf("dvdetail legacy all-selected not normalised: SelectMode=%q", gotD.SelectMode)
+	}
+
+	// The caller's stored rule must be untouched (no shared-backing mutation).
+	if audioRule.Audio.SelectMode != "select" || videoRule.Resolution.SelectMode != "select" || dvRule.SelectMode != "select" {
+		t.Errorf("pick mutated the caller's rule snapshot: audio=%q resolution=%q dv=%q",
+			audioRule.Audio.SelectMode, videoRule.Resolution.SelectMode, dvRule.SelectMode)
+	}
+}
+
+// TestPickConfig_GlobalSelectNoneSurvives locks the scope: a global config
+// with a legitimate select-none (SelectMode="select"+empty) reached via the
+// nil-snapshot fallback must NOT be normalised — that would silently turn
+// "tag nothing" into "tag everything" for global library scans.
+func TestPickConfig_GlobalSelectNoneSurvives(t *testing.T) {
+	global := core.Config{
+		AudioTags: core.AudioTagsConfig{Audio: core.TagBucket{Enabled: true, SelectMode: "select"}},
+		DvDetail:  core.DvDetailConfig{Enabled: true, SelectMode: "select"},
+	}
+	rule := &core.WebhookRule{} // no snapshots → global fallback
+	if got := pickAudioTagsConfig(rule, global); got.Audio.SelectMode != "select" {
+		t.Errorf("global audio select-none wrongly normalised: SelectMode=%q", got.Audio.SelectMode)
+	}
+	if got := pickDvDetailConfig(rule, global); got.SelectMode != "select" {
+		t.Errorf("global dvdetail select-none wrongly normalised: SelectMode=%q", got.SelectMode)
+	}
+}
+
 func TestDispatchDiscover_SkipPaths(t *testing.T) {
 	// Pure skip-condition coverage. Each case asserts adapter returns
 	// OK=true with a descriptive "skipped (...)" reason without

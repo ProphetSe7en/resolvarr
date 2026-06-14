@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -132,6 +133,8 @@ func buildScheduleFields(inst *core.Instance, job core.ScheduledJob, summary cor
 		fields = append(fields, autoTagsModeFields(inst, summary, "Video tags")...)
 	case core.JobModeDvDetail:
 		fields = append(fields, dvDetailModeFields(inst, summary)...)
+	case core.JobModePlexSync:
+		fields = append(fields, plexSyncModeField(summary)...)
 	case core.JobModeCombined:
 		// Combined schedules can include any phase. Surface a field
 		// block per phase that produced a response. Order matches the
@@ -155,6 +158,9 @@ func buildScheduleFields(inst *core.Instance, job core.ScheduledJob, summary cor
 			}
 			if cr.DvDetail != nil {
 				fields = append(fields, dvDetailModeFields(inst, core.RunSummary{Result: cr.DvDetail})...)
+			}
+			if cr.PlexSync != nil {
+				fields = append(fields, plexSyncModeField(core.RunSummary{Result: cr.PlexSync})...)
 			}
 		} else {
 			fields = append(fields, tagModeFields(inst, summary)...)
@@ -428,6 +434,77 @@ func dvDetailModeFields(inst *core.Instance, summary core.RunSummary) []agents.P
 		})
 	}
 	return out
+}
+
+// plexSyncModeField builds the Plex label-sync count block for a
+// scheduled run, bringing the scan path to parity with the webhook
+// path's PlexSyncDetail section. A sync can touch many items across
+// several labels, so we surface matched/total plus a per-label
+// add/remove/in-sync breakdown — the same shape users see in the
+// result modal. Falls back to the one-line summary when no structured
+// run is attached.
+func plexSyncModeField(summary core.RunSummary) []agents.PayloadField {
+	run, _ := summary.Result.(*core.PlexLabelRuleRun)
+	if run == nil {
+		if summary.Summary == "" {
+			return nil
+		}
+		return []agents.PayloadField{{
+			Name:   "Plex sync",
+			Value:  truncateField(summary.Summary),
+			Inline: false,
+		}}
+	}
+
+	mode := run.RunMode
+	if mode == "" {
+		mode = "apply"
+	}
+	header := fmt.Sprintf("Matched %d / %d", run.Matched, run.ItemsTotal)
+	if run.Unmatched > 0 {
+		header += fmt.Sprintf(" (%d unmatched)", run.Unmatched)
+	}
+	header += " · " + mode
+	lines := []string{header}
+
+	// Per-label breakdown, ordered by label name for stable output.
+	labelSet := map[string]struct{}{}
+	for l := range run.Added {
+		labelSet[l] = struct{}{}
+	}
+	for l := range run.Removed {
+		labelSet[l] = struct{}{}
+	}
+	for l := range run.InSync {
+		labelSet[l] = struct{}{}
+	}
+	ordered := make([]string, 0, len(labelSet))
+	for l := range labelSet {
+		ordered = append(ordered, l)
+	}
+	sort.Strings(ordered)
+	for _, l := range ordered {
+		var parts []string
+		if run.Added[l] > 0 {
+			parts = append(parts, fmt.Sprintf("+%d", run.Added[l]))
+		}
+		if run.Removed[l] > 0 {
+			parts = append(parts, fmt.Sprintf("-%d", run.Removed[l]))
+		}
+		if run.InSync[l] > 0 {
+			parts = append(parts, fmt.Sprintf("%d in sync", run.InSync[l]))
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s", l, strings.Join(parts, ", ")))
+	}
+
+	return []agents.PayloadField{{
+		Name:   "Plex sync",
+		Value:  truncateField(strings.Join(lines, "\n")),
+		Inline: false,
+	}}
 }
 
 // buildDvDetailDetail constructs the follow-up content for a dvdetail

@@ -45,6 +45,15 @@ type scanHistoryEntry struct {
 	InstanceType string    `json:"instanceType,omitempty"` // 'radarr' | 'sonarr' — drives per-app-type filtering on Activity
 	SizeBytes    int64     `json:"sizeBytes"`
 	ItemCount    int       `json:"itemCount,omitempty"` // items in the response (rough activity signal)
+	// Source distinguishes a manual/adhoc scan dump ("adhoc") from a
+	// scheduled rule run ("schedule"). Adhoc rows carry File for the
+	// per-file detail endpoint; schedule rows carry ScheduleID +
+	// Timestamp for /api/schedules/{id}/runs/{startedAt}/result instead.
+	Source       string `json:"source,omitempty"`       // "adhoc" | "schedule"
+	ScheduleID   string `json:"scheduleId,omitempty"`   // schedule rows: drives the detail fetch
+	ScheduleName string `json:"scheduleName,omitempty"` // schedule rows: display label
+	Status       string `json:"status,omitempty"`       // schedule rows: ok / partial / error
+	Summary      string `json:"summary,omitempty"`      // schedule rows: one-line result
 }
 
 // handleScanHistory returns the list of scan dumps under /config/logs/.
@@ -87,6 +96,7 @@ func (s *Server) handleScanHistory(w http.ResponseWriter, r *http.Request) {
 			File:      name,
 			Action:    action,
 			Timestamp: ts,
+			Source:    "adhoc",
 		}
 		// Lstat (NOT Stat) to avoid following a symlink — entries
 		// pointing outside /config/logs/ should not surface in this
@@ -115,6 +125,42 @@ func (s *Server) handleScanHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, entry)
 	}
+
+	// Merge in scheduled rule runs. They live on each schedule's
+	// History (with a per-run ResultPath drill-in via
+	// /api/schedules/{id}/runs/{startedAt}/result), not as scan-*.json
+	// dumps, so without this they never surfaced in the History view —
+	// users running rules on a schedule saw nothing here. Only runs
+	// with a persisted result are listed (a drill-in needs the file).
+	cfg := s.App.Config.Get()
+	for i := range cfg.Schedules {
+		sched := cfg.Schedules[i]
+		instName, instType := "", ""
+		if inst := findInstance(cfg, sched.InstanceID); inst != nil {
+			instName = inst.Name
+			instType = inst.Type
+		}
+		for j := range sched.History {
+			run := sched.History[j]
+			if run.ResultPath == "" {
+				continue
+			}
+			out = append(out, scanHistoryEntry{
+				Source:       "schedule",
+				ScheduleID:   sched.ID,
+				ScheduleName: sched.Name,
+				Action:       string(sched.Mode),
+				Timestamp:    run.StartedAt,
+				Mode:         sched.Options.RunMode,
+				Instance:     instName,
+				InstanceID:   sched.InstanceID,
+				InstanceType: instType,
+				Status:       run.Status,
+				Summary:      run.Summary,
+			})
+		}
+	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp.After(out[j].Timestamp) })
 	writeJSON(w, out)
 }
