@@ -2,6 +2,16 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.52-dev — Open scheduled runs from History, see what Plex sync skipped (2026-06-14)
+
+### Added
+
+- **Plex label sync now shows what it could not match, and why.** A sync reports a count of items it skipped because they could not be paired with a Sonarr or Radarr entry. Now the run details list each skipped item (title, where it is, and the reason, for example "no shared ID, title, or path"), and the notification names the first few. So "2 unmatched" is no longer a mystery. This is captured on new runs from now on.
+
+### Fixed
+
+- **Clicking a scheduled run in History now opens its result.** Rows that came from a schedule were not opening when clicked, so you could see that a run happened but not what it did. They now open the full per-phase result, the same as a manual scan.
+
 ## v0.6.51-dev — Scheduled runs in History, Plex sync notifications, tagging fixes (2026-06-14)
 
 ### Added

@@ -500,6 +500,29 @@ func plexSyncModeField(summary core.RunSummary) []agents.PayloadField {
 		lines = append(lines, fmt.Sprintf("%s: %s", l, strings.Join(parts, ", ")))
 	}
 
+	// Name a few of the unmatched items so the user can see WHAT didn't
+	// match without opening the run, with a "+N more" tail when the run
+	// went over the preview length.
+	if len(run.UnmatchedItems) > 0 {
+		const maxShow = 5
+		names := make([]string, 0, maxShow)
+		for i, u := range run.UnmatchedItems {
+			if i >= maxShow {
+				break
+			}
+			n := u.Title
+			if u.Year > 0 {
+				n += fmt.Sprintf(" (%d)", u.Year)
+			}
+			names = append(names, n)
+		}
+		line := "Unmatched: " + strings.Join(names, ", ")
+		if run.Unmatched > len(names) {
+			line += fmt.Sprintf(" (+%d more)", run.Unmatched-len(names))
+		}
+		lines = append(lines, line)
+	}
+
 	return []agents.PayloadField{{
 		Name:   "Plex sync",
 		Value:  truncateField(strings.Join(lines, "\n")),

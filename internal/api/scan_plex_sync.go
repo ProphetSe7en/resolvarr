@@ -301,7 +301,12 @@ func (s *Server) runPlexLabelSyncForItem(
 	}
 
 	if !matchedAny {
-		run.Unmatched = 1
+		run.AppendUnmatched(core.PlexUnmatchedItem{
+			Title:  arrItem.Title,
+			Year:   arrItem.Year,
+			Side:   "arr",
+			Reason: "not found in Plex (no matching library item by ID, title+year, or path)",
+		})
 		run.Summary = summarisePlexLabelRun(run, missingFromArr)
 		run.DurationMs = time.Since(startedAt).Milliseconds()
 		return run
@@ -502,7 +507,13 @@ func (s *Server) runPlexLabelSync(
 			}
 
 			if arrItem == nil {
-				run.Unmatched++
+				run.AppendUnmatched(core.PlexUnmatchedItem{
+					Title:   plexItem.Title,
+					Year:    plexItem.Year,
+					Library: libTitleByKey[libKey],
+					Side:    "plex",
+					Reason:  "no matching Sonarr/Radarr item (no shared ID, title+year, or path)",
+				})
 				continue
 			}
 			// Increment Matched only on first sight of this Arr ID

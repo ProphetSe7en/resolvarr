@@ -1771,7 +1771,13 @@ function app() {
           || { id: row.scheduleId, mode: row.action, instanceId: row.instanceId, name: row.scheduleName, plexSync: null };
         const run = ((sched.history || []).find(h => h.startedAt === row.timestamp))
           || { startedAt: row.timestamp, resultPath: 'schedule-run' };
-        return this.viewScheduleRunDetails(sched, run);
+        // The schedule result renders in the Run-mode "Run result" panel
+        // (multi-phase, lives under scanSection 'run'), not as a top-level
+        // modal like the adhoc rows. Switch to that section so the result
+        // is actually visible instead of populating a hidden panel.
+        await this.viewScheduleRunDetails(sched, run);
+        if (!this.historyResultError) this.scanSection = 'run';
+        return;
       }
       try {
         const r = await this.apiFetch('/api/scan/history/' + encodeURIComponent(row.file));

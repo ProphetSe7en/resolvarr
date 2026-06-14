@@ -121,6 +121,10 @@ type PlexLabelRuleRun struct {
 	// DISPLAY label (same key space as Added + Removed).
 	InSync      map[string]int    `json:"inSync,omitempty"`
 	PerLabel    []PlexLabelChange     `json:"perLabel,omitempty"`   // ordered list for the result-modal
+	// UnmatchedItems is a capped sample of the items counted in
+	// Unmatched, so the result modal + notification can show WHICH
+	// items failed to match and WHY, instead of only a bare count.
+	UnmatchedItems []PlexUnmatchedItem `json:"unmatchedItems,omitempty"`
 	Errors      []string          `json:"errors,omitempty"`     // aggregated per-item / per-library errors (capped)
 	Summary     string            `json:"summary"`              // one-line for activity row
 	// Changed — true when at least one label was actually added or
@@ -398,9 +402,33 @@ type PlexLabelChange struct {
 // completely-broken run shouldn't be allowed to write a 50 MB history
 // entry — we record up to the cap, then emit one cut-off marker.
 const (
-	PlexLabelRunErrorCap    = 50
-	PlexLabelRunPerLabelCap = 500
+	PlexLabelRunErrorCap     = 50
+	PlexLabelRunPerLabelCap  = 500
+	PlexLabelRunUnmatchedCap = 100
 )
+
+// PlexUnmatchedItem identifies one item that Plex-label sync could not
+// match to an Arr media (or, on the webhook path, an Arr item with no
+// Plex counterpart), with a short reason. Used by the result modal +
+// notification so "2 unmatched" can be expanded into what + why.
+type PlexUnmatchedItem struct {
+	Title   string `json:"title"`
+	Year    int    `json:"year,omitempty"`
+	Library string `json:"library,omitempty"`
+	Side    string `json:"side"`   // "plex" (a Plex item with no Arr match) | "arr" (an Arr item with no Plex match)
+	Reason  string `json:"reason"` // plain-language why it didn't match
+}
+
+// AppendUnmatched increments the Unmatched count and records the item
+// (up to PlexLabelRunUnmatchedCap; the count keeps climbing past the
+// cap so totals stay accurate while the detail list stays bounded).
+func (r *PlexLabelRuleRun) AppendUnmatched(u PlexUnmatchedItem) {
+	r.Unmatched++
+	if len(r.UnmatchedItems) >= PlexLabelRunUnmatchedCap {
+		return
+	}
+	r.UnmatchedItems = append(r.UnmatchedItems, u)
+}
 
 // AppendError adds an error string to the run's Errors slice, capped
 // at PlexLabelRunErrorCap entries (the last one becomes a cut-off

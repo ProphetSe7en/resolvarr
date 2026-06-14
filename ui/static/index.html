@@ -6726,6 +6726,38 @@
                 </div>
               </template>
 
+              <!-- Unmatched items: which items the sync could not pair to
+                   an Arr media (or, on webhook runs, an Arr item with no
+                   Plex counterpart) and why. Capped at 100 server-side;
+                   the No-match counter above is the true total. -->
+              <template x-if="plexLabelRunModal.result.unmatchedItems && plexLabelRunModal.result.unmatchedItems.length > 0">
+                <details style="margin-bottom:14px">
+                  <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary);padding:6px 0">
+                    Unmatched items (<span x-text="plexLabelRunModal.result.unmatchedItems.length"></span><template x-if="plexLabelRunModal.result.unmatched > plexLabelRunModal.result.unmatchedItems.length"><span> of <span x-text="plexLabelRunModal.result.unmatched"></span></span></template>) <span style="color:var(--text-muted)">what did not match, and why</span>
+                  </summary>
+                  <div style="border:1px solid var(--border-subtle);border-radius:6px;overflow:hidden;margin-top:6px">
+                    <table style="width:100%;border-collapse:collapse;font-size:12px">
+                      <thead>
+                        <tr style="background:var(--bg-muted)">
+                          <th style="text-align:left;padding:6px 10px;font-weight:600">Item</th>
+                          <th style="text-align:left;padding:6px 10px;font-weight:600">Where</th>
+                          <th style="text-align:left;padding:6px 10px;font-weight:600">Why</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="(u, ui) in plexLabelRunModal.result.unmatchedItems" :key="'unmatched-' + ui">
+                          <tr style="border-top:1px solid var(--border-subtle)">
+                            <td style="padding:6px 10px" x-text="u.title + (u.year ? ' (' + u.year + ')' : '')"></td>
+                            <td style="padding:6px 10px;color:var(--text-secondary)" x-text="u.side === 'arr' ? 'Sonarr/Radarr' : (u.library || 'Plex')"></td>
+                            <td style="padding:6px 10px;color:var(--text-secondary)" x-text="u.reason"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              </template>
+
               <!-- Per-item detail list with label filter. Capped at 500
                    entries server-side; UI filters down further by the
                    summary table's row-click. -->
