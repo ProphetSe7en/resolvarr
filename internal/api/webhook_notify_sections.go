@@ -578,6 +578,13 @@ func appendGrabRenameSection(fields []agents.PayloadField, d *GrabRenameDetail) 
 			Inline: true,
 		})
 	}
+	if cleanup := joinNonEmpty(d.NameCleanup, " · "); cleanup != "" {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Cleaned up",
+			Value:  cleanup,
+			Inline: true,
+		})
+	}
 	if d.SceneCFChanged {
 		fields = append(fields, agents.PayloadField{
 			Name:   "⚠ Scene CF",
@@ -593,8 +600,15 @@ func appendGrabRenameSection(fields []agents.PayloadField, d *GrabRenameDetail) 
 		})
 	}
 	if to != "" {
+		// Label honestly: a clean-in-place rename cleaned the existing
+		// torrent name (it did NOT restore the indexer release name —
+		// e.g. it keeps the display's "iTunes", not the grab's "iT").
+		toLabel := "Restored to Release Name"
+		if d.CleanedInPlace {
+			toLabel = "Cleaned Torrent Name"
+		}
 		fields = append(fields, agents.PayloadField{
-			Name:   "Restored to Release Name",
+			Name:   toLabel,
 			Value:  to,
 			Inline: false,
 		})

@@ -661,3 +661,18 @@ func TestValidWebhookFunction(t *testing.T) {
 		t.Error("lowercase variant must be invalid (constants are camelCase)")
 	}
 }
+
+func TestMigrateLegacyTriggerFlags_BadNamingOnlyNotMutated(t *testing.T) {
+	// A rule with ONLY Bad-naming enabled is a deliberate post-migration
+	// config — migration must NOT treat it as legacy and backfill
+	// TriggerOnMissingReleaseGroup (regression guard for the migration
+	// guard omitting TriggerOnBadNaming).
+	c := &GrabRenameCriteria{TriggerOnBadNaming: true}
+	c.MigrateLegacyTriggerFlags()
+	if c.TriggerOnMissingReleaseGroup {
+		t.Error("Bad-naming-only rule wrongly gained TriggerOnMissingReleaseGroup via migration")
+	}
+	if !c.TriggerOnBadNaming {
+		t.Error("TriggerOnBadNaming should remain set")
+	}
+}

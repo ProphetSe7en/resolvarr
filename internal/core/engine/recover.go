@@ -516,16 +516,13 @@ func FindImportedGrabGroup(history []HistoryRecord, title string, year int) (str
 // single-source-of-truth for "trust Arr's parse first, fall back to
 // our own when missing".
 func extractGrabReleaseGroup(ev HistoryRecord) string {
-	if ev.ReleaseGroup != "" {
-		return ev.ReleaseGroup
-	}
-	if ev.SourceTitle == "" {
-		return ""
-	}
-	if rg, ok := ParseReleaseGroupTolerant(ev.SourceTitle); ok {
-		return rg
-	}
-	return ""
+	// ResolveReleaseGroup trusts Arr's pre-parsed value by default but
+	// overrides it from the source-title's trailing "-RG" when Arr's
+	// value is an obvious mis-parse (empty, or the leading non-Latin
+	// bracket Radarr took as the group, or non-ASCII garbage). Same
+	// resolution grab-rename uses — so Recover stops applying e.g.
+	// "<non-Latin>" and recovers the real "UBWEB" from the name.
+	return ResolveReleaseGroup(ev.ReleaseGroup, ev.SourceTitle)
 }
 
 // isImport — bash: `case "$event_type" in

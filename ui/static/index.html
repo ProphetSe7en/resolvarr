@@ -2090,10 +2090,9 @@
                              Only visible when the response carries
                              Episodes[] (Sonarr-only). Each season header
                              toggles its own collapsible body listing
-                             episodes flat (no per-episode card —
-                             matches the user's "ikke en drøss med
-                             episode cards" rule for the recover layout
-                             we mirror here). -->
+                             episodes flat (no per-episode card, to
+                             avoid a flood of cards — same compact
+                             layout the recover view uses). -->
                         <template x-if="(item.episodes || []).length > 0">
                           <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--bg-muted);font-family:inherit">
                             <div style="color:var(--text-muted-secondary);margin-bottom:6px;display:flex;align-items:baseline;gap:10px">
@@ -9107,7 +9106,7 @@
               </template>
               <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body);line-height:1.5">
                 <input type="checkbox" x-model="editingRule.grabRename.triggerOnSourceMismatch" style="accent-color:var(--accent-blue);margin-top:2px">
-                <span><strong>Source mismatch</strong> — rename when the grab title has a streaming-source token the qBit name lacks: <code>MA WEB-DL</code>, <code>Play WEB-DL</code>, <code>AMZN</code>, <code>NF</code>, <code>DSNP</code>, <code>HMAX</code>, <code>HULU</code>, <code>PCOK</code>, <code>CR</code>, <code>ATVP</code>, or plain <code>WEB-DL</code> as fallback.</span>
+                <span><strong>Source mismatch</strong> — rename when the grab title has a streaming-source token the qBit name lacks: <code>MA WEB-DL</code>, <code>Play WEB-DL</code>, <code>iT</code>, <code>AMZN</code>, <code>NF</code>, <code>DSNP</code>, <code>HMAX</code>, <code>HULU</code>, <code>PCOK</code>, <code>CR</code>, <code>ATVP</code>, or plain <code>WEB-DL</code> as fallback.</span>
               </label>
               <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body);line-height:1.5">
                 <input type="checkbox" x-model="editingRule.grabRename.triggerOnAudioMismatch" style="accent-color:var(--accent-blue);margin-top:2px">
@@ -9116,6 +9115,10 @@
               <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body);line-height:1.5">
                 <input type="checkbox" x-model="editingRule.grabRename.triggerOnSceneMismatch" style="accent-color:var(--accent-blue);margin-top:2px">
                 <span><strong>Scene mismatch</strong> — rename when the qBit name looks scene-stripped (<code>WEB</code> without <code>WEB-DL</code>, etc.) AND the release group is NOT on the TRaSH scene-CF list. Legit scene releases are left alone.</span>
+              </label>
+              <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body);line-height:1.5">
+                <input type="checkbox" x-model="editingRule.grabRename.triggerOnBadNaming" style="accent-color:var(--accent-blue);margin-top:2px">
+                <span><strong>Bad naming</strong>: clean up release names that are malformed in a way Radarr mis-parses. Covers a non-Latin bracket lead (a Chinese or Cyrillic title in brackets, e.g. <code>[标题]</code>) that Radarr reads as the release group (dropping the real one), and the same year twice in a row like <code>Movie.2020.2020</code> (collapsed to one). Two different years next to each other (a year in the title plus the release year, like <code>Movie 1984 2020</code>) are left alone.</span>
               </label>
               <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body);line-height:1.5">
                 <input type="checkbox" x-model="editingRule.grabRename.triggerAlways" style="accent-color:var(--accent-orange);margin-top:2px">

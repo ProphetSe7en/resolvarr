@@ -551,3 +551,22 @@ func TestContainsWholeWord(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractGrabReleaseGroup_OverridesRadarrMisparse(t *testing.T) {
+	// Radarr mis-parsed the leading non-Latin bracket as the group; the
+	// real group is the trailing -RG. extractGrabReleaseGroup must recover
+	// it via ResolveReleaseGroup instead of trusting Radarr's value.
+	ev := HistoryRecord{
+		EventType:    HistoryEventGrabbed,
+		ReleaseGroup: "测试名",
+		SourceTitle:  "[测试名].Movie.1969.1080p.WEB-DL.H264-UBWEB",
+	}
+	if got := extractGrabReleaseGroup(ev); got != "UBWEB" {
+		t.Errorf("extractGrabReleaseGroup = %q, want UBWEB (override Radarr's bracket mis-parse)", got)
+	}
+	// Normal case: Radarr's ASCII value is trusted.
+	ev2 := HistoryRecord{EventType: HistoryEventGrabbed, ReleaseGroup: "FLUX", SourceTitle: "Movie.2024.1080p.WEB-DL-FLUX"}
+	if got := extractGrabReleaseGroup(ev2); got != "FLUX" {
+		t.Errorf("extractGrabReleaseGroup = %q, want FLUX (trust Radarr's normal value)", got)
+	}
+}

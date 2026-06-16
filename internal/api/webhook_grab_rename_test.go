@@ -85,6 +85,55 @@ func TestEvaluateGrabRenameTriggers_SceneMismatch(t *testing.T) {
 	})
 }
 
+func TestEvaluateGrabRenameTriggers_ForeignBracketPrefix(t *testing.T) {
+	c := &core.GrabRenameCriteria{TriggerOnBadNaming: true}
+	t.Run("non-Latin leading bracket grab lacks → fire", func(t *testing.T) {
+		current := "[测试名].Movie.1969.1080p.iTunes.WEB-DL.H264.DD5.1-UBWEB"
+		grab := "Movie 1969 1080p iT WEB-DL DD 5.1 H.264-UBWEB"
+		got := evaluateGrabRenameTriggers(current, grab, "UBWEB", c)
+		if len(got) != 1 || !strings.Contains(got[0], "foreign-bracket-prefix") {
+			t.Errorf("got %v, want foreign-bracket-prefix trigger", got)
+		}
+	})
+	t.Run("ascii leading bracket → no fire", func(t *testing.T) {
+		current := "[RlsGrp].Movie.2020.1080p.WEB-DL-RG"
+		got := evaluateGrabRenameTriggers(current, "Movie 2020 1080p WEB-DL-RG", "RG", c)
+		if len(got) != 0 {
+			t.Errorf("got %v, want [] (plain ASCII bracket is left alone)", got)
+		}
+	})
+	t.Run("disabled flag → no fire even on foreign bracket", func(t *testing.T) {
+		off := &core.GrabRenameCriteria{}
+		got := evaluateGrabRenameTriggers("[测试名].Movie.2020-RG", "Movie 2020-RG", "RG", off)
+		if len(got) != 0 {
+			t.Errorf("got %v, want [] (trigger disabled)", got)
+		}
+	})
+}
+
+func TestEvaluateGrabRenameTriggers_DuplicateYear(t *testing.T) {
+	c := &core.GrabRenameCriteria{TriggerOnBadNaming: true}
+	t.Run("same year twice → fire", func(t *testing.T) {
+		got := evaluateGrabRenameTriggers("Movie.2026.2026.1080p.AMZN.WEB-DL-KyoGo", "Movie.2026.2026.1080p.AMZN.WEB-DL-KyoGo", "KyoGo", c)
+		if len(got) != 1 || !strings.Contains(got[0], "duplicate-year") {
+			t.Errorf("got %v, want duplicate-year trigger", got)
+		}
+	})
+	t.Run("different years (title-year + release-year) → no fire", func(t *testing.T) {
+		got := evaluateGrabRenameTriggers("Movie.2049.2017.2160p.WEB-DL-FLUX", "Movie.2049.2017.2160p.WEB-DL-FLUX", "FLUX", c)
+		if len(got) != 0 {
+			t.Errorf("got %v, want [] (2049+2017 is legit, not a duplicate)", got)
+		}
+	})
+	t.Run("disabled flag → no fire", func(t *testing.T) {
+		off := &core.GrabRenameCriteria{}
+		got := evaluateGrabRenameTriggers("Movie.2026.2026.1080p-RG", "Movie.2026.2026.1080p-RG", "RG", off)
+		if len(got) != 0 {
+			t.Errorf("got %v, want [] (trigger disabled)", got)
+		}
+	})
+}
+
 func TestEvaluateGrabRenameTriggers_TriggerAlwaysHandledByCaller(t *testing.T) {
 	// TriggerAlways is appended by dispatchGrabRename when reasons are
 	// otherwise empty — evaluateGrabRenameTriggers itself doesn't see it.
@@ -282,7 +331,7 @@ func TestSummariseGrabRenameRecovery(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotGroup, gotTokens := summariseGrabRenameRecovery(tc.reasons, tc.rg)
+			gotGroup, gotTokens, _ := summariseGrabRenameRecovery(tc.reasons, tc.rg)
 			if gotGroup != tc.wantGroup {
 				t.Errorf("GroupRecovered = %q, want %q", gotGroup, tc.wantGroup)
 			}
@@ -314,4 +363,83 @@ func TestFindQbitInstanceByID(t *testing.T) {
 	if got := findQbitInstanceByID(cfg, ""); got != nil {
 		t.Errorf("got %+v, want nil (empty id)", got)
 	}
+}
+
+func TestSummariseGrabRenameRecovery_NameCleanup(t *testing.T) {
+	cases := []struct {
+		name        string
+		reasons     []string
+		rg          string
+		wantGroup   string
+		wantCleanup []string
+	}{
+		{"foreign bracket → cleanup, no group recovered",
+			[]string{"foreign-bracket-prefix (Radarr would misparse the leading bracket as the release group)"},
+			"UBWEB", "", []string{"foreign bracket prefix"}},
+		{"duplicate year → cleanup",
+			[]string{"duplicate-year (same year twice; collapsed to one)"},
+			"KyoGo", "", []string{"duplicate year"}},
+		{"both bad-naming defects → both cleanups",
+			[]string{
+				"foreign-bracket-prefix (x)",
+				"duplicate-year (y)",
+			},
+			"RG", "", []string{"foreign bracket prefix", "duplicate year"}},
+		{"missing-rg still recovers group, no cleanup",
+			[]string{"missing-release-group (parser rejected: x)"},
+			"FLUX", "FLUX", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotGroup, _, gotCleanup := summariseGrabRenameRecovery(tc.reasons, tc.rg)
+			if gotGroup != tc.wantGroup {
+				t.Errorf("GroupRecovered = %q, want %q", gotGroup, tc.wantGroup)
+			}
+			if len(gotCleanup) != len(tc.wantCleanup) {
+				t.Fatalf("NameCleanup = %v, want %v", gotCleanup, tc.wantCleanup)
+			}
+			for i, want := range tc.wantCleanup {
+				if gotCleanup[i] != want {
+					t.Errorf("NameCleanup[%d] = %q, want %q", i, gotCleanup[i], want)
+				}
+			}
+		})
+	}
+}
+
+func TestReasonsNeedGrabBase(t *testing.T) {
+	cases := []struct {
+		name    string
+		reasons []string
+		want    bool
+	}{
+		{"token-preservation needs grab", []string{"missing-release-group (x)"}, true},
+		{"source needs grab", []string{"source: WEB-DL"}, true},
+		{"always-rename needs grab", []string{"always-rename"}, true},
+		{"bad-naming only → clean in place", []string{"foreign-bracket-prefix (x)", "duplicate-year (y)", "file-extension (z)"}, false},
+		{"mixed bad-naming + token → grab", []string{"foreign-bracket-prefix (x)", "audio: TrueHD"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := reasonsNeedGrabBase(c.reasons); got != c.want {
+				t.Errorf("reasonsNeedGrabBase(%v) = %v, want %v", c.reasons, got, c.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateGrabRenameTriggers_FileExtension(t *testing.T) {
+	c := &core.GrabRenameCriteria{TriggerOnBadNaming: true}
+	t.Run("trailing .mkv in display → fire", func(t *testing.T) {
+		got := evaluateGrabRenameTriggers("Movie.2024.2160p.MA.WEB-DL-FLUX.mkv", "Movie.2024.2160p.MA.WEB-DL-FLUX", "FLUX", c)
+		if len(got) != 1 || !strings.Contains(got[0], "file-extension") {
+			t.Errorf("got %v, want file-extension trigger", got)
+		}
+	})
+	t.Run("no extension → no fire", func(t *testing.T) {
+		got := evaluateGrabRenameTriggers("Movie.2024.2160p.MA.WEB-DL-FLUX", "Movie.2024.2160p.MA.WEB-DL-FLUX", "FLUX", c)
+		if len(got) != 0 {
+			t.Errorf("got %v, want []", got)
+		}
+	})
 }

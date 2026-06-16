@@ -1020,21 +1020,14 @@ func findRecoveryGroupByDownloadID(history []arr.HistoryRecord, downloadID strin
 	if match == nil {
 		return "", false
 	}
-	rg := match.ReleaseGroup()
-	if rg != "" {
-		return rg, true
-	}
-	// Tolerant fallback: when Arr's parser bombed at grab-time (e.g.
-	// indexer title "Rango 2011 ... DoVi - SumVision" — strict parser
-	// rejects " SumVision" as multi-token), data.releaseGroup is empty
-	// but data.sourceTitle still has the rg embedded. Run our tolerant
-	// parser on the original release-title to recover it.
-	if match.SourceTitle != "" {
-		if tolerantRG, ok := engine.ParseReleaseGroupTolerant(match.SourceTitle); ok {
-			return tolerantRG, true
-		}
-	}
-	return "", true
+	// ResolveReleaseGroup trusts Arr's pre-parsed releaseGroup by default
+	// but overrides it from the source-title's trailing "-RG" when Arr's
+	// value is an obvious mis-parse: empty (Rango/Matilda — strict parser
+	// bombed on " - SumVision"), the leading non-Latin bracket Radarr took
+	// as the group ("<non-Latin>"), or non-ASCII garbage. A normal ASCII group
+	// matching the name is kept. Returns ("", true) when nothing parses —
+	// verified grab but no extractable group, same as before.
+	return engine.ResolveReleaseGroup(match.ReleaseGroup(), match.SourceTitle), true
 }
 
 // dispatchSyncToSecondary mirrors the rule's release-group tag decisions

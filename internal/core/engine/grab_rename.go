@@ -55,7 +55,7 @@ var grabRenameMovieVersionTokens = []namedTokenRegex{
 //
 // Container-policy expansion vs bash: bash tagarr_import.sh:319-322
 // only checks MA WEB-DL / Play WEB-DL / plain WEB-DL. Container adds
-// 8 streaming-services (AMZN/NF/DSNP/HMAX/HULU/PCOK/CR/ATVP) that
+// streaming-services (iT/AMZN/NF/DSNP/HMAX/HULU/PCOK/CR/ATVP) that
 // Sonarr-bash users typically configure via GRAB_RENAME_CUSTOM_TOKENS
 // — built-in is more user-friendly + works for both Arrs.
 //
@@ -72,6 +72,13 @@ var grabRenameMovieVersionTokens = []namedTokenRegex{
 var grabRenameSourceTokens = []namedTokenRegex{
 	{Label: "MA WEB-DL", Pattern: regexp.MustCompile(`(?i)\bma(\]?\s*\[?|[._-])web([-.]?dl)?`)},
 	{Label: "Play WEB-DL", Pattern: regexp.MustCompile(`(?i)\bplay(\]?\s*\[?|[._-])web([-.]?dl)?`)},
+	// iTunes — spelled "iT" or "iTunes" in release names, ALWAYS
+	// directly before WEB-DL (verified against real .torrents/movies:
+	// "2160p.iT.WEB-DL", "iTunes.WEB-DL", "1080p iT WEB-DL"). Anchoring
+	// to the WEB token is what makes this safe: a bare "\bit\b" would
+	// false-match the English word "it" / titles like "It Follows", but
+	// "iT" only counts as the iTunes source when WEB-DL follows it.
+	{Label: "iT", Pattern: regexp.MustCompile(`(?i)\b(it|itunes)[._ ]web([-._]?dl)?`)},
 	{Label: "AMZN", Pattern: regexp.MustCompile(`(?i)\bamzn\b`)},
 	{Label: "NF", Pattern: regexp.MustCompile(`(?i)\bnf\b`)},
 	{Label: "DSNP", Pattern: regexp.MustCompile(`(?i)\bdsnp\b`)},
@@ -221,6 +228,152 @@ func IsSceneNamingPattern(input string) bool {
 		return false // real WEB-DL release, not scene-stripped
 	}
 	return sceneWebTokenRE.MatchString(input)
+}
+
+// leadingForeignBracketRE matches a leading "[...]" segment plus the
+// separators that follow it. Group 1 is the bracket's inner text.
+var leadingForeignBracketRE = regexp.MustCompile(`^\[([^\]]*)\][._ -]*`)
+
+// HasLeadingForeignBracket reports whether name begins with a bracketed
+// segment containing non-Latin (non-ASCII) characters, e.g.
+// "[<non-Latin title>].Movie.Year...-RG". Radarr's parser takes such a
+// prefix as the release group and drops the real trailing "-RG", so the
+// imported file lands with the foreign text as its group. A plain-ASCII
+// "[Group]" anime-style prefix is NOT flagged (Radarr handles those, and
+// they're often the real group). Detection only — StripLeadingForeignBracket
+// does the removal; the target is cleaned regardless of the grab title,
+// so there's no "grab lacks it" guard (clean-in-place model).
+func HasLeadingForeignBracket(name string) bool {
+	m := leadingForeignBracketRE.FindStringSubmatch(strings.TrimSpace(name))
+	return m != nil && hasNonASCII(m[1])
+}
+
+// StripLeadingForeignBracket removes a leading non-Latin "[...]" prefix
+// (and the separators after it). No-op when the lead bracket is absent or
+// plain-ASCII.
+func StripLeadingForeignBracket(name string) string {
+	trimmed := strings.TrimSpace(name)
+	m := leadingForeignBracketRE.FindStringSubmatch(trimmed)
+	if m == nil || !hasNonASCII(m[1]) {
+		return name
+	}
+	return trimmed[len(m[0]):]
+}
+
+// fileExtensionRE matches a trailing video-container extension — these
+// never belong in a torrent display name.
+var fileExtensionRE = regexp.MustCompile(`(?i)\.(mkv|mp4|avi|m4v|mov|wmv|flv|webm|ts|mpg|mpeg|m2ts)$`)
+
+// HasFileExtension reports whether name ends in a video-container
+// extension.
+func HasFileExtension(name string) bool {
+	return fileExtensionRE.MatchString(strings.TrimRight(name, " "))
+}
+
+// StripFileExtension removes a trailing video-container extension.
+// No-op when absent.
+func StripFileExtension(name string) string {
+	return fileExtensionRE.ReplaceAllString(strings.TrimRight(name, " "), "")
+}
+
+// hasNonASCII reports whether s contains any rune outside the 7-bit
+// ASCII range (the cheap "is this Latin-script" proxy).
+func hasNonASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return true
+		}
+	}
+	return false
+}
+
+// consecutiveYearRE matches two 4-digit years (1900-2099) back-to-back
+// with one separator, capturing BOTH years so callers can compare them
+// (Go's RE2 has no backreferences, so "same year" can't be expressed in
+// the pattern — it's checked in code). (?:19|20)\d{2} excludes resolution
+// tokens like 2160/1080 (they start 21/10, not 19/20).
+var consecutiveYearRE = regexp.MustCompile(`\b((?:19|20)\d{2})[._ -]((?:19|20)\d{2})\b`)
+
+// HasDuplicateYear reports whether name contains the SAME year twice
+// consecutively (the genuine-duplication case: "Movie.2020.2020").
+// Different consecutive years are NOT a duplicate (they're a year in the
+// title plus the release year, "Movie.2049.2017"), so this returns
+// false for those.
+func HasDuplicateYear(name string) bool {
+	for _, m := range consecutiveYearRE.FindAllStringSubmatch(name, -1) {
+		if m[1] == m[2] {
+			return true
+		}
+	}
+	return false
+}
+
+// CollapseDuplicateYear removes a consecutive same-year duplication,
+// keeping a single instance: "Movie.2020.2020.1080p..." →
+// "Movie.2020.1080p...". Loops so a (rare) triple "2020.2020.2020"
+// collapses fully. No-op on names without a duplicate, and never touches
+// different consecutive years (only m[1]==m[2] matches are collapsed).
+func CollapseDuplicateYear(name string) string {
+	for {
+		out := consecutiveYearRE.ReplaceAllStringFunc(name, func(s string) string {
+			m := consecutiveYearRE.FindStringSubmatch(s)
+			if m != nil && m[1] == m[2] {
+				return m[1] // same year twice → keep one
+			}
+			return s // different years → leave untouched
+		})
+		if out == name {
+			return out
+		}
+		name = out
+	}
+}
+
+// HasBadNaming reports whether name carries any objective "bad naming"
+// defect Radarr mis-parses: a leading non-Latin bracket, a trailing
+// video extension, or a same-year duplication. Drives the Bad-naming
+// trigger (whether to fire a rename when the display is malformed).
+func HasBadNaming(name string) bool {
+	return HasLeadingForeignBracket(name) || HasFileExtension(name) || HasDuplicateYear(name)
+}
+
+// CleanReleaseName removes the bad-naming defects from a rename target:
+// strips a leading non-Latin bracket, collapses a same-year duplication,
+// and strips a trailing video extension. Each step is a no-op when its
+// defect is absent, so a correctly-named release passes through unchanged.
+func CleanReleaseName(name string) string {
+	out := StripLeadingForeignBracket(name)
+	out = CollapseDuplicateYear(out)
+	out = StripFileExtension(out)
+	return out
+}
+
+// ResolveReleaseGroup picks the trustworthy release-group between Radarr's
+// pre-parsed value and the one parseable from the name's trailing "-RG".
+// Radarr is trusted by default, but overridden by the name when its value
+// is an obvious mis-parse:
+//   - empty (Radarr's parser bombed) → use the name;
+//   - equal to a leading non-Latin bracket (Radarr took the bracket as
+//     the group, e.g. "<non-Latin>") → use the name;
+//   - itself non-ASCII (garbage) → use the name.
+// A normal ASCII group that matches the name is always kept, so correctly
+// named releases are never touched.
+func ResolveReleaseGroup(radarrRG, name string) string {
+	radarrRG = strings.TrimSpace(radarrRG)
+	nameRG, _ := ParseReleaseGroupTolerant(name)
+	if radarrRG == "" {
+		return nameRG
+	}
+	if nameRG != "" {
+		if m := leadingForeignBracketRE.FindStringSubmatch(strings.TrimSpace(name)); m != nil &&
+			hasNonASCII(m[1]) && strings.EqualFold(strings.TrimSpace(m[1]), radarrRG) {
+			return nameRG // Radarr took the leading bracket as the group
+		}
+		if hasNonASCII(radarrRG) {
+			return nameRG // Radarr's value is non-Latin garbage
+		}
+	}
+	return radarrRG
 }
 
 // DiffMissingTokens returns the labels of tokens present in `grab` but

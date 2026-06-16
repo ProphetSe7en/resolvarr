@@ -207,6 +207,19 @@ type GrabRenameDetail struct {
 	// tagarr_import.sh's "Tokens Recovered" field — collapsed list
 	// of token labels without the engine's diagnostic prefix.
 	TokensRecovered []string
+
+	// NameCleanup lists the "Bad naming" defects the rename fixed
+	// ("foreign bracket prefix", "duplicate year"). Distinct from
+	// GroupRecovered/TokensRecovered: nothing was recovered, a
+	// malformed name was cleaned so Radarr parses it correctly.
+	NameCleanup []string
+
+	// CleanedInPlace is true when the rename target was the display
+	// name cleaned in place (bad-naming only), false when it was the
+	// indexer release name (token-preservation / Always-rename). Drives
+	// the "To" field label so it doesn't claim "Restored to Release
+	// Name" when it actually cleaned the existing name.
+	CleanedInPlace bool
 }
 
 // QbitSeDetail is the typed payload for WebhookFnQbitSeTag results.

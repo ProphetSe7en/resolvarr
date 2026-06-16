@@ -136,10 +136,10 @@ const (
 	// *ForUpgrade variants: Radarr/Sonarr emit these when a file is
 	// deleted as part of an Upgrade flow (the old file makes way for
 	// a higher-quality replacement). Bash tagarr_import.sh:574
-	// defenderer mot begge varianter; container må også slå tag-
-	// cleanup på begge så stale managed-tags ikke overlever upgrade
-	// (file with old audio gets replaced; file-delete adapter must
-	// fire to strip).
+	// defends against both variants; the container must also run
+	// tag-cleanup on both so stale managed tags don't survive an
+	// upgrade (file with old audio gets replaced; the file-delete
+	// adapter must fire to strip them).
 	WebhookEventMovieFileDeleteForUpgrade   WebhookConnectEvent = "MovieFileDeleteForUpgrade"
 	WebhookEventEpisodeFileDeleteForUpgrade WebhookConnectEvent = "EpisodeFileDeleteForUpgrade"
 )
@@ -248,8 +248,8 @@ type GrabRenameCriteria struct {
 
 	// TriggerOnSourceMismatch: rename when grab title contains a
 	// streaming-source token the qBit name lacks. Built-in token
-	// list: MA / Play / AMZN / NF / DSNP / HMAX / HULU / PCOK / CR /
-	// ATVP. TRaSH source: per-service CF entries.
+	// list: MA / Play / iT / AMZN / NF / DSNP / HMAX / HULU / PCOK /
+	// CR / ATVP. TRaSH source: per-service CF entries.
 	TriggerOnSourceMismatch bool `json:"triggerOnSourceMismatch,omitempty"`
 
 	// TriggerOnAudioMismatch: rename when grab title contains an
@@ -266,6 +266,26 @@ type GrabRenameCriteria struct {
 	// preserve scoring). Replaces the bash ExcludeSceneReleases flag
 	// with a smarter detection.
 	TriggerOnSceneMismatch bool `json:"triggerOnSceneMismatch,omitempty"`
+
+	// TriggerOnBadNaming: rename when the release name is malformed in a
+	// way Radarr mis-parses, cleaning it to a name Radarr reads correctly.
+	// One umbrella for the "the name itself is broken" cases (vs the
+	// token-preservation triggers above, which are about CF scoring):
+	//
+	//   - Foreign bracket prefix: a non-Latin "[...]" lead like
+	//     "[<non-Latin title>].Movie.Year...-RG" that the grab title lacks.
+	//     Radarr reads the bracket as the release group and drops the real
+	//     "-RG". Our own parser reads the real rg fine, so missing-rg never
+	//     fires; this models Radarr's mis-parse. Target = clean grab title.
+	//   - Duplicate year: the SAME year twice back-to-back
+	//     ("Movie.2020.2020"). The target collapses it to one year.
+	//     Different consecutive years (a year in the title plus the release
+	//     year, "Movie.2049.2017") are left alone.
+	//
+	// Both are objective name defects with safe fixes, so they share one
+	// toggle (and future name-cleanup heuristics join here, not as new
+	// checkboxes).
+	TriggerOnBadNaming bool `json:"triggerOnBadNaming,omitempty"`
 
 	// TriggerAlways: bypass all token checks; rename if current qBit
 	// name differs from grab title at all. Cosmetic-churn risk but
@@ -382,12 +402,18 @@ func (c *GrabRenameCriteria) MigrateLegacyTriggerFlags() {
 	if c == nil {
 		return
 	}
-	// Already migrated — at least one trigger is set.
+	// Already migrated — at least one trigger is set. TriggerOnBadNaming
+	// counts: a rule with ONLY Bad-naming enabled is a deliberate
+	// post-migration config, not a legacy rule needing the
+	// AppendReleaseGroup default-true backfill. Omitting it here would
+	// re-run migration on every load and silently set
+	// TriggerOnMissingReleaseGroup=true.
 	if c.TriggerOnMissingReleaseGroup ||
 		c.TriggerOnMovieVersionMismatch ||
 		c.TriggerOnSourceMismatch ||
 		c.TriggerOnAudioMismatch ||
 		c.TriggerOnSceneMismatch ||
+		c.TriggerOnBadNaming ||
 		c.TriggerAlways {
 		return
 	}

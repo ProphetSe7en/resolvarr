@@ -138,16 +138,13 @@ func (s *Server) dispatchGrabRename(
 		return functionResult{Function: core.WebhookFnGrabRename, OK: true, Summary: "skipped (no downloadId on event — manual grab?)"}
 	}
 
-	// Resolve releaseGroup. Primary: Arr's pre-parsed release.releaseGroup.
-	// Fallback: parse the indexer release-title via ParseReleaseGroupTolerant
-	// (catches the Rango/Matilda failure mode where Arr's parser bombed
-	// on " - <RG>" but the title still has the rg in extractable form).
-	rg := strings.TrimSpace(payload.Release.ReleaseGroup)
-	if rg == "" {
-		if extracted, ok := engine.ParseReleaseGroupTolerant(grabTitle); ok {
-			rg = extracted
-		}
-	}
+	// Resolve releaseGroup. ResolveReleaseGroup trusts Arr's pre-parsed
+	// release.releaseGroup by default, but overrides it with the name's
+	// trailing "-RG" when Arr's value is an obvious mis-parse: empty
+	// (Rango/Matilda — parser bombed on " - <RG>"), or the leading
+	// non-Latin bracket Radarr took as the group ("<non-Latin>"), or non-ASCII
+	// garbage. A normal ASCII group that matches the name is kept.
+	rg := engine.ResolveReleaseGroup(payload.Release.ReleaseGroup, grabTitle)
 
 	// Group blocklist — never rename for these RG names. Case-insensitive.
 	if rg != "" {
@@ -200,12 +197,11 @@ func (s *Server) dispatchGrabRename(
 	}
 
 	currentName := current.Name
-	if currentName == grabTitle {
-		return functionResult{Function: core.WebhookFnGrabRename, OK: true, Summary: "skipped (torrent name already equals grab title)"}
-	}
 
 	// Trigger evaluation — collect reasons; rename fires when ≥1 trigger
-	// has a diff (or TriggerAlways=true).
+	// has a diff (or TriggerAlways=true). No early "already equals grab"
+	// skip: the final target-vs-current check below covers the no-op case,
+	// and a malformed name equal to a malformed grab still needs cleanup.
 	reasons := evaluateGrabRenameTriggers(currentName, grabTitle, rg, criteria)
 	if criteria.TriggerAlways && len(reasons) == 0 {
 		reasons = append(reasons, "always-rename")
@@ -214,10 +210,22 @@ func (s *Server) dispatchGrabRename(
 		return functionResult{Function: core.WebhookFnGrabRename, OK: true, Summary: "skipped (no enabled trigger detected a diff)"}
 	}
 
-	// Build parser-friendly target. NormalizeRgSegment handles both
-	// the Rango " - SumVision" → "-SumVision" case AND the bash
-	// trailing-junk strip ("-126811 x ATM05" → "-126811").
-	target := engine.NormalizeRgSegment(grabTitle, rg)
+	// Base selection. A token-preservation trigger or Always-rename means
+	// "use the indexer release name" (the display lost tokens, or the user
+	// always wants the release name) → base = grab. Otherwise only the
+	// Bad-naming trigger fired (the display has garbage but its tokens are
+	// intact) → clean the display in place.
+	base := currentName
+	if reasonsNeedGrabBase(reasons) {
+		base = grabTitle
+	}
+	// Target = the chosen base, rg-segment normalised then cleaned. The
+	// cleanups (strip leading non-Latin bracket / file extension, collapse
+	// dup-year) run on EVERY path and are no-ops on clean names, so no
+	// trigger or Always-rename combination can leave or reintroduce
+	// garbage — and a correctly-named release is never altered.
+	targetRG := engine.ResolveReleaseGroup(payload.Release.ReleaseGroup, base)
+	target := engine.CleanReleaseName(engine.NormalizeRgSegment(base, targetRG))
 	if target == currentName {
 		return functionResult{
 			Function: core.WebhookFnGrabRename, OK: true,
@@ -233,7 +241,7 @@ func (s *Server) dispatchGrabRename(
 	// exact comparison qBit returned — no need to query qBit live to
 	// understand why a given rename fired. Per-trigger diagnostics
 	// (parser output, missing tokens) live inside reasons[].
-	groupRecovered, tokensRecovered := summariseGrabRenameRecovery(reasons, rg)
+	groupRecovered, tokensRecovered, nameCleanup := summariseGrabRenameRecovery(reasons, rg)
 	return functionResult{
 		Function: core.WebhookFnGrabRename, OK: true, Changed: true,
 		Summary: fmt.Sprintf("renamed %q → %q (triggers: %s)", currentName, target, strings.Join(reasons, ", ")),
@@ -244,6 +252,8 @@ func (s *Server) dispatchGrabRename(
 			QbitInstance:    qbitInst.Name,
 			GroupRecovered:  groupRecovered,
 			TokensRecovered: tokensRecovered,
+			NameCleanup:     nameCleanup,
+			CleanedInPlace:  base == currentName,
 		},
 	}
 }
@@ -266,7 +276,7 @@ func (s *Server) dispatchGrabRename(
 //
 // Deduplicates token list — multiple triggers can surface the same
 // token in pathological configs and the embed should show it once.
-func summariseGrabRenameRecovery(reasons []string, rg string) (groupRecovered string, tokensRecovered []string) {
+func summariseGrabRenameRecovery(reasons []string, rg string) (groupRecovered string, tokensRecovered []string, nameCleanup []string) {
 	seen := map[string]bool{}
 	appendToken := func(tok string) {
 		t := strings.TrimSpace(tok)
@@ -276,6 +286,14 @@ func summariseGrabRenameRecovery(reasons []string, rg string) (groupRecovered st
 		seen[t] = true
 		tokensRecovered = append(tokensRecovered, t)
 	}
+	seenClean := map[string]bool{}
+	appendCleanup := func(label string) {
+		if seenClean[label] {
+			return
+		}
+		seenClean[label] = true
+		nameCleanup = append(nameCleanup, label)
+	}
 	for _, raw := range reasons {
 		r := strings.TrimSpace(raw)
 		switch {
@@ -283,6 +301,14 @@ func summariseGrabRenameRecovery(reasons []string, rg string) (groupRecovered st
 			if groupRecovered == "" {
 				groupRecovered = strings.TrimSpace(rg)
 			}
+		case strings.HasPrefix(r, "foreign-bracket-prefix"):
+			// Not a "recovered group" — the group was fine in the grab;
+			// the rename stops Radarr mis-reading the leading bracket.
+			appendCleanup("foreign bracket prefix")
+		case strings.HasPrefix(r, "duplicate-year"):
+			appendCleanup("duplicate year")
+		case strings.HasPrefix(r, "file-extension"):
+			appendCleanup("file extension")
 		case strings.HasPrefix(r, "movie-version: "):
 			for _, t := range strings.Split(strings.TrimPrefix(r, "movie-version: "), "/") {
 				appendToken(t)
@@ -303,7 +329,7 @@ func summariseGrabRenameRecovery(reasons []string, rg string) (groupRecovered st
 			}
 		}
 	}
-	return groupRecovered, tokensRecovered
+	return groupRecovered, tokensRecovered, nameCleanup
 }
 
 // evaluateGrabRenameTriggers walks each enabled trigger and returns a
@@ -314,6 +340,28 @@ func summariseGrabRenameRecovery(reasons []string, rg string) (groupRecovered st
 // wizard): missing-rg → movie-version → source → audio → scene →
 // custom-tokens. Order doesn't affect rename outcome (any trigger is
 // enough); it affects summary readability.
+// reasonsNeedGrabBase reports whether the rename should pull from the
+// indexer release name (the grab) rather than clean the display name in
+// place. True when a token-preservation trigger fired (the display lost
+// tokens) or Always-rename is in play. The Bad-naming reasons
+// (foreign-bracket / duplicate-year / file-extension) alone do NOT need
+// the grab — the display's tokens are intact, so we clean it in place.
+func reasonsNeedGrabBase(reasons []string) bool {
+	for _, r := range reasons {
+		switch {
+		case r == "always-rename",
+			strings.HasPrefix(r, "missing-release-group"),
+			strings.HasPrefix(r, "movie-version:"),
+			strings.HasPrefix(r, "source:"),
+			strings.HasPrefix(r, "audio:"),
+			strings.HasPrefix(r, "scene-stripped"),
+			strings.HasPrefix(r, "custom:"):
+			return true
+		}
+	}
+	return false
+}
+
 func evaluateGrabRenameTriggers(currentName, grabTitle, rg string, c *core.GrabRenameCriteria) []string {
 	if c == nil {
 		return nil
@@ -352,6 +400,27 @@ func evaluateGrabRenameTriggers(currentName, grabTitle, rg string, c *core.GrabR
 	if c.TriggerOnAudioMismatch {
 		if missing := engine.DiffMissingAudio(currentName, grabTitle); len(missing) > 0 {
 			reasons = append(reasons, "audio: "+strings.Join(missing, "/"))
+		}
+	}
+
+	// Bad naming — the umbrella for objective name defects Radarr
+	// mis-parses. Both heuristics check the name directly (not a
+	// grab-vs-current token diff) because the defect is in the name's
+	// structure, and the grab title often carries the same defect.
+	if c.TriggerOnBadNaming {
+		// Leading non-Latin bracket: Radarr reads it as the release
+		// group. Checked on the display name directly; the target is
+		// cleaned regardless of the grab, so no "grab lacks it" guard.
+		if engine.HasLeadingForeignBracket(currentName) {
+			reasons = append(reasons, "foreign-bracket-prefix (Radarr would misparse the leading bracket as the release group)")
+		}
+		// Duplicate year: the same year twice back-to-back ("2026.2026").
+		if engine.HasDuplicateYear(currentName) {
+			reasons = append(reasons, "duplicate-year (same year twice; collapsed to one)")
+		}
+		// File extension leaked into the torrent display name.
+		if engine.HasFileExtension(currentName) {
+			reasons = append(reasons, "file-extension (.mkv/.mp4 etc in the torrent name)")
 		}
 	}
 

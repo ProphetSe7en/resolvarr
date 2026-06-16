@@ -137,6 +137,22 @@ func TestDiffMissingSources(t *testing.T) {
 			"Movie 2024 NF 1080p WEB-DL-FLUX",
 			"Movie 2024 NF 1080p WEB-DL-FLUX",
 			nil},
+		{"iT missing from torrent (real grab name, space form)",
+			"Movie 2025 2160p WEB-DL DDP5.1 Atmos DV HDR H.265-BYNDR",
+			"Movie 2025 2160p iT WEB-DL DDP5.1 Atmos DV HDR H.265-BYNDR",
+			[]string{"iT"}},
+		{"iT missing from torrent (dot form)",
+			"Movie.2011.2160p.WEB-DL.DTS-HD.MA.5.1.DV.HDR.H.265-FLUX",
+			"Movie.2011.2160p.iT.WEB-DL.DTS-HD.MA.5.1.DV.HDR.H.265-FLUX",
+			[]string{"iT"}},
+		{"iT in grab vs iTunes in torrent (same source, no diff)",
+			"[x].Movie.1969.1080p.iTunes.WEB-DL.H264.DD5.1-UBWEB",
+			"Movie 1969 1080p iT WEB-DL DD 5.1 H.264-UBWEB",
+			nil},
+		{"title word It is not the iTunes source",
+			"When It Rains 2017 1080p WEBRip-RG",
+			"When It Rains 2017 1080p WEB-DL-RG",
+			[]string{"WEB-DL"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -280,5 +296,112 @@ func TestVocabularyExports(t *testing.T) {
 	}
 	if got := AudioTokens(); len(got) < 4 {
 		t.Errorf("AudioTokens len = %d, want ≥4", len(got))
+	}
+}
+
+func TestHasLeadingForeignBracket(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"chinese bracket prefix", "[测试名].Movie.1969.1080p.iTunes.WEB-DL.H264.DD5.1-UBWEB", true},
+		{"chinese bracket fires regardless of grab (clean-in-place)", "[测试名].Movie.2020-RG", true},
+		{"ascii bracket prefix left alone", "[RlsGrp].Movie.2020.1080p.WEB-DL-RG", false},
+		{"no leading bracket", "Movie.1969.1080p.WEB-DL-UBWEB", false},
+		{"empty bracket", "[].Movie.2020-RG", false},
+		{"unterminated bracket", "[测试名 Movie 2020 RG", false},
+		{"cyrillic bracket prefix", "[Перевод].Movie.2021.1080p.WEB-DL-RG", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := HasLeadingForeignBracket(c.in); got != c.want {
+				t.Errorf("HasLeadingForeignBracket(%q) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestStripLeadingForeignBracket(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"[测试名].Movie.1969.1080p.iTunes.WEB-DL.H264.DD5.1-UBWEB", "Movie.1969.1080p.iTunes.WEB-DL.H264.DD5.1-UBWEB"},
+		{"[Перевод].Movie.2021-RG", "Movie.2021-RG"},
+		// Accented-Latin leading bracket is also stripped — deliberate:
+		// Radarr mis-parses any non-ASCII leading bracket as the group,
+		// so it's the same hazard as CJK/Cyrillic.
+		{"[Amélie].Movie.2001-RG", "Movie.2001-RG"},
+		{"[RlsGrp].Movie.2020-RG", "[RlsGrp].Movie.2020-RG"},
+		{"Movie.2020-RG", "Movie.2020-RG"},
+	}
+	for _, c := range cases {
+		if got := StripLeadingForeignBracket(c.in); got != c.want {
+			t.Errorf("StripLeadingForeignBracket(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestCleanReleaseName(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"[测试名].Movie.1969.1080p.iTunes.WEB-DL.H264.DD5.1-UBWEB", "Movie.1969.1080p.iTunes.WEB-DL.H264.DD5.1-UBWEB"},
+		{"Movie.The.Secret.Service.2015.2160p.MA.WEB-DL-FLUX.mkv", "Movie.The.Secret.Service.2015.2160p.MA.WEB-DL-FLUX"},
+		{"Movie.2020.2020.1080p-RG", "Movie.2020.1080p-RG"},
+		{"[测试名].Movie.2020.2020.1080p-RG.mkv", "Movie.2020.1080p-RG"},
+		{"Movie.2024.1080p.WEB-DL-FLUX", "Movie.2024.1080p.WEB-DL-FLUX"},
+		{"[SubGroup] Show 2024 1080p WEB-DL-RG.mkv", "[SubGroup] Show 2024 1080p WEB-DL-RG"},
+	}
+	for _, c := range cases {
+		if got := CleanReleaseName(c.in); got != c.want {
+			t.Errorf("CleanReleaseName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestResolveReleaseGroup(t *testing.T) {
+	cases := []struct {
+		name     string
+		radarrRG string
+		input    string
+		want     string
+	}{
+		{"normal trust Radarr", "FLUX", "Movie.2024.1080p.WEB-DL-FLUX", "FLUX"},
+		{"empty Radarr parse name", "", "Movie.2024.1080p.WEB-DL-FLUX", "FLUX"},
+		{"Radarr took the bracket use name", "测试名", "[测试名].Movie.1969.1080p.WEB-DL-UBWEB", "UBWEB"},
+		{"Radarr non-ASCII garbage use name", "某组", "Movie.2024.1080p.WEB-DL-UBWEB", "UBWEB"},
+		{"normal ASCII differs still trust Radarr", "NTb", "Movie.2024.1080p.WEB-DL-FLUX", "NTb"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ResolveReleaseGroup(c.radarrRG, c.input); got != c.want {
+				t.Errorf("ResolveReleaseGroup(%q, %q) = %q, want %q", c.radarrRG, c.input, got, c.want)
+			}
+		})
+	}
+}
+
+func TestDuplicateYear(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        string
+		wantHas   bool
+		wantOut   string
+	}{
+		{"same year twice dot", "Movie.2026.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo", true, "Movie.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo"},
+		{"same year twice dot (alt)", "Film.2016.2016.2160p.ATVP.WEB-DL.DD.5.1.DV.HDR.H.265", true, "Film.2016.2160p.ATVP.WEB-DL.DD.5.1.DV.HDR.H.265"},
+		{"same year twice space", "Movie 2026 2026 1080p WEB-DL-KyoGo", true, "Movie 2026 1080p WEB-DL-KyoGo"},
+		{"different years left alone (title-year + release-year)", "Movie.2049.2017.2160p.WEB-DL-FLUX", false, "Movie.2049.2017.2160p.WEB-DL-FLUX"},
+		{"different years title-plus-release", "Movie.2018.2019.2160p.WEB-DL-TheFarm", false, "Movie.2018.2019.2160p.WEB-DL-TheFarm"},
+		{"single year no-op", "Movie.2024.1080p.WEB-DL-RG", false, "Movie.2024.1080p.WEB-DL-RG"},
+		{"resolution not a year", "Movie.2024.2160p.WEB-DL-RG", false, "Movie.2024.2160p.WEB-DL-RG"},
+		{"triple same year collapses fully", "Movie.2016.2016.2016.1080p-RG", true, "Movie.2016.1080p-RG"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := HasDuplicateYear(c.in); got != c.wantHas {
+				t.Errorf("HasDuplicateYear(%q) = %v, want %v", c.in, got, c.wantHas)
+			}
+			if got := CollapseDuplicateYear(c.in); got != c.wantOut {
+				t.Errorf("CollapseDuplicateYear(%q) = %q, want %q", c.in, got, c.wantOut)
+			}
+		})
 	}
 }

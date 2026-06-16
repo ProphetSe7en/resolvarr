@@ -199,6 +199,15 @@ func TestAppendGrabRenameSection(t *testing.T) {
 			{Name: "Torrent Name", Value: "a", Inline: false},
 			{Name: "Restored to Release Name", Value: "b", Inline: false},
 		}},
+		{"clean-in-place uses honest label + Cleaned-up field", &GrabRenameDetail{
+			From: "[测试名].Movie.2020-RG", To: "Movie.2020-RG", QbitInstance: "qBit",
+			NameCleanup: []string{"foreign bracket prefix"}, CleanedInPlace: true,
+		}, []agents.PayloadField{
+			{Name: "Renamed in", Value: "qBit", Inline: false},
+			{Name: "Cleaned up", Value: "foreign bracket prefix", Inline: true},
+			{Name: "Torrent Name", Value: "[测试名].Movie.2020-RG", Inline: false},
+			{Name: "Cleaned Torrent Name", Value: "Movie.2020-RG", Inline: false},
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

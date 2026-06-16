@@ -2,6 +2,17 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.53-dev — Grab-rename "Bad naming" cleanup + correct release group from foreign names (2026-06-16)
+
+### Added
+
+- **"Bad naming" cleanup for qBittorrent grab-rename rules.** Turn it on and the rule fixes release names Radarr mis-reads before import: a non-Latin bracket in front of the title, the same year twice in a row, and a leftover file extension in the torrent name. The notification shows what was cleaned.
+- **Grab-rename now recognises the iTunes (iT) source** and preserves it when the torrent name is missing it.
+
+### Fixed
+
+- **Release group no longer ends up as foreign text.** When a release name leads with non-Latin characters, Radarr can read those as the release group and drop the real one. Recover and grab-rename now take the real group from the name instead.
+
 ## v0.6.52-dev — Open scheduled runs from History, see what Plex sync skipped (2026-06-14)
 
 ### Added

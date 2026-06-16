@@ -11972,6 +11972,7 @@ function app() {
       if (c.triggerOnSourceMismatch) return false;
       if (c.triggerOnAudioMismatch) return false;
       if (c.triggerOnSceneMismatch) return false;
+      if (c.triggerOnBadNaming) return false;
       if (c.triggerAlways) return false;
       if ((c.customTokens || []).length > 0) return false;
       return true;
