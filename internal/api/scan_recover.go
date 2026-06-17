@@ -174,9 +174,10 @@ func (s *Server) runRecoverRadarr(ctx context.Context, inst *core.Instance, req 
 				SourceTitle:  h.SourceTitle,
 				DownloadID:   h.DownloadID,
 				ReleaseGroup: h.ReleaseGroup(),
+				FileID:       h.ImportedFileID(),
 			})
 		}
-		recoveredGroup, status := engine.FindImportedGrabGroup(engHistory, it.Title, it.Year)
+		recoveredGroup, status := engine.FindGrabGroupForFile(engHistory, it.MovieFile.ID)
 		switch status {
 		case engine.RecoverNoVerified:
 			row.Status = "failed-verify"
@@ -194,7 +195,7 @@ func (s *Server) runRecoverRadarr(ctx context.Context, inst *core.Instance, req 
 		// would-fix rows so the UI drill-down can show the user which
 		// import event the recovered group came from.
 		row.RecoveredGroup = recoveredGroup
-		if importEv := newestImportEvent(engHistory); importEv != nil {
+		if importEv := importEventForFileID(engHistory, it.MovieFile.ID); importEv != nil {
 			row.ImportSourceTitle = importEv.SourceTitle
 			if !importEv.Date.IsZero() {
 				row.ImportDate = importEv.Date.UTC().Format(time.RFC3339)

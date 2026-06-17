@@ -349,6 +349,11 @@ type HistoryRecord struct {
 	SourceTitle  string
 	DownloadID   string // "" when Radarr didn't store one
 	ReleaseGroup string // from data.releaseGroup OR data.ReleaseGroup; "" when missing
+	// FileID is the movieFile / episodeFile id an IMPORT event created (from
+	// data.fileId). 0 on grab/delete events and when absent. The Radarr recover
+	// path (FindGrabGroupForFile) anchors on it; FindImportedGrabGroup ignores
+	// it.
+	FileID int
 }
 
 // RecoverStatus is the outcome bucket from FindImportedGrabGroup. Mirrors
@@ -497,6 +502,69 @@ func FindImportedGrabGroup(history []HistoryRecord, title string, year int) (str
 	}
 
 	// Walked all grabs, none verified.
+	return "", RecoverNoVerified
+}
+
+// FindGrabGroupForFile recovers the release group for the movie file currently
+// on disk by anchoring on its fileId. Used by the Radarr Library-scan recover.
+//
+// The import event whose FileID equals the on-disk file's id is the import that
+// produced that exact file (Radarr puts the new movieFile id in data.fileId on
+// every import event). That import's DownloadID points at the grab to read the
+// release group from — the SAME downloadId anchoring the webhook recover path,
+// derived here from fileId because the scan path has no live import event.
+//
+// fileID is the current movieFile.id.
+//
+// Returns:
+//   RecoverFound         — import matched by fileId and its grab carried a group.
+//   RecoverVerifiedEmpty — that grab was found but its releaseGroup was empty.
+//   RecoverNoVerified    — no import produced this file id (hand-placed file),
+//                          the matching import has no downloadId (Manual Import),
+//                          or no grab shares that downloadId.
+//
+// There is deliberately NO title+year fallback: a grab that does not share the
+// on-disk file's import downloadId belongs to a different release — often one
+// that was deleted and replaced — and applying its group writes the wrong
+// answer (the cross-release mis-recovery on manually-imported / hand-placed
+// files). The Sonarr path still uses FindImportedGrabGroup: Sonarr season packs
+// need its per-episode downloadId re-attach, and that path keeps its own
+// manual-import guard. Extending this fileId anchor to Sonarr is a separate
+// follow-up — it must also handle the pack shape where one import event is
+// tagged to a single episode.
+func FindGrabGroupForFile(history []HistoryRecord, fileID int) (string, RecoverStatus) {
+	if len(history) == 0 || fileID <= 0 {
+		return "", RecoverNoVerified
+	}
+
+	// Step 1: find the import event that created the file on disk.
+	importDLID := ""
+	foundImport := false
+	for _, ev := range history {
+		if isImport(ev.EventType) && ev.FileID == fileID {
+			importDLID = ev.DownloadID // "" is legitimate (Manual Import)
+			foundImport = true
+			break
+		}
+	}
+	if !foundImport || importDLID == "" {
+		// No import produced this file id (hand-placed), or it was a Manual
+		// Import with no tracked download (so no grab). Never guess.
+		return "", RecoverNoVerified
+	}
+
+	// Step 2: recover from the grab that produced this exact download.
+	for _, ev := range history {
+		if ev.EventType != HistoryEventGrabbed || ev.DownloadID == "" || ev.DownloadID != importDLID {
+			continue
+		}
+		if rg := extractGrabReleaseGroup(ev); rg != "" {
+			return rg, RecoverFound
+		}
+		return "", RecoverVerifiedEmpty
+	}
+
+	// Import had a downloadId but its grab is no longer in history.
 	return "", RecoverNoVerified
 }
 

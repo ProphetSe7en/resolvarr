@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -652,7 +653,28 @@ type HistoryRecord struct {
 	Data struct {
 		ReleaseGroupLower string `json:"releaseGroup"`
 		ReleaseGroupTitle string `json:"ReleaseGroup"`
+		// FileID is the movieFile / episodeFile id this import event created.
+		// Radarr/Sonarr send it as a STRING on import events
+		// (downloadFolderImported / movieFileImported / episodeFileImported);
+		// absent on grab and delete events. Recover anchors on it to link the
+		// file currently on disk to the import (and thus grab) that produced
+		// it — see ImportedFileID().
+		FileID string `json:"fileId"`
 	} `json:"data"`
+}
+
+// ImportedFileID returns data.fileId parsed to an int — the movieFile /
+// episodeFile id an import event created. Returns 0 when the field is absent
+// (grab/delete events) or unparseable. Bash: `(.data.fileId // "")`.
+func (h HistoryRecord) ImportedFileID() int {
+	if h.Data.FileID == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(h.Data.FileID)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // ReleaseGroup returns the data.releaseGroup field, falling back to

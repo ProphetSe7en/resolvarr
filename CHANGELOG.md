@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.54-dev — Recover no longer attaches a replaced release's group (2026-06-17)
+
+### Fixed
+
+- **Recover (Library scan) no longer suggests a release group from an old, replaced download.** When a movie file was imported manually or put in place outside Radarr, Recover could attach the release group of a previous release that had already been deleted and replaced. It now recovers the group only from the download that actually produced the file currently on disk, and reports "could not verify" when there is nothing reliable to recover from. Radarr movies only in this release; the same fix for Sonarr is coming.
+
 ## v0.6.53-dev — Grab-rename "Bad naming" cleanup + correct release group from foreign names (2026-06-16)
 
 ### Added

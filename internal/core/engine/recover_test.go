@@ -570,3 +570,127 @@ func TestExtractGrabReleaseGroup_OverridesRadarrMisparse(t *testing.T) {
 		t.Errorf("extractGrabReleaseGroup = %q, want FLUX (trust Radarr's normal value)", got)
 	}
 }
+
+// ============================================================================
+// FindGrabGroupForFile — Radarr fileId anchor (cross-release mis-recovery fix)
+// ============================================================================
+
+func TestFindGrabGroupForFile_Recovers(t *testing.T) {
+	// Happy path: the import that created the on-disk file (fileId 100) shares a
+	// downloadId with the grab. Radarr lost the group at import; recover it.
+	history := []HistoryRecord{
+		{EventType: HistoryEventMovieFileImported, Date: fixtureDate(0), DownloadID: "dl-1", FileID: 100,
+			SourceTitle: "Movie.2024.WEB-DL.h265-FLUX"},
+		{EventType: HistoryEventGrabbed, Date: fixtureDate(1), DownloadID: "dl-1",
+			SourceTitle: "Movie.2024.WEB-DL.h265-FLUX", ReleaseGroup: "FLUX"},
+	}
+	got, status := FindGrabGroupForFile(history, 100)
+	if status != RecoverFound || got != "FLUX" {
+		t.Fatalf("got (%q, %v), want (FLUX, RecoverFound)", got, status)
+	}
+}
+
+func TestFindGrabGroupForFile_HandPlacedFile_OldReleaseNotLeaked(t *testing.T) {
+	// Hand-placed-file shape: the file on disk (fileId 200) was copied in with
+	// no import event of its own. History only knows the PREVIOUS, since-deleted
+	// release (fileId 50, grab DELETED). The old grab must NOT be applied.
+	history := []HistoryRecord{
+		{EventType: HistoryEventMovieFileImported, Date: fixtureDate(1), DownloadID: "dl-old", FileID: 50,
+			SourceTitle: "Movie.2024.BluRay.x265-DELETED"},
+		{EventType: HistoryEventGrabbed, Date: fixtureDate(2), DownloadID: "dl-old",
+			SourceTitle: "Movie.2024.BluRay.x265-DELETED", ReleaseGroup: "DELETED"},
+	}
+	got, status := FindGrabGroupForFile(history, 200)
+	if status != RecoverNoVerified || got != "" {
+		t.Fatalf("old release leaked onto hand-placed file: got (%q, %v)", got, status)
+	}
+}
+
+func TestFindGrabGroupForFile_ManualImportNoDownloadId_OldGrabNotLeaked(t *testing.T) {
+	// Manual-import shape: the file on disk (fileId 300) was MANUALLY imported,
+	// so its import has no downloadId (no tracked download, no grab). An
+	// unrelated older release (fileId 90, grab OLDGRP) was deleted. The manual
+	// import must NOT pick up that unrelated grab.
+	history := []HistoryRecord{
+		{EventType: HistoryEventMovieFileImported, Date: fixtureDate(0), DownloadID: "", FileID: 300,
+			SourceTitle: "Movie manual import"},
+		{EventType: HistoryEventMovieFileImported, Date: fixtureDate(2), DownloadID: "dl-K", FileID: 90,
+			SourceTitle: "Movie.2024.BluRay.x265-OLDGRP"},
+		{EventType: HistoryEventGrabbed, Date: fixtureDate(3), DownloadID: "dl-K",
+			SourceTitle: "Movie.2024.BluRay.x265-OLDGRP", ReleaseGroup: "OLDGRP"},
+	}
+	got, status := FindGrabGroupForFile(history, 300)
+	if status != RecoverNoVerified || got != "" {
+		t.Fatalf("unrelated grab leaked onto manually-imported file: got (%q, %v)", got, status)
+	}
+}
+
+func TestFindGrabGroupForFile_AnchorsOnFileNotNewest(t *testing.T) {
+	// Two real download->import pairs both live in history. Recover anchors on
+	// the import matching the REQUESTED file id, not "the newest".
+	history := []HistoryRecord{
+		{EventType: HistoryEventMovieFileImported, Date: fixtureDate(0), DownloadID: "dl-NEW", FileID: 2,
+			SourceTitle: "Movie 2024-NEWGRP"},
+		{EventType: HistoryEventGrabbed, Date: fixtureDate(1), DownloadID: "dl-NEW",
+			SourceTitle: "Movie 2024-NEWGRP", ReleaseGroup: "NEWGRP"},
+		{EventType: HistoryEventMovieFileImported, Date: fixtureDate(2), DownloadID: "dl-OLD", FileID: 1,
+			SourceTitle: "Movie 2024-OLDGRP"},
+		{EventType: HistoryEventGrabbed, Date: fixtureDate(3), DownloadID: "dl-OLD",
+			SourceTitle: "Movie 2024-OLDGRP", ReleaseGroup: "OLDGRP"},
+	}
+	if got, status := FindGrabGroupForFile(history, 2); got != "NEWGRP" || status != RecoverFound {
+		t.Fatalf("fileId 2: got (%q, %v), want (NEWGRP, RecoverFound)", got, status)
+	}
+	if got, status := FindGrabGroupForFile(history, 1); got != "OLDGRP" || status != RecoverFound {
+		t.Fatalf("fileId 1: got (%q, %v), want (OLDGRP, RecoverFound)", got, status)
+	}
+}
+
+func TestFindGrabGroupForFile_VerifiedEmpty(t *testing.T) {
+	history := []HistoryRecord{
+		{EventType: HistoryEventMovieFileImported, Date: fixtureDate(0), DownloadID: "dl-1", FileID: 100},
+		{EventType: HistoryEventGrabbed, Date: fixtureDate(1), DownloadID: "dl-1",
+			SourceTitle: "Movie 2024 WEB-DL", ReleaseGroup: ""},
+	}
+	got, status := FindGrabGroupForFile(history, 100)
+	if status != RecoverVerifiedEmpty || got != "" {
+		t.Fatalf("got (%q, %v), want (\"\", RecoverVerifiedEmpty)", got, status)
+	}
+}
+
+func TestFindGrabGroupForFile_ImportButNoMatchingGrab(t *testing.T) {
+	history := []HistoryRecord{
+		{EventType: HistoryEventMovieFileImported, Date: fixtureDate(0), DownloadID: "dl-1", FileID: 100},
+		{EventType: HistoryEventGrabbed, Date: fixtureDate(1), DownloadID: "dl-OTHER",
+			SourceTitle: "Movie 2024-X", ReleaseGroup: "X"},
+	}
+	got, status := FindGrabGroupForFile(history, 100)
+	if status != RecoverNoVerified || got != "" {
+		t.Fatalf("got (%q, %v), want (\"\", RecoverNoVerified)", got, status)
+	}
+}
+
+func TestFindGrabGroupForFile_DownloadFolderImportedCounts(t *testing.T) {
+	history := []HistoryRecord{
+		{EventType: HistoryEventDownloadFolderImported, Date: fixtureDate(0), DownloadID: "dl-1", FileID: 7},
+		{EventType: HistoryEventGrabbed, Date: fixtureDate(1), DownloadID: "dl-1",
+			SourceTitle: "Movie 2024-FLUX", ReleaseGroup: "FLUX"},
+	}
+	got, status := FindGrabGroupForFile(history, 7)
+	if status != RecoverFound || got != "FLUX" {
+		t.Fatalf("downloadFolderImported didn't count: got (%q, %v)", got, status)
+	}
+}
+
+func TestFindGrabGroupForFile_EmptyHistoryAndZeroID(t *testing.T) {
+	if got, status := FindGrabGroupForFile(nil, 100); status != RecoverNoVerified || got != "" {
+		t.Fatalf("empty history: got (%q, %v)", got, status)
+	}
+	history := []HistoryRecord{
+		{EventType: HistoryEventMovieFileImported, Date: fixtureDate(0), DownloadID: "dl-1", FileID: 100},
+		{EventType: HistoryEventGrabbed, Date: fixtureDate(1), DownloadID: "dl-1", ReleaseGroup: "FLUX"},
+	}
+	if got, status := FindGrabGroupForFile(history, 0); status != RecoverNoVerified || got != "" {
+		t.Fatalf("zero fileId: got (%q, %v)", got, status)
+	}
+}

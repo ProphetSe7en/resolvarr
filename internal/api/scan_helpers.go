@@ -136,6 +136,29 @@ func computeCleanupCandidates(items []arr.Item, labelToID map[string]int, manage
 // the engine returns only the recovered group + status, not the import
 // event itself. Worth the small cost of a second walk to keep the engine
 // API focused.
+// importEventForFileID returns the import event that created the given file id
+// (data.fileId == fileID) — the import recover anchors on. Used for the
+// would-fix drill-down so the UI shows the file's OWN import, not a stale
+// newest import from a since-deleted release. Returns nil when no import
+// produced this file id (hand-placed file).
+func importEventForFileID(history []engine.HistoryRecord, fileID int) *engine.HistoryRecord {
+	if fileID <= 0 {
+		return nil
+	}
+	for i := range history {
+		ev := &history[i]
+		switch ev.EventType {
+		case engine.HistoryEventDownloadFolderImported,
+			engine.HistoryEventMovieFileImported,
+			engine.HistoryEventEpisodeFileImported:
+			if ev.FileID == fileID {
+				return ev
+			}
+		}
+	}
+	return nil
+}
+
 func newestImportEvent(history []engine.HistoryRecord) *engine.HistoryRecord {
 	var best *engine.HistoryRecord
 	for i := range history {
