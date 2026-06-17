@@ -40,6 +40,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Tags
 	mux.HandleFunc("GET /api/instances/{id}/tags", s.handleListTags)
+	mux.HandleFunc("GET /api/instances/{id}/quality-profiles", s.handleListQualityProfiles)
 	mux.HandleFunc("GET /api/instances/{id}/qbit-categories", s.handleReconcileQbitCategories)
 	mux.HandleFunc("GET /api/instances/{id}/tag-items", s.handleTagItems)
 	mux.HandleFunc("GET /api/instances/{id}/items-with-tags", s.handleItemsWithTags)
@@ -241,6 +242,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// schedule + webhook paths reach the same engine via their own
 	// inline config (no HTTP hop).
 	mux.HandleFunc("POST /api/plex-sync/run", s.handleRunPlexSync)
+
+	// Profile by tag — one-off Library scan (Radarr + Sonarr). Preview/apply
+	// inline rules that move items to a quality profile based on their tags.
+	mux.HandleFunc("POST /api/profile-by-tag/run", s.handleRunProfileByTag)
 }
 
 // RegisterAuthRoutes wires the setup wizard, login/logout, and

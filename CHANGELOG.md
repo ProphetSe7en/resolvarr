@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.56-dev — Profile switcher: auto-switch a quality profile by tags (2026-06-17)
+
+### Added
+
+- **Profile switcher (Library scan).** Automatically switch a movie or series to a different quality profile based on the tags it already carries. Open it from Library scan, build rules like `anime OR cartoon → Anime` or `anime AND uhd → Anime UHD` (mix tags with AND/OR), preview which items would switch (from which profile to which, and which rule matched), then apply. Items whose tags point to two different profiles are listed as conflicts and left unchanged, so nothing switches ambiguously. Works for both Radarr and Sonarr. Switching the profile does not start a search on its own. More ways to run it (on a schedule, and when items are added or imported) are coming.
+
 ## v0.6.54-dev — Recover no longer attaches a replaced release's group (2026-06-17)
 
 ### Fixed

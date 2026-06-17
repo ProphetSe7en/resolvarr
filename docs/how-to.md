@@ -123,6 +123,27 @@ Every movie or series that had the old tag keeps the tag — just with the new n
 
 ---
 
+## Library scan → Profile switcher
+
+**What it does:** automatically switches a movie or series to a different quality profile based on the tags it already carries in Radarr or Sonarr.
+
+**Why:** if you tag items (by hand, by an import list, by Radarr/Sonarr auto-tagging, or by resolvarr's own tagging), you can let those tags decide the quality profile, instead of changing each item by hand.
+
+**How:**
+
+1. Open Library scan and pick the **Profile switcher** tab, then "Configure and run".
+2. **Step 1**: choose the instance and a run mode: Preview (show what would change) or Apply (write the changes).
+3. **Step 2**: build one or more rules. Each rule is a set of tags plus the quality profile matching items should use. Combine tags with AND / OR (AND binds first, so "A AND B OR C" means "(A AND B) OR C"). Examples: "anime OR cartoon" goes to the Anime profile; "anime AND uhd" goes to the Anime UHD profile.
+4. **Step 3**: review your rules, then run.
+5. The result shows every switch (which profile to which, and which rule matched). On a Preview you can hit Apply to write them.
+
+**Notes:**
+- If an item's tags match two rules that point to different profiles, it is shown as a conflict and left unchanged, so nothing switches ambiguously.
+- Switching the profile does not start a search. Radarr or Sonarr will pick up upgrades on their own next search if the new profile allows a better release.
+- Running it on a schedule, and when items are added or imported, is on the way.
+
+---
+
 ## Coming later
 
 These sections will be added as the feature ships:

@@ -691,6 +691,9 @@
         <template x-if="scanSectionVisible('reconcile')">
           <a class="settings-nav" :class="scanSection === 'reconcile' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'reconcile' })" @click="setScanSection('reconcile')" title="Find downloads stuck in the queue that a better release already replaced, and move them out of the way">Stuck downloads</a>
         </template>
+        <template x-if="scanSectionVisible('profile-by-tag')">
+          <a class="settings-nav" :class="scanSection === 'profile-by-tag' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'profile-by-tag' })" @click="setScanSection('profile-by-tag')" title="Automatically switch a movie or series to a different quality profile based on its tags, using AND/OR rules">Profile switcher</a>
+        </template>
         <template x-if="scanSectionVisible('history')">
           <a class="settings-nav" :class="scanSection === 'history' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'history' })" @click="setScanSection('history')">History</a>
         </template>
@@ -3595,6 +3598,36 @@
           </template>
         </div>
 
+
+        <!-- ===== Profile by tag sub-tab (launcher; wizard + result are modals) ===== -->
+        <div x-show="scanSection === 'profile-by-tag'" x-cloak>
+          <div style="margin-bottom:14px">
+            <div class="settings-section-title">Profile switcher</div>
+            <div class="settings-section-desc">Automatically switch a <span x-text="scanAppType === 'sonarr' ? 'series' : 'movie'"></span> to a different quality profile based on the tags it carries in <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>.</div>
+          </div>
+          <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;padding:16px;display:flex;align-items:center;gap:16px;max-width:720px">
+            <div style="flex:1;font-size:13px;color:var(--text-secondary);line-height:1.6">
+              Set up rules like <code>anime OR cartoon → Anime</code> or <code>anime AND uhd → Anime UHD</code>, then scan your library. Preview first — nothing changes until you apply.
+            </div>
+            <button class="btn btn-primary" @click="openProfileByTagWizard()" :disabled="pbtAvailableInstances().length === 0">Configure and run</button>
+          </div>
+          <template x-if="pbtAvailableInstances().length === 0">
+            <div style="margin-top:10px;font-size:13px;color:var(--text-muted);font-style:italic">No <span x-text="scanAppType === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> instances configured.</div>
+          </template>
+
+          <!-- How it works -->
+          <div style="margin-top:16px;max-width:720px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 16px">
+            <div style="font-size:13px;font-weight:600;color:var(--text-body);margin-bottom:8px">How it works</div>
+            <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--text-secondary);line-height:1.7">
+              <li>You build rules: pick one or more tags (combine with <strong>AND / OR</strong>) and the quality profile that matching items should use.</li>
+              <li>resolvarr scans the library. For each item, if its tags match a rule, it switches that item to the rule's profile.</li>
+              <li><strong>Preview</strong> shows every switch first (from → to, and which rule matched). <strong>Apply</strong> writes the changes.</li>
+              <li>If an item's tags match two rules pointing to <strong>different</strong> profiles, it's flagged as a <strong>conflict</strong> and left unchanged.</li>
+              <li>Switching the profile doesn't start a search. Radarr or Sonarr will pick up upgrades on their own next search if the new profile allows a better release.</li>
+            </ul>
+          </div>
+        </div>
+
         <!-- ===== History sub-tab =====
              Pure scan-history view as of Step 5 — adhoc scan replays only.
              Saved rules + their per-run history moved to Run mode where
@@ -3773,6 +3806,235 @@
        Backend: hands off to runLibraryScan once choices land in
        the standard scanModes / scanMode / scanSyncToSecondary /
        scanCleanupUnusedTags state. No new endpoint. -->
+  <!-- ===== Profile by tag — wizard modal (mirror Tag quality releases) ===== -->
+  <div class="modal-overlay" x-show="profileByTagWizard.open" x-cloak @keydown.escape.window="if (profileByTagWizard.open) closeProfileByTagWizard()">
+    <div class="modal" style="width:680px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0">
+      <!-- Header -->
+      <div style="flex:0 0 auto;padding:18px 22px 0">
+        <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:8px">
+          <div class="modal-title" style="margin:0">Profile switcher</div>
+          <div style="font-size:12px;color:var(--text-secondary)">Step <span x-text="profileByTagWizard.step + 1"></span> of 3</div>
+        </div>
+        <div style="display:flex;gap:8px;font-size:11px;color:var(--text-muted-secondary);margin-top:4px">
+          <span :style="profileByTagWizard.step === 0 ? 'color:var(--accent-blue);font-weight:600' : ''">Instance</span>
+          <span>›</span>
+          <span :style="profileByTagWizard.step === 1 ? 'color:var(--accent-blue);font-weight:600' : ''">Rules</span>
+          <span>›</span>
+          <span :style="profileByTagWizard.step === 2 ? 'color:var(--accent-blue);font-weight:600' : ''">Review</span>
+        </div>
+      </div>
+
+      <!-- Body -->
+      <div style="flex:1 1 auto;overflow-y:auto;padding:18px 22px">
+        <template x-if="profileByTagWizard.pickersError">
+          <div style="margin-bottom:12px;padding:10px 14px;border:1px solid var(--accent-red);border-radius:8px;background:var(--bg-card);font-size:13px;color:var(--text-body)" x-text="'Could not load tags / profiles: ' + profileByTagWizard.pickersError"></div>
+        </template>
+
+        <!-- STEP 0: instance + mode -->
+        <template x-if="profileByTagWizard.step === 0">
+          <div>
+            <div class="form-group">
+              <label class="label">Instance</label>
+              <select class="input" x-model="profileByTagWizard.instanceId" @change="pbtOnInstanceChange()">
+                <template x-for="i in pbtAvailableInstances()" :key="i.id">
+                  <option :value="i.id" x-text="i.name"></option>
+                </template>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="label">Run mode</label>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px">
+                  <input type="radio" value="preview" x-model="profileByTagWizard.runMode" style="accent-color:var(--accent-blue)">
+                  <span><strong>Preview</strong> <span style="color:var(--text-secondary)">— show which items would move, change nothing.</span></span>
+                </label>
+                <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px">
+                  <input type="radio" value="apply" x-model="profileByTagWizard.runMode" style="accent-color:var(--accent-blue)">
+                  <span><strong>Apply</strong> <span style="color:var(--text-secondary)">— write the profile changes after the scan.</span></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- STEP 1: rules -->
+        <template x-if="profileByTagWizard.step === 1">
+          <div>
+            <template x-if="profileByTagWizard.pickersLoading">
+              <div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px">Loading tags and profiles…</div>
+            </template>
+            <template x-for="(rule, ri) in profileByTagWizard.rules" :key="ri">
+              <div style="background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px;margin-bottom:10px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                  <span style="font-size:12px;font-weight:600;color:var(--text-secondary)" x-text="'Rule ' + (ri + 1)"></span>
+                  <button class="btn btn-sm btn-danger" @click="pbtRemoveRule(ri)" title="Remove this rule">Remove</button>
+                </div>
+                <label class="label">When the item has these tags
+                  <span style="font-weight:400;color:var(--text-secondary)" x-show="rule.conditions.length > 1">· click AND/OR to mix (AND binds first)</span>
+                </label>
+                <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
+                  <template x-for="(c, ci) in rule.conditions" :key="ci">
+                    <div style="display:flex;gap:8px;align-items:center">
+                      <template x-if="ci === 0"><span style="font-size:11px;color:var(--text-muted);width:46px;text-align:center">Tag</span></template>
+                      <template x-if="ci > 0">
+                        <button type="button" @click="pbtToggleJoin(ri, ci)"
+                          :style="c.join === 'or' ? 'background:var(--bg-muted);color:var(--accent-blue);border:1px solid var(--accent-blue)' : 'background:var(--bg-card);color:var(--text-secondary);border:1px solid var(--border-subtle)'"
+                          style="width:46px;border-radius:4px;font-size:11px;font-weight:600;padding:3px 0;cursor:pointer"
+                          :title="c.join === 'or' ? 'OR — click to switch to AND' : 'AND — click to switch to OR'"
+                          x-text="c.join === 'or' ? 'OR' : 'AND'"></button>
+                      </template>
+                      <select class="input" style="flex:1" x-model="c.value">
+                        <option value="">— choose tag —</option>
+                        <template x-for="t in profileByTagWizard.tags" :key="t.id">
+                          <option :value="String(t.id)" x-text="t.label + ' (' + (t.usageCount || 0) + ')'"></option>
+                        </template>
+                      </select>
+                      <button class="btn btn-sm" @click="pbtRemoveCondition(ri, ci)" :disabled="rule.conditions.length <= 1" title="Remove this tag">×</button>
+                    </div>
+                  </template>
+                </div>
+                <button class="btn btn-sm" @click="pbtAddCondition(ri)">+ Add tag (AND/OR)</button>
+                <div class="form-group" style="margin-top:12px;margin-bottom:0">
+                  <label class="label">Move matching items to profile</label>
+                  <select class="input" style="max-width:320px" x-model.number="rule.profileId">
+                    <option :value="0">— choose profile —</option>
+                    <template x-for="pf in profileByTagWizard.profiles" :key="pf.id">
+                      <option :value="pf.id" x-text="pf.name"></option>
+                    </template>
+                  </select>
+                </div>
+              </div>
+            </template>
+            <button class="btn btn-sm" @click="pbtAddRule()">+ Add rule</button>
+          </div>
+        </template>
+
+        <!-- STEP 2: review -->
+        <template x-if="profileByTagWizard.step === 2">
+          <div>
+            <div style="font-size:13px;color:var(--text-secondary);margin-bottom:6px">Instance: <strong style="color:var(--text-body)" x-text="(pbtAvailableInstances().find(i => i.id === profileByTagWizard.instanceId) || {}).name || profileByTagWizard.instanceId"></strong></div>
+            <div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px">Mode: <strong style="color:var(--text-body)" x-text="profileByTagWizard.runMode === 'apply' ? 'Apply' : 'Preview'"></strong></div>
+            <div style="font-size:13px;color:var(--text-secondary);margin-bottom:6px">Rules:</div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <template x-for="(rule, ri) in profileByTagWizard.rules" :key="ri">
+                <div style="font-size:13px;color:var(--text-body);font-family:'SF Mono','Cascadia Mono',Consolas,monospace" x-text="pbtRuleSummary(rule)"></div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Footer -->
+      <div style="flex:0 0 auto;padding:14px 22px;border-top:1px solid var(--border-subtle);display:flex;align-items:center;gap:8px">
+        <button class="btn" @click="closeProfileByTagWizard()" :disabled="profileByTagWizard.busy">Cancel</button>
+        <div style="flex:1"></div>
+        <button class="btn" @click="pbtPrev()" :disabled="profileByTagWizard.step === 0 || profileByTagWizard.busy">← Back</button>
+        <template x-if="profileByTagWizard.step < 2">
+          <button class="btn btn-primary" @click="pbtNext()" :disabled="!pbtStepValid(profileByTagWizard.step) || profileByTagWizard.busy">Next →</button>
+        </template>
+        <template x-if="profileByTagWizard.step === 2">
+          <button class="btn btn-primary" @click="pbtRun(profileByTagWizard.runMode)" :disabled="profileByTagWizard.busy || !pbtRulesValid()">
+            <span x-show="!profileByTagWizard.busy" x-text="profileByTagWizard.runMode === 'apply' ? 'Apply' : 'Run preview'"></span>
+            <span x-show="profileByTagWizard.busy">Running…</span>
+          </button>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Profile by tag — result modal ===== -->
+  <div class="modal-overlay" x-show="profileByTagResult" x-cloak @keydown.escape.window="if (profileByTagResult) pbtDismissResult()" @click.self="pbtDismissResult()">
+    <div class="modal" style="width:1000px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;padding:0">
+      <template x-if="profileByTagResult">
+        <div style="display:flex;flex-direction:column;min-height:0">
+          <!-- Totals card / header -->
+          <div style="flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border-subtle)">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px">
+              <span style="font-size:10px;padding:2px 10px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px" :class="profileByTagResult.runMode === 'apply' ? 'chip-mode-apply' : 'chip-mode-preview'" x-text="profileByTagResult.runMode === 'apply' ? 'Applied' : 'Preview'"></span>
+              <span style="font-size:14px;font-weight:600;color:var(--text-primary)">Profile switcher</span>
+              <span style="color:var(--text-muted-secondary)">·</span>
+              <span><span style="color:var(--text-secondary)">Scanned</span> <strong x-text="profileByTagResult.itemsTotal || 0"></strong></span>
+              <span style="color:var(--text-muted-secondary)">·</span>
+              <span style="color:var(--accent-green)"><span x-text="profileByTagResult.runMode === 'apply' ? 'Moved' : 'To move'"></span> <strong x-text="pbtResultMovesCount()"></strong></span>
+              <template x-if="pbtResultConflictsCount() > 0">
+                <span><span style="color:var(--text-muted-secondary)">·</span> <span style="color:var(--accent-orange)">Conflicts <strong x-text="pbtResultConflictsCount()"></strong></span></span>
+              </template>
+            </div>
+            <button class="icon-btn" @click="pbtDismissResult()" title="Close — does not undo anything">✕</button>
+          </div>
+
+          <!-- Body -->
+          <div style="flex:1 1 auto;overflow-y:auto;padding:14px 18px">
+            <template x-if="profileByTagResult.status === 'error'">
+              <div style="margin-bottom:12px;padding:10px 14px;border:1px solid var(--accent-red);border-radius:8px;background:var(--bg-card);font-size:13px;color:var(--text-body)" x-text="'Apply error: ' + (profileByTagResult.error || '')"></div>
+            </template>
+
+            <!-- Apply bar (preview with pending moves) -->
+            <template x-if="profileByTagResult.runMode !== 'apply' && pbtResultMovesCount() > 0">
+              <div style="margin-bottom:12px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;display:flex;align-items:center;gap:16px">
+                <div style="flex:1;font-size:13px;color:var(--text-secondary)">Preview — nothing has been written yet.</div>
+                <button class="btn btn-primary" @click="pbtRun('apply')" :disabled="profileByTagWizard.busy" x-text="profileByTagWizard.busy ? 'Applying…' : ('Apply ' + pbtResultMovesCount() + ' change' + (pbtResultMovesCount() === 1 ? '' : 's'))"></button>
+              </div>
+            </template>
+
+            <!-- Filter pills -->
+            <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:12px">
+              <div class="filter-row">
+                <span class="filter-label">Show:</span>
+                <button class="filter-pill" :class="{ 'is-active': pbtResultFilter === 'all' }" @click="pbtResultFilter = 'all'">
+                  <span>All</span><span class="filter-count" x-text="'(' + (pbtResultMovesCount() + pbtResultConflictsCount()) + ')'"></span>
+                </button>
+                <button class="filter-pill" :class="{ 'is-active': pbtResultFilter === 'moves' }" @click="pbtResultFilter = 'moves'">
+                  <span class="filter-symbol" style="color:var(--accent-green)">→</span><span x-text="profileByTagResult.runMode === 'apply' ? 'Moved' : 'Moves'"></span><span class="filter-count" x-text="'(' + pbtResultMovesCount() + ')'"></span>
+                </button>
+                <button class="filter-pill" :class="{ 'is-active': pbtResultFilter === 'conflicts' }" @click="pbtResultFilter = 'conflicts'">
+                  <span class="filter-symbol" style="color:var(--accent-orange)">∅</span><span>Conflicts</span><span class="filter-count" x-text="'(' + pbtResultConflictsCount() + ')'"></span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Moves -->
+            <template x-if="(pbtResultFilter === 'all' || pbtResultFilter === 'moves') && pbtResultMovesCount() > 0">
+              <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden;margin-bottom:12px">
+                <template x-for="(m, idx) in profileByTagResult.moves" :key="m.itemId">
+                  <div :style="idx % 2 === 0 ? 'background:var(--bg-page)' : 'background:var(--bg-card)'" style="padding:9px 14px;border-bottom:1px solid var(--bg-muted)">
+                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                      <span style="font-weight:600;font-size:14px;color:var(--text-primary)" x-text="m.title + (m.year ? ' (' + m.year + ')' : '')"></span>
+                      <span style="font-size:12px;color:var(--text-secondary)"><code x-text="m.fromProfile"></code> <span style="color:var(--text-muted-secondary)">→</span> <code class="v-add" x-text="m.toProfile"></code></span>
+                      <span style="font-size:11px;color:var(--text-muted)">matched: <span x-text="m.matchedRule"></span></span>
+                      <div style="flex:1"></div>
+                      <template x-if="m.applied"><span class="v-add" style="font-size:11px;font-weight:600">Applied</span></template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- Conflicts -->
+            <template x-if="(pbtResultFilter === 'all' || pbtResultFilter === 'conflicts') && pbtResultConflictsCount() > 0">
+              <div style="margin-bottom:12px">
+                <div style="font-size:12px;font-weight:600;color:var(--accent-orange);margin-bottom:6px">Conflicts — skipped because rules disagree on the profile</div>
+                <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+                  <template x-for="(c, idx) in profileByTagResult.conflicts" :key="c.itemId">
+                    <div :style="idx % 2 === 0 ? 'background:var(--bg-page)' : 'background:var(--bg-card)'" style="padding:9px 14px;border-bottom:1px solid var(--bg-muted);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                      <span style="font-weight:600;font-size:14px;color:var(--text-primary)" x-text="c.title + (c.year ? ' (' + c.year + ')' : '')"></span>
+                      <span style="font-size:12px;color:var(--text-secondary)" x-text="'candidate profiles: ' + (c.candidates || []).join(', ')"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+
+            <!-- Nothing matched -->
+            <template x-if="pbtResultMovesCount() === 0 && pbtResultConflictsCount() === 0">
+              <div style="font-size:13px;color:var(--text-secondary);padding:6px 2px">No items needed a change — nothing matched your rules, or matching items are already on the target profile.</div>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
   <div class="modal-overlay" x-show="tagRgWizard.open" x-cloak @keydown.escape.window="if (tagRgWizard.open) closeTagRgWizard()">
     <div class="modal" style="width:680px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0">
       <!-- Header — pinned. -->

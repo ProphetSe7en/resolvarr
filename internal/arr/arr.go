@@ -294,7 +294,11 @@ type Item struct {
 	// the titles differ (localised Plex title vs Arr title).
 	Path      string     `json:"path,omitempty"`
 	Tags      []int      `json:"tags"`
-	MovieFile *MovieFile `json:"movieFile,omitempty"`
+	// QualityProfileID is the quality profile the item is assigned to. Both
+	// /api/v3/movie and /api/v3/series report it. Used by the Profile-by-tag
+	// feature to detect whether a move is needed and to skip no-ops.
+	QualityProfileID int       `json:"qualityProfileId,omitempty"`
+	MovieFile        *MovieFile `json:"movieFile,omitempty"`
 	// Sonarr-only — series statistics. Used by M-Sonarr Audio/Video
 	// scan handlers to skip series with episodeFileCount==0 before
 	// firing the per-series /api/v3/episodefile call (saves N requests
@@ -617,6 +621,70 @@ func (c *Client) EditorApplyTags(ctx context.Context, arrType string, itemIDs []
 		idField:     itemIDs,
 		"tags":      tagIDs,
 		"applyTags": action,
+	}
+	resp, err := c.do(ctx, "PUT", path, body)
+	if err != nil {
+		return err
+	}
+	return unwrap(resp)
+}
+
+// QualityProfile is the subset of /api/v3/qualityprofile we need: the id to
+// assign and the name to show in the picker / result. Radarr and Sonarr both
+// expose this endpoint with the same {id, name} shape.
+type QualityProfile struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// ListQualityProfiles fetches the instance's quality profiles. arrType must be
+// "radarr" or "sonarr" (both use /api/v3/qualityprofile). Used by Profile-by-tag
+// to populate the profile picker and to render id -> name in results.
+func (c *Client) ListQualityProfiles(ctx context.Context, arrType string) ([]QualityProfile, error) {
+	switch arrType {
+	case "radarr", "sonarr":
+	default:
+		return nil, fmt.Errorf("unknown arr type: %s", arrType)
+	}
+	resp, err := c.do(ctx, "GET", "/api/v3/qualityprofile", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var profiles []QualityProfile
+	if err := json.NewDecoder(resp.Body).Decode(&profiles); err != nil {
+		return nil, fmt.Errorf("parse quality profiles: %w", err)
+	}
+	return profiles, nil
+}
+
+// EditorApplyProfile calls /api/v3/{movie|series}/editor to set qualityProfileId
+// on a batch of items. arrType must be "radarr" or "sonarr"; itemIDs are movie
+// or series IDs. Used by Profile-by-tag to move matched items to a profile.
+func (c *Client) EditorApplyProfile(ctx context.Context, arrType string, itemIDs []int, profileID int) error {
+	if len(itemIDs) == 0 {
+		return nil
+	}
+	if profileID <= 0 {
+		return fmt.Errorf("profileID must be positive, got %d", profileID)
+	}
+	var path, idField string
+	switch arrType {
+	case "radarr":
+		path = "/api/v3/movie/editor"
+		idField = "movieIds"
+	case "sonarr":
+		path = "/api/v3/series/editor"
+		idField = "seriesIds"
+	default:
+		return fmt.Errorf("unknown arr type: %s", arrType)
+	}
+	body := map[string]any{
+		idField:            itemIDs,
+		"qualityProfileId": profileID,
 	}
 	resp, err := c.do(ctx, "PUT", path, body)
 	if err != nil {

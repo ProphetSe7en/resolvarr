@@ -83,7 +83,27 @@ function appState() {
       generatedLoggingEnabled: false,
       requireSignature: false,  // strict-mode toggle on Summary step (Phase 2 Slice B)
     },
-    scanSection: 'run',           // 'run' | 'groups' | 'filters' | 'recover' | 'audio' | 'video' | 'dvdetail' | 'history'
+    scanSection: 'run',           // 'run' | 'groups' | 'filters' | 'recover' | 'audio' | 'video' | 'dvdetail' | 'profile-by-tag' | 'history'
+
+    // Profile by tag — one-off Library scan (Radarr + Sonarr). Moves items to a
+    // quality profile based on their Arr tags, via AND/OR rules. Opens its own
+    // modal wizard (like Tag quality releases); the result pops a result modal.
+    // 3-step wizard: instance+mode -> rules -> review. Nothing persisted.
+    profileByTagWizard: {
+      open: false,
+      step: 0,                  // 0 instance+mode, 1 rules, 2 review
+      instanceId: '',
+      runMode: 'preview',       // 'preview' | 'apply'
+      // rules: [{ conditions: [{ type:'tag', value:'<tagId>', join:'and'|'or' }], profileId: <int> }]
+      rules: [],
+      tags: [],                 // [{id,label,usageCount}] from the picked instance
+      profiles: [],             // [{id,name}] from the picked instance
+      pickersLoading: false,
+      pickersError: '',
+      busy: false,              // a run is in flight
+    },
+    profileByTagResult: null,   // profileByTagRun from the last preview/apply -> result modal
+    pbtResultFilter: 'all',     // 'all' | 'moves' | 'conflicts'
     // Library scan App-type pill — same pattern as Tag inventory. Picks
     // which Arr type the page operates on; instance dropdown is filtered
     // to that type, sub-tabs hide the ones that don't apply (Sonarr
