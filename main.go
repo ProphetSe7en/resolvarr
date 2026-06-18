@@ -5,9 +5,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"fmt"
+	htmltemplate "html/template"
 	"io"
 	"io/fs"
 	"log"
@@ -15,7 +17,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -142,15 +143,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("static embed: %v", err)
 	}
-	// Process <!--#include "path"--> markers in index.html so duplicated
-	// markup blocks (e.g. the Recover result panel that's rendered on
-	// the Run mode + Release Groups sub-tabs) live in a single
-	// partials/ file. Substitution runs once at startup; the result is
-	// cached and served directly. partials/ stays under static/ so the
-	// /partials/<name>.html URLs are still reachable for debugging.
-	indexBytes, indexErr := readProcessedIndex(staticFS)
+	// Render index.html via html/template: `{{template "name.html" .}}` pulls in
+	// partials/name.html so duplicated markup (e.g. the result panels) lives in a
+	// single partials/ file. Runs once at startup; the result is cached and served
+	// directly. partials/ stays under static/ so /partials/<name>.html URLs remain
+	// reachable for debugging.
+	indexBytes, indexErr := renderIndex(staticFS, indexData{Version: Version})
 	if indexErr != nil {
-		log.Fatalf("process index.html includes: %v", indexErr)
+		log.Fatalf("render index.html template: %v", indexErr)
 	}
 	mux.Handle("GET /", indexHandler(indexBytes, http.FileServer(http.FS(staticFS))))
 
@@ -260,38 +260,31 @@ func logStartupEnv() {
 		show("TRUSTED_PROXIES"), show("TRUSTED_NETWORKS"), show("TZ"))
 }
 
-// includeRE matches `<!--#include "path"-->` markers in index.html.
-// Path is relative to the static FS root (i.e. "partials/foo.html"
-// resolves to "ui/static/partials/foo.html" before fs.Sub stripped the
-// prefix). Whitespace inside the marker is tolerated so the source HTML
-// stays readable.
-var includeRE = regexp.MustCompile(`(?s)<!--\s*#include\s+"([^"]+)"\s*-->`)
+// indexData is the context passed to the page templates. The current UI fetches
+// Version via the API, so these are not yet referenced in the HTML — they are
+// threaded now so lifting clonarr v3's {{template}} shell partials (which take
+// Version / BasePath) is a drop-in later.
+type indexData struct {
+	Version  string
+	BasePath string
+}
 
-// readProcessedIndex reads ui/static/index.html, recursively substitutes
-// every <!--#include "path"--> marker with the contents of that path
-// from the same FS, and returns the processed bytes. Recursion is
-// shallow (one round-trip) — partials don't include other partials.
-// A missing partial logs and leaves the marker in place so the rest of
-// the page still renders.
-func readProcessedIndex(staticFS fs.FS) ([]byte, error) {
-	raw, err := fs.ReadFile(staticFS, "index.html")
+// renderIndex parses index.html + every partials/*.html as a Go html/template
+// set and executes the index once at startup. `{{template "name.html" .}}` in
+// index.html pulls in partials/name.html. This replaces the older
+// <!--#include "path"--> string substitution; moving to html/template lets us
+// lift clonarr v3's {{template}} shell partials directly and pass a typed
+// context. The processed bytes are cached and served exactly as before.
+func renderIndex(staticFS fs.FS, data indexData) ([]byte, error) {
+	tmpl, err := htmltemplate.New("index.html").ParseFS(staticFS, "index.html", "partials/*.html")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse index templates: %w", err)
 	}
-	processed := includeRE.ReplaceAllFunc(raw, func(match []byte) []byte {
-		m := includeRE.FindSubmatch(match)
-		if m == nil {
-			return match
-		}
-		path := string(m[1])
-		partial, perr := fs.ReadFile(staticFS, path)
-		if perr != nil {
-			log.Printf("warning: include not found: %s (%v) — leaving marker in place", path, perr)
-			return match
-		}
-		return partial
-	})
-	return processed, nil
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "index.html", data); err != nil {
+		return nil, fmt.Errorf("execute index template: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // indexHandler serves the processed index.html for "/" and "/index.html"

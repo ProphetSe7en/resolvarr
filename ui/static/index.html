@@ -2533,7 +2533,7 @@
         <button class="btn btn-sm" @click="dismissRecoverResults()">Close</button>
       </div>
       <div style="flex:1 1 auto;overflow-y:auto;padding:16px 22px">
-        <!--#include "partials/recover-result-panel.html"-->
+        {{template "recover-result-panel.html" .}}
       </div>
     </div>
   </div>
@@ -2554,7 +2554,7 @@
         <button class="btn btn-sm" @click="dismissTagResults()">Close</button>
       </div>
       <div style="flex:1 1 auto;overflow-y:auto;padding:16px 22px">
-        <!--#include "partials/tag-result-panel.html"-->
+        {{template "tag-result-panel.html" .}}
       </div>
     </div>
   </div>
@@ -2574,7 +2574,7 @@
         <button class="btn btn-sm" @click="dismissCleanupResults()">Close</button>
       </div>
       <div style="flex:1 1 auto;overflow-y:auto;padding:16px 22px">
-        <!--#include "partials/cleanup-result-panel.html"-->
+        {{template "cleanup-result-panel.html" .}}
       </div>
     </div>
   </div>
