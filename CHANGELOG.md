@@ -2,6 +2,16 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.57-dev — Profile switcher: exclude tags with NOT, second-run fix (2026-06-18)
+
+### Added
+
+- **Profile switcher: exclude a tag with NOT.** Each tag in a rule now has an is/NOT toggle, so a rule can require that an item does NOT have a tag, for example `anime AND NOT remux`. Combined with AND/OR this gives AND NOT and OR NOT.
+
+### Fixed
+
+- **Profile switcher reused the previous run's tag.** On a second run the tag and profile pickers looked empty, but the rule still held the values from the first run and ran with them. The pickers now show the tag and profile that are actually selected.
+
 ## v0.6.56-dev — Profile switcher: auto-switch a quality profile by tags (2026-06-17)
 
 ### Added

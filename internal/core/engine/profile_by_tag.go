@@ -24,6 +24,10 @@ type ProfileCondition struct {
 	Type  string `json:"type"`
 	Value string `json:"value"`
 	Join  string `json:"join,omitempty"`
+	// Not negates the condition: when true, the condition matches an item that
+	// does NOT satisfy it (e.g. "does not have tag X"). Combined with Join this
+	// gives AND NOT / OR NOT. An invalid condition never matches, negated or not.
+	Not bool `json:"not,omitempty"`
 }
 
 // ProfileRule is a set of conditions plus the target quality profile to assign
@@ -77,9 +81,13 @@ func matchProfileCondition(item ProfileItem, c ProfileCondition) bool {
 	case "tag":
 		id, err := strconv.Atoi(strings.TrimSpace(c.Value))
 		if err != nil || id <= 0 {
-			return false
+			return false // invalid condition never matches, even negated
 		}
-		return itemHasTag(item, id)
+		has := itemHasTag(item, id)
+		if c.Not {
+			return !has
+		}
+		return has
 	}
 	return false
 }

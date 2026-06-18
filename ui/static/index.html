@@ -3619,7 +3619,7 @@
           <div style="margin-top:16px;max-width:720px;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 16px">
             <div style="font-size:13px;font-weight:600;color:var(--text-body);margin-bottom:8px">How it works</div>
             <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--text-secondary);line-height:1.7">
-              <li>You build rules: pick one or more tags (combine with <strong>AND / OR</strong>) and the quality profile that matching items should use.</li>
+              <li>You build rules: pick one or more tags (combine with <strong>AND / OR</strong>, and use <strong>NOT</strong> to exclude a tag) and the quality profile that matching items should use.</li>
               <li>resolvarr scans the library. For each item, if its tags match a rule, it switches that item to the rule's profile.</li>
               <li><strong>Preview</strong> shows every switch first (from → to, and which rule matched). <strong>Apply</strong> writes the changes.</li>
               <li>If an item's tags match two rules pointing to <strong>different</strong> profiles, it's flagged as a <strong>conflict</strong> and left unchanged.</li>
@@ -3870,7 +3870,7 @@
                   <button class="btn btn-sm btn-danger" @click="pbtRemoveRule(ri)" title="Remove this rule">Remove</button>
                 </div>
                 <label class="label">When the item has these tags
-                  <span style="font-weight:400;color:var(--text-secondary)" x-show="rule.conditions.length > 1">· click AND/OR to mix (AND binds first)</span>
+                  <span style="font-weight:400;color:var(--text-secondary)">· use <strong>is/NOT</strong> to require or exclude a tag<span x-show="rule.conditions.length > 1">, and AND/OR to mix (AND binds first)</span></span>
                 </label>
                 <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
                   <template x-for="(c, ci) in rule.conditions" :key="ci">
@@ -3878,28 +3878,33 @@
                       <template x-if="ci === 0"><span style="font-size:11px;color:var(--text-muted);width:46px;text-align:center">Tag</span></template>
                       <template x-if="ci > 0">
                         <button type="button" @click="pbtToggleJoin(ri, ci)"
-                          :style="c.join === 'or' ? 'background:var(--bg-muted);color:var(--accent-blue);border:1px solid var(--accent-blue)' : 'background:var(--bg-card);color:var(--text-secondary);border:1px solid var(--border-subtle)'"
+                          :style="c.join === 'or' ? { background:'var(--bg-muted)', color:'var(--accent-blue)', border:'1px solid var(--accent-blue)' } : { background:'var(--bg-card)', color:'var(--text-secondary)', border:'1px solid var(--border-subtle)' }"
                           style="width:46px;border-radius:4px;font-size:11px;font-weight:600;padding:3px 0;cursor:pointer"
                           :title="c.join === 'or' ? 'OR — click to switch to AND' : 'AND — click to switch to OR'"
                           x-text="c.join === 'or' ? 'OR' : 'AND'"></button>
                       </template>
-                      <select class="input" style="flex:1" x-model="c.value">
-                        <option value="">— choose tag —</option>
+                      <button type="button" @click="pbtToggleNot(ri, ci)"
+                        :style="c.not ? { background:'var(--bg-muted)', color:'var(--accent-red)', border:'1px solid var(--accent-red)' } : { background:'var(--bg-card)', color:'var(--text-secondary)', border:'1px solid var(--border-subtle)' }"
+                        style="width:46px;border-radius:4px;font-size:11px;font-weight:600;padding:3px 0;cursor:pointer"
+                        :title="c.not ? 'NOT: the item must not have this tag (click to clear)' : 'Click to require the item does not have this tag'"
+                        x-text="c.not ? 'NOT' : 'is'"></button>
+                      <select class="input" style="flex:1" @change="c.value = $event.target.value">
+                        <option value="" :selected="!c.value">— choose tag —</option>
                         <template x-for="t in profileByTagWizard.tags" :key="t.id">
-                          <option :value="String(t.id)" x-text="t.label + ' (' + (t.usageCount || 0) + ')'"></option>
+                          <option :value="String(t.id)" :selected="String(t.id) === c.value" x-text="t.label + ' (' + (t.usageCount || 0) + ')'"></option>
                         </template>
                       </select>
                       <button class="btn btn-sm" @click="pbtRemoveCondition(ri, ci)" :disabled="rule.conditions.length <= 1" title="Remove this tag">×</button>
                     </div>
                   </template>
                 </div>
-                <button class="btn btn-sm" @click="pbtAddCondition(ri)">+ Add tag (AND/OR)</button>
+                <button class="btn btn-sm" @click="pbtAddCondition(ri)">+ Add tag (AND/OR/NOT)</button>
                 <div class="form-group" style="margin-top:12px;margin-bottom:0">
                   <label class="label">Move matching items to profile</label>
-                  <select class="input" style="max-width:320px" x-model.number="rule.profileId">
-                    <option :value="0">— choose profile —</option>
+                  <select class="input" style="max-width:320px" @change="rule.profileId = parseInt($event.target.value, 10) || 0">
+                    <option value="0" :selected="!rule.profileId">— choose profile —</option>
                     <template x-for="pf in profileByTagWizard.profiles" :key="pf.id">
-                      <option :value="pf.id" x-text="pf.name"></option>
+                      <option :value="pf.id" :selected="pf.id === rule.profileId" x-text="pf.name"></option>
                     </template>
                   </select>
                 </div>

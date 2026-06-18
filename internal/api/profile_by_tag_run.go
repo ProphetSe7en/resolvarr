@@ -228,6 +228,9 @@ func describeProfileRule(rule engine.ProfileRule, tagLabel map[int]string) strin
 				b.WriteString(" AND ")
 			}
 		}
+		if c.Not {
+			b.WriteString("NOT ")
+		}
 		label := c.Value
 		if c.Type == "tag" {
 			if id, err := strconv.Atoi(strings.TrimSpace(c.Value)); err == nil {

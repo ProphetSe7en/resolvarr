@@ -133,7 +133,7 @@ Every movie or series that had the old tag keeps the tag — just with the new n
 
 1. Open Library scan and pick the **Profile switcher** tab, then "Configure and run".
 2. **Step 1**: choose the instance and a run mode: Preview (show what would change) or Apply (write the changes).
-3. **Step 2**: build one or more rules. Each rule is a set of tags plus the quality profile matching items should use. Combine tags with AND / OR (AND binds first, so "A AND B OR C" means "(A AND B) OR C"). Examples: "anime OR cartoon" goes to the Anime profile; "anime AND uhd" goes to the Anime UHD profile.
+3. **Step 2**: build one or more rules. Each rule is a set of tags plus the quality profile matching items should use. Combine tags with AND / OR (AND binds first, so "A AND B OR C" means "(A AND B) OR C"), and flip a tag to NOT to require that the item does not have it. Examples: "anime OR cartoon" goes to the Anime profile; "anime AND uhd" goes to the Anime UHD profile; "anime AND NOT remux" goes to the Anime profile only when the item is not a remux.
 4. **Step 3**: review your rules, then run.
 5. The result shows every switch (which profile to which, and which rule matched). On a Preview you can hit Apply to write them.
 

@@ -6119,7 +6119,7 @@ function app() {
       return (this.instances || []).filter(i => i.type === this.scanAppType);
     },
     pbtNewRule() {
-      return { conditions: [{ type: 'tag', value: '', join: 'and' }], profileId: 0 };
+      return { conditions: [{ type: 'tag', value: '', join: 'and', not: false }], profileId: 0 };
     },
     openProfileByTagWizard() {
       const p = this.profileByTagWizard;
@@ -6172,7 +6172,11 @@ function app() {
       if (this.profileByTagWizard.rules.length === 0) this.pbtAddRule();
     },
     pbtAddCondition(ruleIdx) {
-      this.profileByTagWizard.rules[ruleIdx].conditions.push({ type: 'tag', value: '', join: 'and' });
+      this.profileByTagWizard.rules[ruleIdx].conditions.push({ type: 'tag', value: '', join: 'and', not: false });
+    },
+    pbtToggleNot(ruleIdx, condIdx) {
+      const c = this.profileByTagWizard.rules[ruleIdx].conditions[condIdx];
+      c.not = !c.not;
     },
     pbtRemoveCondition(ruleIdx, condIdx) {
       const r = this.profileByTagWizard.rules[ruleIdx];
@@ -6204,7 +6208,7 @@ function app() {
     pbtRuleSummary(rule) {
       if (!rule || !rule.conditions) return '';
       const parts = rule.conditions.map((c, i) =>
-        (i > 0 ? (c.join === 'or' ? 'OR ' : 'AND ') : '') + this.pbtTagLabel(c.value));
+        (i > 0 ? (c.join === 'or' ? 'OR ' : 'AND ') : '') + (c.not ? 'NOT ' : '') + this.pbtTagLabel(c.value));
       return parts.join(' ') + ' → ' + this.pbtProfileName(rule.profileId);
     },
     pbtStepValid(step) {
@@ -6235,6 +6239,7 @@ function app() {
               type: 'tag',
               value: String(c.value),
               join: i === 0 ? '' : (c.join === 'or' ? 'or' : 'and'),
+              not: !!c.not,
             })),
           })),
         };

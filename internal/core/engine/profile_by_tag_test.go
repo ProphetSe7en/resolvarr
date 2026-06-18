@@ -125,3 +125,41 @@ func TestPlanProfileMoves_IgnoresInvalidRules(t *testing.T) {
 		t.Fatalf("only the valid rule should apply: moves=%+v conflicts=%+v", moves, conflicts)
 	}
 }
+
+func TestMatchProfileRule_Not(t *testing.T) {
+	// NOT tag 5
+	notRule := ProfileRule{Conditions: []ProfileCondition{{Type: "tag", Value: "5", Not: true}}, ProfileID: 2}
+	if matchProfileRule(ProfileItem{Tags: []int{5}}, notRule) {
+		t.Error("item WITH tag 5 should NOT match 'NOT tag 5'")
+	}
+	if !matchProfileRule(ProfileItem{Tags: []int{9}}, notRule) {
+		t.Error("item without tag 5 should match 'NOT tag 5'")
+	}
+	// tag 5 AND NOT tag 6
+	andNot := ProfileRule{Conditions: []ProfileCondition{
+		{Type: "tag", Value: "5"},
+		{Type: "tag", Value: "6", Join: "and", Not: true},
+	}, ProfileID: 2}
+	if !matchProfileRule(ProfileItem{Tags: []int{5}}, andNot) {
+		t.Error("'5 AND NOT 6': item {5} should match")
+	}
+	if matchProfileRule(ProfileItem{Tags: []int{5, 6}}, andNot) {
+		t.Error("'5 AND NOT 6': item {5,6} should NOT match")
+	}
+	// tag 5 OR NOT tag 6  -> matches unless the item has 6 and not 5
+	orNot := ProfileRule{Conditions: []ProfileCondition{
+		{Type: "tag", Value: "5"},
+		{Type: "tag", Value: "6", Join: "or", Not: true},
+	}, ProfileID: 2}
+	if !matchProfileRule(ProfileItem{Tags: []int{1}}, orNot) {
+		t.Error("'5 OR NOT 6': item {1} (no 6) should match via NOT 6")
+	}
+	if matchProfileRule(ProfileItem{Tags: []int{6}}, orNot) {
+		t.Error("'5 OR NOT 6': item {6} (has 6, no 5) should NOT match")
+	}
+	// invalid negated condition must never match-all
+	bad := ProfileRule{Conditions: []ProfileCondition{{Type: "tag", Value: "notanint", Not: true}}, ProfileID: 2}
+	if matchProfileRule(ProfileItem{Tags: []int{1}}, bad) {
+		t.Error("invalid negated tag must not match everything")
+	}
+}
