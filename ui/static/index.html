@@ -10905,7 +10905,6 @@
        Per-row apply selection uses SelectedHashes on the apply request
        — unchecked rows are skipped server-side. -->
   <div class="modal-overlay" x-show="qbitSeBacklogOpen" x-cloak
-       @click.self="if (!qbitSeBacklogApplying && !qbitSeBacklogLoading) closeQbitSeBacklog()"
        @keydown.escape.window="if (qbitSeBacklogOpen && !qbitSeBacklogApplying && !qbitSeBacklogLoading) closeQbitSeBacklog()">
     <div class="modal" style="width:880px;max-width:96vw;max-height:90vh;overflow-y:auto" x-cloak>
       <template x-if="qbitSeBacklogRule || qbitSeBacklogConfig">
@@ -11010,8 +11009,17 @@
                       </template>
                       <div style="overflow:hidden;min-width:0">
                         <div style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11px;color:var(--text-body);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="item.torrentName" x-text="item.torrentName"></div>
+                        <template x-if="item.fileCount">
+                          <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">
+                            <span x-text="item.fileCount + (item.fileCount === 1 ? ' video file' : ' video files')"></span>
+                            <template x-if="item.totalSizeBytes"><span> &middot; <span x-text="formatBytes(item.totalSizeBytes)"></span></span></template>
+                          </div>
+                        </template>
                         <template x-if="item.skipReason">
                           <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:2px;font-style:italic" x-text="item.skipReason"></div>
+                        </template>
+                        <template x-if="item.reason && !item.skipReason">
+                          <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:2px;font-style:italic" :title="item.reason" x-text="item.reason"></div>
                         </template>
                         <template x-if="(item.currentTags || []).length > 0">
                           <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:2px">tags: <span style="font-family:'SF Mono','Cascadia Mono',Consolas,monospace" x-text="(item.currentTags || []).join(', ')"></span></div>

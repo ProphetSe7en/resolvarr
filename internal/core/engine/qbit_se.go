@@ -66,7 +66,13 @@ var qbitEpisodePatterns = []*regexp.Regexp{
 // qbitSeasonPattern matches season-pack tokens: bare S01 / S12 / etc.
 // or worded "Season 1" / "Season.1". Combined with !epMatched in the
 // caller so a torrent with S01E05 doesn't also count as a season match.
-var qbitSeasonPattern = regexp.MustCompile(`(?i)(?:S\d{1,3}|Season[\s\.]\d{1,3})`)
+//
+// Word boundaries (\b) keep a bare "Sxx" from matching inside an
+// unrelated token — e.g. the "S5" inside an audio tag like "DTS5.1"
+// on a movie release, which previously mis-classified movies as season
+// packs. This aligns the classify pattern with the parse pattern
+// (seasonOnlyRE), which already anchors on \b.
+var qbitSeasonPattern = regexp.MustCompile(`(?i)(?:\bS\d{1,3}\b|\bSeason[\s\.]\d{1,3}\b)`)
 
 // DetermineQbitTag returns the qBit tag to apply for a torrent name,
 // or "" when no rule matches (or all matching rules are disabled).

@@ -52,9 +52,9 @@ import (
 // item" (legacy preview-then-apply-all behaviour). Preview pass
 // ignores this field.
 type qbitSeBacklogScanRequest struct {
-	RuleID          string   `json:"ruleId"`
-	CategoryFilter  string   `json:"categoryFilter,omitempty"`
-	SelectedHashes  []string `json:"selectedHashes,omitempty"`
+	RuleID         string   `json:"ruleId"`
+	CategoryFilter string   `json:"categoryFilter,omitempty"`
+	SelectedHashes []string `json:"selectedHashes,omitempty"`
 }
 
 // qbitSeBacklogPreviewItem is one row in the preview response —
@@ -75,6 +75,9 @@ type qbitSeBacklogPreviewItem struct {
 	ProposedTag    string   `json:"proposedTag,omitempty"`
 	AlreadyTagged  bool     `json:"alreadyTagged"`        // true → apply would no-op
 	SkipReason     string   `json:"skipReason,omitempty"` // populated when ProposedTag is empty
+	Reason         string   `json:"reason,omitempty"`     // why this class was chosen (content-aware "why" column)
+	FileCount      int      `json:"fileCount,omitempty"`  // non-sample video files (episodes/parts), not the raw total
+	TotalSizeBytes int64    `json:"totalSizeBytes,omitempty"`
 }
 
 // qbitSeBacklogPreviewResponse summarises the scan result. Totals
@@ -225,6 +228,12 @@ func (s *Server) runQbitSeScanWithRules(ctx context.Context, cfg core.Config, ru
 		}
 	}
 
+	// Build the Arr import-category map once per scan so each torrent's
+	// qBit category can be resolved to movie/series — the optional booster
+	// over the name+files floor. Empty sets (no Arr / fetch error) just
+	// mean the floor decides everything.
+	movieCats, seriesCats := s.buildArrCategorySets(ctx, cfg)
+
 	preview := qbitSeBacklogPreviewResponse{}
 	var applyItems []qbitSeBacklogPreviewItem
 	var errs []string
@@ -251,11 +260,33 @@ func (s *Server) runQbitSeScanWithRules(ctx context.Context, cfg core.Config, ru
 			item.ParsedEpisodes = eps
 		}
 
-		// Classify via engine — single-tag winner per Episode → Season
-		// → Unmatched first-match-wins.
-		proposed := engine.DetermineQbitTag(t.Name, cfgView)
+		// Content-aware classification: reconcile the name verdict with
+		// the torrent's actual file list (non-sample video-file count +
+		// per-file episode markers) so single episodes with absolute
+		// numbering, movies, and S/E-less packs classify correctly. One
+		// ListTorrentFiles call per torrent — local qBit, and the
+		// category filter above bounds N. On a fetch error, fall back to
+		// name-only via a nil file list (ClassifyTorrentType handles it).
+		var fileViews []engine.TorrentFileView
+		if files, ferr := client.ListTorrentFiles(ctx, t.Hash); ferr == nil {
+			fileViews = make([]engine.TorrentFileView, 0, len(files))
+			for _, f := range files {
+				item.TotalSizeBytes += f.Size
+				fileViews = append(fileViews, engine.TorrentFileView{Name: f.Name, Size: f.Size})
+			}
+		}
+		hint := categoryHint(t.Category, movieCats, seriesCats)
+		res := engine.ClassifyTorrentTypeWithHint(t.Name, fileViews, hint)
+		item.Reason = res.Reason
+		// Display the meaningful video-file count (episodes/parts), not the
+		// raw total — which would include subtitles / .nfo / samples.
+		item.FileCount = res.VideoFiles
+
+		// Map the content class to the rule's configured tag, honouring
+		// each class's enable toggle + custom name.
+		proposed := engine.DetermineQbitTagFromClass(res.Class, cfgView)
 		if proposed == "" {
-			item.SkipReason = "no rule matched (every classifier disabled, or matching rule is disabled)"
+			item.SkipReason = res.Reason + ", and that classifier's tag rule is turned off"
 			preview.TotalSkipped++
 			preview.Items = append(preview.Items, item)
 			continue
@@ -317,6 +348,66 @@ func (s *Server) runQbitSeScanWithRules(ctx context.Context, cfg core.Config, ru
 		Failed:  failed,
 		Errors:  errs,
 	}, nil
+}
+
+// buildArrCategorySets aggregates the qBit categories each Arr assigns
+// (pre- and post-import) into movie/series lookup sets, so a torrent's
+// qBit category can be resolved to movie/series WITHOUT hardcoding names
+// (every user names categories differently). Derived from the Arr
+// download-client config — the same data the qBit Category Fix feature
+// reads — and cached per instance via ArrDLCache. Best effort: an Arr
+// that errors is skipped (its categories simply won't boost). Sets are
+// lowercased for case-insensitive matching.
+func (s *Server) buildArrCategorySets(ctx context.Context, cfg core.Config) (movie, series map[string]bool) {
+	movie = map[string]bool{}
+	series = map[string]bool{}
+	for i := range cfg.Instances {
+		inst := &cfg.Instances[i]
+		if inst.Type != "radarr" && inst.Type != "sonarr" {
+			continue
+		}
+		clients, err := s.ArrDLCache().Get(ctx, inst, s.arrClientFor(inst))
+		if err != nil {
+			continue
+		}
+		target := series
+		if inst.Type == "radarr" {
+			target = movie
+		}
+		for j := range clients {
+			if !strings.Contains(strings.ToLower(clients[j].Implementation), "qbittorrent") {
+				continue
+			}
+			for _, c := range []string{
+				clients[j].QbitPreImportCategory(inst.Type),
+				clients[j].QbitPostImportCategory(inst.Type),
+			} {
+				if c = strings.ToLower(strings.TrimSpace(c)); c != "" {
+					target[c] = true
+				}
+			}
+		}
+	}
+	return movie, series
+}
+
+// categoryHint resolves a torrent's qBit category to a movie/series hint
+// using the Arr-derived sets. Unknown category, or a collision (the same
+// name in both sets), returns HintUnknown so the name+files floor decides.
+func categoryHint(cat string, movie, series map[string]bool) engine.ContentHint {
+	c := strings.ToLower(strings.TrimSpace(cat))
+	if c == "" {
+		return engine.HintUnknown
+	}
+	inMovie, inSeries := movie[c], series[c]
+	switch {
+	case inMovie && !inSeries:
+		return engine.HintMovie
+	case inSeries && !inMovie:
+		return engine.HintSeries
+	default:
+		return engine.HintUnknown
+	}
 }
 
 // validateQbitSeConfig validates + canonicalises a QbitSe criteria

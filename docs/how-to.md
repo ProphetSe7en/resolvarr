@@ -144,6 +144,23 @@ Every movie or series that had the old tag keeps the tag — just with the new n
 
 ---
 
+## qBittorrent Season/Episode tagging
+
+**What it does:** tags each qBittorrent download as Season, Episode, or leaves it untagged, so you can sort or filter your TV downloads in qBittorrent.
+
+**Why:** the tag tells you at a glance whether a download is a single episode or a full season pack, without opening it.
+
+**How it decides:** instead of guessing only from the release name, resolvarr looks at the download's actual contents:
+
+- A download with several episode files is a **Season** pack.
+- A download with one video file is an **Episode** (this also catches single episodes whose name only has an absolute number, like `Show - 10`, which a name-only check would miss).
+- Subtitles, `.nfo` files, and sample clips are not counted, so a 24-episode pack reads as 24 video files, not 48.
+- If your Radarr/Sonarr instances are set up, resolvarr also reads the categories they assign in qBittorrent to tell a movie from a series, so a movie is never tagged as a season.
+
+**Where it runs:** a one-off or scheduled Library scan, the Sonarr grab, and qBittorrent's own "run on add" hook (which also covers cross-seed and manual downloads). The backlog scan's preview shows the video-file count, total size, and a short reason for each decision.
+
+---
+
 ## Coming later
 
 These sections will be added as the feature ships:

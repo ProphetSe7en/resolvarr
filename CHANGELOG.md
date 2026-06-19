@@ -2,6 +2,14 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.58-dev — Season vs episode tagging now reads the torrent's contents (2026-06-19)
+
+### Improved
+
+- **Season and episode tags are now decided from the torrent's actual files, not just the release name.** A single episode with absolute numbering (common for anime, like `Show - 10`) is tagged Episode instead of being skipped or mistaken for a season. A pack whose name has no `S01` / `S01E01` token is tagged Season when it actually contains multiple episode files. And a movie is no longer mistaken for a season pack (an audio tag like `DTS5.1` used to read as "S5"). This applies everywhere the tag is set: the backlog scan, one-off and scheduled runs, the qBittorrent on-add hook, and the Sonarr grab.
+- **Optional: use your Radarr/Sonarr categories to tell movies from series.** When your Arr instances are configured, resolvarr reads the categories they assign in qBittorrent to confirm whether a download is a movie or a series, for more accurate tagging. Cross-seed and manual downloads still classify from the file contents alone.
+- **The scan preview now shows each torrent's video-file count and total size,** plus a short plain-language reason for each decision (for example "single video file, so a single episode"). The result no longer closes if you click outside it; use Close or Escape.
+
 ## v0.6.57-dev — Profile switcher: exclude tags with NOT, second-run fix (2026-06-18)
 
 ### Added

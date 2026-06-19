@@ -77,15 +77,16 @@ func (s *Server) dispatchQbitSeTag(
 
 	// Source torrent name for classification — release.releaseTitle is
 	// the indexer-provided release title that qBit also uses as the
-	// torrent display name post-grab. The classifier doesn't need
-	// episodes[] structured data; the patterns are name-based by design
-	// (Python reference behaviour).
+	// torrent display name post-grab. Classification reconciles this name
+	// with the qBit file list below (content-aware, same as the on-add
+	// hook + backlog scan); episodes[] isn't used because the file count
+	// distinguishes a season pack from a multi-episode file, which the
+	// per-grab episode list can't.
 	torrentName := strings.TrimSpace(payload.Release.ReleaseTitle)
 	if torrentName == "" {
 		return functionResult{Function: core.WebhookFnQbitSeTag, OK: true, Summary: "skipped (no release.releaseTitle on event payload)"}
 	}
 
-	// Classify via engine — single tag winner per first-match-wins.
 	view := engine.QbitSeRulesView{
 		EpisodeEnabled:   rules.EpisodeEnabled,
 		EpisodeTag:       rules.EpisodeTag,
@@ -93,13 +94,6 @@ func (s *Server) dispatchQbitSeTag(
 		SeasonTag:        rules.SeasonTag,
 		UnmatchedEnabled: rules.UnmatchedEnabled,
 		UnmatchedTag:     rules.UnmatchedTag,
-	}
-	tag := engine.DetermineQbitTag(torrentName, view)
-	if tag == "" {
-		return functionResult{
-			Function: core.WebhookFnQbitSeTag, OK: true,
-			Summary: "skipped (no rule matched — toggle Episode / Season / Unmatched)",
-		}
 	}
 
 	// Resolve qBit instance + client.
@@ -120,11 +114,39 @@ func (s *Server) dispatchQbitSeTag(
 		return functionResult{Function: core.WebhookFnQbitSeTag, OK: false, Summary: "qbit client init", Err: err}
 	}
 
-	// Wait for the torrent to appear in qBit (retry-with-backoff —
-	// reuse the same helper Grab Rename uses).
-	torrent, found, err := waitForTorrent(ctx, client, hash)
-	if err != nil {
-		return functionResult{Function: core.WebhookFnQbitSeTag, OK: false, Summary: "qbit GetTorrent", Err: err}
+	// Wait for the torrent to appear in qBit (retry-with-backoff — reuse
+	// the same helper Grab Rename uses). A wait error is NOT surfaced yet:
+	// a no-tag torrent should skip cleanly even when qBit is unreachable,
+	// so the error is only reported below once we know there's a tag.
+	torrent, found, waitErr := waitForTorrent(ctx, client, hash)
+
+	// Content-aware classification. This is a Sonarr Grab, so the torrent
+	// is definitively a series (HintSeries — rules out movie, unlocks the
+	// single-file episode promotion). Reconcile against the qBit file list
+	// so it agrees with the on-add hook + backlog scan (same classifier).
+	// The file list may not be ready yet at grab time (e.g. a magnet whose
+	// metadata hasn't resolved), or unavailable if the wait failed — then
+	// it falls back to name-only.
+	var fileViews []engine.TorrentFileView
+	if found {
+		if files, ferr := client.ListTorrentFiles(ctx, hash); ferr == nil {
+			fileViews = make([]engine.TorrentFileView, 0, len(files))
+			for _, f := range files {
+				fileViews = append(fileViews, engine.TorrentFileView{Name: f.Name, Size: f.Size})
+			}
+		}
+	}
+	res := engine.ClassifyTorrentTypeWithHint(torrentName, fileViews, engine.HintSeries)
+	tag := engine.DetermineQbitTagFromClass(res.Class, view)
+	if tag == "" {
+		return functionResult{
+			Function: core.WebhookFnQbitSeTag, OK: true,
+			Summary: "skipped (no rule matched — toggle Episode / Season / Unmatched)",
+		}
+	}
+	// There is a tag to apply — now surface any qBit reachability problem.
+	if waitErr != nil {
+		return functionResult{Function: core.WebhookFnQbitSeTag, OK: false, Summary: "qbit GetTorrent", Err: waitErr}
 	}
 	if !found {
 		return functionResult{
