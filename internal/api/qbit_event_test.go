@@ -429,7 +429,7 @@ func TestEagerApplyQbitSeTag_Classifies(t *testing.T) {
 	}
 
 	ev := qbitAddEvent{InfoHash: "abc", Name: "Charmed.S07.WEB-DL"}
-	s.eagerApplyQbitSeTag(context.Background(), qi, rule, &ev)
+	s.eagerApplyQbitSeTag(context.Background(), qi, rule, &ev, nil, nil)
 	if !ev.Matched {
 		t.Errorf("Matched = false, want true for S07 with SeasonEnabled")
 	}
@@ -462,7 +462,7 @@ func TestEagerApplyQbitSeTag_NoBranchMatch(t *testing.T) {
 	}
 
 	ev := qbitAddEvent{InfoHash: "abc", Name: "Charmed.S07.WEB-DL"}
-	s.eagerApplyQbitSeTag(context.Background(), qi, rule, &ev)
+	s.eagerApplyQbitSeTag(context.Background(), qi, rule, &ev, nil, nil)
 	if ev.Matched {
 		t.Errorf("Matched = true, want false when no branch enabled")
 	}
@@ -471,6 +471,51 @@ func TestEagerApplyQbitSeTag_NoBranchMatch(t *testing.T) {
 	}
 	if ev.ApplyErrMsg != "" {
 		t.Errorf("ApplyErrMsg = %q, want empty when no apply attempt", ev.ApplyErrMsg)
+	}
+}
+
+// TestEagerApplyQbitSeTag_InitFailureInvariant — the client is now built
+// before classification (to fetch the file list), so guard the invariant
+// "an unmatched event never carries an error": a tag-producing torrent
+// surfaces a client-init failure (Matched true), but a no-tag torrent
+// stays Matched=false with NO ApplyErrMsg even when init failed.
+func TestEagerApplyQbitSeTag_InitFailureInvariant(t *testing.T) {
+	s, _, instID, _ := newQbitEventTestServer(t)
+	cfg := s.App.Config.Get()
+	qi := findQbitInstanceByID(cfg, instID)
+	qi.URL = "" // empty URL → qbit.New fails
+
+	// (a) tag produced → init error surfaced, Matched true.
+	season := &core.WebhookRule{
+		ID: "r", Enabled: true,
+		Functions: []core.WebhookFunction{core.WebhookFnQbitSeTag},
+		QbitSe: &core.QbitSeRules{
+			QbitInstanceID: instID,
+			SeasonEnabled:  true, SeasonTag: "Season",
+		},
+	}
+	ev := qbitAddEvent{InfoHash: "abc", Name: "Charmed.S07.WEB-DL"}
+	s.eagerApplyQbitSeTag(context.Background(), qi, season, &ev, nil, nil)
+	if !ev.Matched || ev.AppliedTag != "Season" {
+		t.Errorf("tag case: Matched=%v AppliedTag=%q, want true/Season", ev.Matched, ev.AppliedTag)
+	}
+	if !strings.Contains(ev.ApplyErrMsg, "client init") {
+		t.Errorf("tag case: ApplyErrMsg=%q, want a client-init error", ev.ApplyErrMsg)
+	}
+
+	// (b) no tag (all branches disabled) → no error, Matched false.
+	disabled := &core.WebhookRule{
+		ID: "r2", Enabled: true,
+		Functions: []core.WebhookFunction{core.WebhookFnQbitSeTag},
+		QbitSe:    &core.QbitSeRules{QbitInstanceID: instID},
+	}
+	ev2 := qbitAddEvent{InfoHash: "abc", Name: "Charmed.S07.WEB-DL"}
+	s.eagerApplyQbitSeTag(context.Background(), qi, disabled, &ev2, nil, nil)
+	if ev2.Matched {
+		t.Errorf("no-tag case: Matched=true, want false")
+	}
+	if ev2.ApplyErrMsg != "" {
+		t.Errorf("no-tag case: ApplyErrMsg=%q, want empty (invariant)", ev2.ApplyErrMsg)
 	}
 }
 

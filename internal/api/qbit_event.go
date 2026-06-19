@@ -131,6 +131,17 @@ func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) 
 	// qBit doesn't reattempt on autorun-curl failure anyway.
 	receivedAt := time.Now().UTC()
 
+	// Arr import-category map (cached) for the movie/series booster — built
+	// once per add, only when a rule will actually use it. Bounded so a
+	// slow Arr can't hold the autorun-curl response open; on timeout/error
+	// the sets are nil and classification uses the name+files floor.
+	var movieCats, seriesCats map[string]bool
+	if len(matchingRules) > 0 {
+		catCtx, catCancel := context.WithTimeout(r.Context(), 5*time.Second)
+		movieCats, seriesCats = s.buildArrCategorySets(catCtx, cfg)
+		catCancel()
+	}
+
 	buf := s.QbitEventBuffer()
 	enqueued := 0
 	matchedAny := false
@@ -145,7 +156,7 @@ func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) 
 			Category: category,
 			Received: receivedAt,
 		}
-		s.eagerApplyQbitSeTag(r.Context(), qbitInst, &rule, &ev)
+		s.eagerApplyQbitSeTag(r.Context(), qbitInst, &rule, &ev, movieCats, seriesCats)
 		if ev.Matched {
 			matchedAny = true
 		}
@@ -191,6 +202,7 @@ func (s *Server) eagerApplyQbitSeTag(
 	qbitInst *core.QbitInstance,
 	rule *core.WebhookRule,
 	ev *qbitAddEvent,
+	movieCats, seriesCats map[string]bool,
 ) {
 	if rule == nil || rule.QbitSe == nil || qbitInst == nil {
 		return
@@ -203,29 +215,52 @@ func (s *Server) eagerApplyQbitSeTag(
 		UnmatchedEnabled: rule.QbitSe.UnmatchedEnabled,
 		UnmatchedTag:     rule.QbitSe.UnmatchedTag,
 	}
-	tag := engine.DetermineQbitTag(ev.Name, view)
-	if tag == "" {
-		return
-	}
-	ev.AppliedTag = tag
-	ev.Matched = true
 
-	client, err := qbit.New(qbit.Config{
+	client, initErr := qbit.New(qbit.Config{
 		URL:          qbitInst.URL,
 		Username:     qbitInst.Username,
 		Password:     qbitInst.Password,
 		TrustedCerts: qbitInst.TrustedCerts,
 	})
-	if err != nil {
-		ev.ApplyErrMsg = "qbit client init: " + err.Error()
+
+	// Cap the qBit roundtrips (file-list fetch + AddTags) so a slow
+	// tracker-side qBit can't hold the autorun-curl response open. 10s is
+	// generous — local qBit calls are usually <100ms.
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Content-aware classification: reconcile the name with the torrent's
+	// file list + the Arr-category hint, same as the backlog scan. The file
+	// list can be empty at add time (e.g. a magnet whose metadata hasn't
+	// resolved yet), or unavailable if the client failed to init — either
+	// way ClassifyTorrentTypeWithHint falls back to name-only.
+	var fileViews []engine.TorrentFileView
+	if initErr == nil {
+		if files, ferr := client.ListTorrentFiles(opCtx, ev.InfoHash); ferr == nil {
+			fileViews = make([]engine.TorrentFileView, 0, len(files))
+			for _, f := range files {
+				fileViews = append(fileViews, engine.TorrentFileView{Name: f.Name, Size: f.Size})
+			}
+		}
+	}
+	hint := categoryHint(ev.Category, movieCats, seriesCats)
+	res := engine.ClassifyTorrentTypeWithHint(ev.Name, fileViews, hint)
+	tag := engine.DetermineQbitTagFromClass(res.Class, view)
+	if tag == "" {
+		// No tag for this torrent — leave Matched=false and ApplyErrMsg
+		// empty (invariant: an unmatched event never carries an error),
+		// even when the client failed to init above.
 		return
 	}
-	// Cap the qBit roundtrip so a slow tracker-side qBit can't hold
-	// the autorun-curl response open. 10s is generous — local qBit
-	// AddTags is usually <100ms.
-	applyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := client.AddTags(applyCtx, []string{ev.InfoHash}, []string{tag}); err != nil {
+	ev.AppliedTag = tag
+	ev.Matched = true
+
+	// Only now, with a tag to apply, surface a client-init failure.
+	if initErr != nil {
+		ev.ApplyErrMsg = "qbit client init: " + initErr.Error()
+		return
+	}
+	if err := client.AddTags(opCtx, []string{ev.InfoHash}, []string{tag}); err != nil {
 		ev.ApplyErrMsg = err.Error()
 	}
 }
