@@ -44,9 +44,10 @@ type QbitSeRulesView struct {
 
 // qbitEpisodePatterns is the ordered list of regexes considered an
 // "episode-token match" — any one matching makes the torrent name
-// episode-classified for the first-match-wins ordering. Two patterns:
+// episode-classified for the first-match-wins ordering. Three patterns:
 //   - Standard scene S01E05 / S01E05E06 multi-ep
 //   - Daily-show ISO-ish date pattern (e.g. "Show.2024.10.15")
+//   - Anime absolute episode numbering (e.g. "Show - 10 (1080p)")
 //
 // The daily-show pattern matches "<4 digits><sep><2 digits><sep><2
 // digits>" where <sep> is a date separator (. _ - or space): catches
@@ -58,9 +59,22 @@ type QbitSeRulesView struct {
 // and the season pack was mis-tagged Episode instead of Season. The
 // remaining worst case is a genuine 4+2+2 date-shaped string that is
 // not actually a release date, which just tags Episode (recoverable).
+//
+// The anime pattern recognises absolute episode numbering, the form
+// fansub groups use ("[SubsPlease] Show - 10 (1080p)", "Show - 105
+// [720p]") which carries no SxxExx token and would otherwise fall to
+// Unmatched (or, with only a bare season token like "S4", be confused
+// for a pack). It requires a separator + dash + separator before the
+// number and a bracket "(" / "[" after it, because fansub releases
+// always wrap the quality/group in brackets, which keeps it from
+// matching a hyphenated release-group suffix ("...-GROUP"). The number
+// alternation excludes 4-digit years (19xx / 20xx) so a movie named
+// "Title - 2002 (1080p)" stays Unmatched, while real 4-digit episode
+// counts (One Piece "- 1080 [") still match. RE2-safe (no lookaround).
 var qbitEpisodePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)S\d{1,3}E\d{1,3}`),
 	regexp.MustCompile(`\b\d{4}[._ -]\d{2}[._ -]\d{2}\b`),
+	regexp.MustCompile(`(?i)[ _.][-–—][ _.]+(?:\d{1,3}|[03-9]\d{3}|1[0-8]\d{2}|2[1-9]\d{2})(?:v\d+)?[ _.]*[(\[]`),
 }
 
 // qbitSeasonPattern matches season-pack tokens: bare S01 / S12 / etc.

@@ -11407,6 +11407,38 @@
     </div>
   </div>
 
+  <!-- Disable-auth confirmation modal. Collects the current admin password
+       required to turn authentication off entirely (the one protected
+       transition). Opened from saveSecurityConfig() when authentication is
+       set to None. -->
+  <div class="modal-overlay" x-show="disableAuthModalOpen" x-cloak
+       @click.self="disableAuthModalOpen = false; disableAuthError = ''; disableAuthPassword = ''; securityForm.authentication = authStatus.authentication || 'forms'"
+       @keydown.escape.window="if (disableAuthModalOpen) { disableAuthModalOpen = false; disableAuthError = ''; disableAuthPassword = ''; securityForm.authentication = authStatus.authentication || 'forms'; }">
+    <div class="modal" style="width:min(520px,96vw);padding:24px 28px" role="dialog" aria-modal="true" aria-labelledby="disable-auth-title">
+      <h2 id="disable-auth-title" style="margin:0 0 10px;font-size:20px;color:var(--accent-red)">⚠️ Disable authentication?</h2>
+      <p style="font-size:13px;line-height:1.5;color:var(--text-secondary);margin:10px 0 8px">
+        You are about to turn off login for Resolvarr. After this change, anyone who can reach this UI is admin: they can read and change your Radarr and Sonarr API keys, edit qBittorrent connection details, and read every notification token.
+      </p>
+      <p style="font-size:13px;line-height:1.5;color:var(--text-secondary);margin:8px 0">
+        Choose this only if another authentication layer (a reverse proxy, Authelia, Cloudflare Access) sits in front, or the machine is not reachable from other devices.
+      </p>
+      <label style="display:block;font-size:12px;color:var(--text-secondary);margin:14px 0 6px">
+        Enter your <strong>current admin password</strong> to confirm:
+      </label>
+      <input type="password" class="input" style="width:100%;margin-bottom:6px" autocomplete="current-password" placeholder="current password"
+             x-model="disableAuthPassword"
+             @keydown.enter="disableAuthPassword && (disableAuthModalOpen = false, saveSecurityConfig(true))">
+      <div x-show="disableAuthError" x-cloak style="color:var(--accent-red);font-size:12px;margin-bottom:6px" x-text="disableAuthError"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" @click="disableAuthModalOpen = false; disableAuthError = ''; disableAuthPassword = ''; securityForm.authentication = authStatus.authentication || 'forms'">Cancel</button>
+        <button class="btn btn-danger" :disabled="!disableAuthPassword || securitySaving"
+                @click="disableAuthModalOpen = false; saveSecurityConfig(true)">
+          Yes, disable authentication
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Footer — sits inside the Alpine root (body has x-data="app()")
        so it can reactively read this.version (loaded from /api/version
        on init). -->
