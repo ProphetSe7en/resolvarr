@@ -37,13 +37,13 @@ func TestClassifyTorrentType_RealCases(t *testing.T) {
 			SeUnmatched,
 		},
 		{
-			// #3 anime, absolute numbering, single file. Floor leaves this
-			// Unmatched (movie-vs-episode is ambiguous without an env
-			// signal; Phase 2's category booster resolves it).
-			"#3 anime - 10 (single file, floor → Unmatched)",
+			// #3 anime, absolute numbering, single file. The anime name
+			// pattern recognises the "- 10 (" form intrinsically, so the
+			// floor classifies it Episode with no category booster needed.
+			"#3 anime - 10 (single episode, intrinsic name match)",
 			"[SubsPlease] Saikyou Onmyouji no Isekai Tenseiki - 10 (1080p) [423A7BDE]",
 			[]TorrentFileView{file("[SubsPlease] Saikyou Onmyouji no Isekai Tenseiki - 10 (1080p) [423A7BDE].mkv", 1300*mb)},
-			SeUnmatched,
+			SeEpisode,
 		},
 		{
 			// #4 season pack whose TORRENT name has no S/E, but the FILES
@@ -231,10 +231,11 @@ func TestClassifyTorrentTypeWithHint(t *testing.T) {
 			HintMovie, SeUnmatched,
 		},
 		{
-			// #3 fixed: series confirmed → single name-less file = episode.
-			"series hint promotes a name-less single file to episode (#3)",
-			"[SubsPlease] Saikyou Onmyouji no Isekai Tenseiki - 10 (1080p) [423A7BDE]",
-			[]TorrentFileView{file("[SubsPlease] Saikyou Onmyouji no Isekai Tenseiki - 10 (1080p) [423A7BDE].mkv", 1300*mb)},
+			// Level C: series confirmed → a genuinely name-less single file
+			// (no SxxExx, no anime "- NN (" token) is promoted to episode.
+			"series hint promotes a name-less single file to episode",
+			"Some.Anime.OVA [BD 1080p]",
+			[]TorrentFileView{file("Some.Anime.OVA [BD 1080p].mkv", 1300*mb)},
 			HintSeries, SeEpisode,
 		},
 		{
@@ -247,11 +248,12 @@ func TestClassifyTorrentTypeWithHint(t *testing.T) {
 			HintSeries, SeSeason,
 		},
 		{
-			// HintUnknown == the floor: #3 stays Unmatched.
-			"unknown hint = floor (anime single stays Unmatched)",
+			// HintUnknown == the floor: the anime "- 10 (" name pattern
+			// now resolves #3 intrinsically, so the floor returns Episode.
+			"unknown hint = floor (anime '- 10 (' resolved by name)",
 			"[SubsPlease] Saikyou Onmyouji no Isekai Tenseiki - 10 (1080p) [423A7BDE]",
 			[]TorrentFileView{file("[SubsPlease] Saikyou Onmyouji no Isekai Tenseiki - 10 (1080p) [423A7BDE].mkv", 1300*mb)},
-			HintUnknown, SeUnmatched,
+			HintUnknown, SeEpisode,
 		},
 	}
 	for _, c := range cases {

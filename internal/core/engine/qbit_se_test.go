@@ -155,3 +155,37 @@ func TestDetermineQbitTag(t *testing.T) {
 		})
 	}
 }
+
+// TestDetermineQbitTag_AnimeAbsolute pins the anime absolute-numbering
+// Episode pattern ("Show - 10 (1080p)") and, crucially, its movie-year
+// guard: the number alternation excludes 4-digit years so a movie named
+// "Title - 2002 (1080p)" does NOT match as an episode. All rules enabled
+// so the assertions read directly off the classification.
+func TestDetermineQbitTag_AnimeAbsolute(t *testing.T) {
+	allOn := QbitSeRulesView{EpisodeEnabled: true, SeasonEnabled: true, UnmatchedEnabled: true}
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// Anime absolute numbering → Episode (no SxxExx token).
+		{"subsplease - 10 (", "[SubsPlease] Saikyou Onmyouji - 10 (1080p) [ABCD1234]", "Episode"},
+		{"bare season + absolute - 34 (", "[SubsPlease] Dr. Stone S4 - 34 (1080p) [76CA3878]", "Episode"},
+		{"four-digit episode - 1080 [", "One Piece - 1080 [1080p]", "Episode"},
+		{"version suffix - 10v2 (", "[Erai-raws] Show - 10v2 (1080p)", "Episode"},
+		{"three-digit - 105 (", "Some Show - 105 (720p)", "Episode"},
+		// Movie-year guard: dash + 4-digit year + bracket must NOT match.
+		{"movie dash-year 2002 stays Unmatched", "8 Mile - 2002 (1080p)", "Unmatched"},
+		{"movie dash-year 2021 stays Unmatched", "Some Film - 2021 (2160p)", "Unmatched"},
+		{"movie dash-year 1999 stays Unmatched", "Old Movie - 1999 [BluRay]", "Unmatched"},
+		// Hyphenated release-group suffix must NOT match (no bracket after).
+		{"release-group suffix not an episode", "Some.Movie.2018.1080p.BluRay-GROUP", "Unmatched"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := DetermineQbitTag(c.in, allOn); got != c.want {
+				t.Errorf("DetermineQbitTag(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}

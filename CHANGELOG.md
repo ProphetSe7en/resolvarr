@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.60-dev — Anime episodes recognised by name (2026-06-20)
+
+### Improved
+
+- **Anime episodes with absolute numbering are now recognised from the release name itself.** A single anime episode named like `[Group] Show - 10 (1080p)` is tagged Episode straight from its name, so cross-seed and manually-added downloads are classified correctly even when there is no Radarr or Sonarr category to consult. A movie with a year in the same position (for example `Title - 2002 (1080p)`) is left alone, not mistaken for an episode. This applies everywhere the tag is set: the backlog scan, one-off and scheduled runs, the qBittorrent on-add hook, and the Sonarr grab.
+
 ## v0.6.59-dev — Grab Rename: HDR trigger and more edition tokens (2026-06-20)
 
 ### Added
