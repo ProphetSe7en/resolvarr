@@ -2,6 +2,16 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.63-dev — Re-run a failed webhook event (2026-06-21)
+
+### Added
+
+- **Run a failed webhook event again.** On the Webhooks page, expand an event in Recent Activity that ended in an error. A new "Run again" button re-sends that exact event through the matching rules, so after you fix the cause (for example a qBittorrent connection problem) you do not have to wait for Sonarr or Radarr to send another. Before it runs, a dialog shows exactly which rules and functions will fire and reminds you it performs real actions, not a dry run. The re-run is added as a new entry (badged "re-run") so the original stays in the log next to the new result. The button only appears on events that failed, since re-running a clean one would just repeat the same result.
+
+### Changed
+
+- **Webhooks tab label tidied.** The old "logging" badge on the Webhooks tab is gone; webhooks now run full per-event rules, not logging only.
+
 ## v0.6.62-dev — Fixes: editing qBittorrent instances (2026-06-20)
 
 ### Fixed

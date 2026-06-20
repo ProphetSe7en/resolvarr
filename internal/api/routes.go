@@ -187,6 +187,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/instances/{id}/webhook/events", s.handleWebhookListEvents)
 	mux.HandleFunc("GET /api/instances/{id}/webhook/events/stream", s.handleWebhookEventsStream)
 	mux.HandleFunc("DELETE /api/instances/{id}/webhook/events", s.handleWebhookClearEvents)
+	// Manual re-run of a logged event (failed/partial). Preview computes
+	// what would fire (no execution); replay re-dispatches the saved payload.
+	mux.HandleFunc("GET /api/webhooks/events/{id}/replay-preview", s.handleWebhookReplayPreview)
+	mux.HandleFunc("POST /api/webhooks/events/{id}/replay", s.handleWebhookReplay)
 	mux.HandleFunc("POST /api/instances/{id}/webhook/rotate", s.handleWebhookRotateToken)
 	mux.HandleFunc("POST /api/instances/{id}/webhook/rotate-secret", s.handleWebhookRotateSecret)
 	mux.HandleFunc("PUT /api/instances/{id}/webhook/logging", s.handleWebhookSetLogging)
