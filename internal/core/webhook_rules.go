@@ -129,10 +129,10 @@ func WebhookFunctionAppliesTo(fn WebhookFunction, appType string) bool {
 type WebhookConnectEvent string
 
 const (
-	WebhookEventGrab               WebhookConnectEvent = "Grab"
-	WebhookEventDownload           WebhookConnectEvent = "Download" // Sonarr/Radarr both — covers initial import + upgrade (isUpgrade flag distinguishes)
-	WebhookEventMovieFileDelete    WebhookConnectEvent = "MovieFileDelete"
-	WebhookEventEpisodeFileDelete  WebhookConnectEvent = "EpisodeFileDelete"
+	WebhookEventGrab              WebhookConnectEvent = "Grab"
+	WebhookEventDownload          WebhookConnectEvent = "Download" // Sonarr/Radarr both — covers initial import + upgrade (isUpgrade flag distinguishes)
+	WebhookEventMovieFileDelete   WebhookConnectEvent = "MovieFileDelete"
+	WebhookEventEpisodeFileDelete WebhookConnectEvent = "EpisodeFileDelete"
 	// *ForUpgrade variants: Radarr/Sonarr emit these when a file is
 	// deleted as part of an Upgrade flow (the old file makes way for
 	// a higher-quality replacement). Bash tagarr_import.sh:574
@@ -259,6 +259,14 @@ type GrabRenameCriteria struct {
 	// (TrueHD / Atmos / DTS-HD MA / DTS-X / DTS-ES / EAC3 Atmos).
 	TriggerOnAudioMismatch bool `json:"triggerOnAudioMismatch,omitempty"`
 
+	// TriggerOnHdrMismatch: rename when the grab title carries a
+	// dynamic-range token (HDR10+ / Dolby Vision / HLG) the qBit name
+	// lacks. Not for post-import CF scoring (Radarr reads HDR from
+	// MediaInfo) but for the download-window name comparison: an
+	// HDR10+ → HDR loss makes an autobrr push and an RSS torrent name
+	// disagree before any MediaInfo exists.
+	TriggerOnHdrMismatch bool `json:"triggerOnHdrMismatch,omitempty"`
+
 	// TriggerOnSceneMismatch: nuanced — fire rename when the current
 	// torrent name looks scene-stripped (has WEB without WEB-DL, etc.)
 	// AND the release-group is NOT in the TRaSH Scene CF group list.
@@ -382,18 +390,18 @@ func (c *GrabRenameCriteria) AppendReleaseGroupOrDefault() bool {
 //
 // Migration rules (preserve user intent from the old model):
 //
-//   AppendReleaseGroup is nil OR true → TriggerOnMissingReleaseGroup=true
-//   AppendReleaseGroup is false       → TriggerOnMissingReleaseGroup=false
+//	AppendReleaseGroup is nil OR true → TriggerOnMissingReleaseGroup=true
+//	AppendReleaseGroup is false       → TriggerOnMissingReleaseGroup=false
 //
-//   len(MovieVersionTokens) > 0       → TriggerOnMovieVersionMismatch=true
-//                                        (user picked tokens — they care about
-//                                        this category)
-//   len(SourceTokens) > 0             → TriggerOnSourceMismatch=true
-//   ExcludeSceneReleases=true         → leave it (nuanced TriggerOnSceneMismatch
-//                                        replaces but isn't a 1:1 swap; user's
-//                                        old scene-exclusion intent stays valid
-//                                        as a separate signal until they update
-//                                        the rule)
+//	len(MovieVersionTokens) > 0       → TriggerOnMovieVersionMismatch=true
+//	                                     (user picked tokens — they care about
+//	                                     this category)
+//	len(SourceTokens) > 0             → TriggerOnSourceMismatch=true
+//	ExcludeSceneReleases=true         → leave it (nuanced TriggerOnSceneMismatch
+//	                                     replaces but isn't a 1:1 swap; user's
+//	                                     old scene-exclusion intent stays valid
+//	                                     as a separate signal until they update
+//	                                     the rule)
 //
 // Migration runs only when ALL TriggerOn* flags are false (the unmigrated
 // state). Setting any trigger to true is treated as "this rule has been
@@ -412,6 +420,7 @@ func (c *GrabRenameCriteria) MigrateLegacyTriggerFlags() {
 		c.TriggerOnMovieVersionMismatch ||
 		c.TriggerOnSourceMismatch ||
 		c.TriggerOnAudioMismatch ||
+		c.TriggerOnHdrMismatch ||
 		c.TriggerOnSceneMismatch ||
 		c.TriggerOnBadNaming ||
 		c.TriggerAlways {

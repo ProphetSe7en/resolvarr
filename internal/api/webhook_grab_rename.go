@@ -42,10 +42,10 @@ import (
 // (rename is qBit-side only — Arr-side IDs aren't needed).
 type grabEventPayload struct {
 	Release struct {
-		ReleaseTitle  string `json:"releaseTitle"`
-		ReleaseGroup  string `json:"releaseGroup"`
-		Indexer       string `json:"indexer,omitempty"`
-		Size          int64  `json:"size,omitempty"`
+		ReleaseTitle string `json:"releaseTitle"`
+		ReleaseGroup string `json:"releaseGroup"`
+		Indexer      string `json:"indexer,omitempty"`
+		Size         int64  `json:"size,omitempty"`
 	} `json:"release"`
 	DownloadID     string `json:"downloadId,omitempty"`
 	DownloadClient string `json:"downloadClient,omitempty"`
@@ -354,6 +354,7 @@ func reasonsNeedGrabBase(reasons []string) bool {
 			strings.HasPrefix(r, "movie-version:"),
 			strings.HasPrefix(r, "source:"),
 			strings.HasPrefix(r, "audio:"),
+			strings.HasPrefix(r, "hdr:"),
 			strings.HasPrefix(r, "scene-stripped"),
 			strings.HasPrefix(r, "custom:"):
 			return true
@@ -400,6 +401,12 @@ func evaluateGrabRenameTriggers(currentName, grabTitle, rg string, c *core.GrabR
 	if c.TriggerOnAudioMismatch {
 		if missing := engine.DiffMissingAudio(currentName, grabTitle); len(missing) > 0 {
 			reasons = append(reasons, "audio: "+strings.Join(missing, "/"))
+		}
+	}
+
+	if c.TriggerOnHdrMismatch {
+		if missing := engine.DiffMissingHdr(currentName, grabTitle); len(missing) > 0 {
+			reasons = append(reasons, "hdr: "+strings.Join(missing, "/"))
 		}
 	}
 
@@ -591,4 +598,3 @@ func compileCustomTokens(tokens []core.GrabRenameCustomToken) []engine.CompiledC
 	}
 	return out
 }
-

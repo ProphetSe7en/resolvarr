@@ -20,12 +20,20 @@ import (
 	"strings"
 )
 
-// grabRenameMovieVersionTokens — TRaSH's "Optional Movie Versions" CF
-// group. One regex per concept (e.g. `imax` matches both IMAX and
-// IMAX Enhanced). Bash tagarr_import.sh:330-343 carries the same set.
+// grabRenameMovieVersionTokens: TRaSH's "Optional Movie Versions" CF
+// group (cf-groups/optional-movie-versions.json, group ID
+// f4f1474b963b24cf983455743aa9906c). One token per group CF, each with a
+// RE2-safe regex (TRaSH's lookbehind/lookahead specs can't port to Go
+// verbatim, see the IMAX Exclude note). Mirror any change into bash
+// tagarr_import.sh's GRAB_RENAME_MOVIE_VERSION block.
 //
-// TRaSH source: docs/json/radarr/cf/optional-movie-versions.json
-// (CF group ID f4f1474b963b24cf983455743aa9906c).
+// Synced to the full 11-CF group: added IMAX Enhanced, 4K Remaster,
+// Special Edition, Uncensored. Special Edition's
+// full TRaSH catch-all (generic cut/version/edition) is intentionally NOT
+// mirrored: those need TRaSH's negative lookbehind to avoid false hits,
+// which RE2 lacks; the literal "Special Edition" + "Uncensored" cover the
+// distinct cases, and Director's Cut / Extended / Unrated / Uncut are
+// already separate tokens.
 var grabRenameMovieVersionTokens = []namedTokenRegex{
 	{Label: "Director's Cut", Pattern: regexp.MustCompile(`(?i)\bdirector('?s)?[._ -]?cut\b`)},
 	{Label: "Theatrical", Pattern: regexp.MustCompile(`(?i)\btheatrical\b`)},
@@ -33,6 +41,9 @@ var grabRenameMovieVersionTokens = []namedTokenRegex{
 	{Label: "Unrated", Pattern: regexp.MustCompile(`(?i)\bunrated\b`)},
 	{Label: "Uncut", Pattern: regexp.MustCompile(`(?i)\buncut\b`)},
 	{Label: "Remaster", Pattern: regexp.MustCompile(`(?i)\bremaster(ed)?\b`)},
+	// 4K Remaster, distinct from generic Remaster so losing the "4K" (a
+	// source-master label, not resolution) from "4K Remaster" still fires.
+	{Label: "4K Remaster", Pattern: regexp.MustCompile(`(?i)\b4k[._ -]?remaster(ed)?\b`)},
 	{Label: "Criterion", Pattern: regexp.MustCompile(`(?i)\bcriterion\b`)},
 	{Label: "Masters of Cinema", Pattern: regexp.MustCompile(`(?i)\b(masters[._ -]?of[._ -]?cinema|moc)\b`)},
 	{Label: "Vinegar Syndrome", Pattern: regexp.MustCompile(`(?i)\bvinegar[._ -]?syndrome\b`)},
@@ -46,7 +57,13 @@ var grabRenameMovieVersionTokens = []namedTokenRegex{
 		// drops matches when "non[._ -]+imax" appears in the input.
 		Exclude: regexp.MustCompile(`(?i)\bnon[._ -]+imax\b`),
 	},
+	// IMAX Enhanced, distinct from plain IMAX so "IMAX Enhanced → IMAX"
+	// (the "Enhanced" stripped) fires. Plain IMAX matches both, so it alone
+	// can't detect the loss.
+	{Label: "IMAX Enhanced", Pattern: regexp.MustCompile(`(?i)\bimax[._ -]?enhanced\b`)},
 	{Label: "Open Matte", Pattern: regexp.MustCompile(`(?i)\bopen[ ._-]?matte\b`)},
+	{Label: "Special Edition", Pattern: regexp.MustCompile(`(?i)\bspecial[._ -]?edition\b`)},
+	{Label: "Uncensored", Pattern: regexp.MustCompile(`(?i)\buncensored\b`)},
 }
 
 // grabRenameSourceTokens — streaming-source flag tokens that influence
@@ -109,6 +126,25 @@ var grabRenameAudioTokens = []namedTokenRegex{
 	{Label: "EAC3 Atmos", Pattern: regexp.MustCompile(`(?i)\beac3.*\batmos\b|\batmos.*\beac3\b`)},
 }
 
+// grabRenameHdrTokens: dynamic-range title flags. Unlike the post-import
+// CF score (which Radarr derives from the file's MediaInfo), these matter
+// during the DOWNLOAD WINDOW: tools like autobrr push the release name
+// while the file is still downloading, an RSS sync then sees the (maybe
+// stripped) torrent name, and Arr compares the two NAMES, with no
+// MediaInfo yet. A "HDR10+" turning into "HDR" makes those names
+// disagree, so preserving the granular token keeps it consistent.
+//
+// RE2-safe: TRaSH's HDR CF distinguishes HDR10 vs HDR10+ with a lookahead
+// Go can't run, but here we only need to detect the LOSS of the granular
+// token, which the literal "+/Plus" match does without lookahead.
+var grabRenameHdrTokens = []namedTokenRegex{
+	// Trailing \b only on the "plus" branch: "+" is a non-word char, so a
+	// \b after it fails (non-word followed by space is not a boundary).
+	{Label: "HDR10+", Pattern: regexp.MustCompile(`(?i)\bhdr10(\+|plus\b)`)},
+	{Label: "Dolby Vision", Pattern: regexp.MustCompile(`(?i)\b(dv|dovi|dolby[ .]?v(ision)?)\b`)},
+	{Label: "HLG", Pattern: regexp.MustCompile(`(?i)\bhlg\b`)},
+}
+
 // grabRenameSceneCFGroups is the lowercased name-set of release-groups
 // the TRaSH Scene CF identifies as legitimate scene releases. When a
 // rule's TriggerOnSceneMismatch fires, this set is consulted: if rg
@@ -119,32 +155,32 @@ var grabRenameAudioTokens = []namedTokenRegex{
 //
 // TRaSH source: docs/json/radarr/cf/scene.json group list.
 var grabRenameSceneCFGroups = map[string]bool{
-	"cakes":            true,
-	"ggez":             true,
-	"ggwp":             true,
-	"glhf":             true,
-	"gossip":           true,
-	"naisu":            true,
-	"kogi":             true,
-	"peculate":         true,
-	"slot":             true,
-	"edith":            true,
-	"ethel":            true,
-	"eleanor":          true,
-	"b2b":              true,
-	"spamneggs":        true,
-	"ftp":              true,
-	"dirt":             true,
-	"syncopy":          true,
-	"bae":              true,
-	"successfulcrab":   true,
-	"nhtfs":            true,
-	"surcode":          true,
-	"b0mbardiers":      true,
-	"d3us":             true,
-	"brotherhood":      true,
-	"w4k":              true,
-	"strikes":          true,
+	"cakes":          true,
+	"ggez":           true,
+	"ggwp":           true,
+	"glhf":           true,
+	"gossip":         true,
+	"naisu":          true,
+	"kogi":           true,
+	"peculate":       true,
+	"slot":           true,
+	"edith":          true,
+	"ethel":          true,
+	"eleanor":        true,
+	"b2b":            true,
+	"spamneggs":      true,
+	"ftp":            true,
+	"dirt":           true,
+	"syncopy":        true,
+	"bae":            true,
+	"successfulcrab": true,
+	"nhtfs":          true,
+	"surcode":        true,
+	"b0mbardiers":    true,
+	"d3us":           true,
+	"brotherhood":    true,
+	"w4k":            true,
+	"strikes":        true,
 }
 
 // sceneResolutionRE detects the resolution token (required prefix for
@@ -190,6 +226,7 @@ type namedTokenRegex struct {
 func MovieVersionTokens() []string { return tokensLabels(grabRenameMovieVersionTokens) }
 func SourceTokens() []string       { return tokensLabels(grabRenameSourceTokens) }
 func AudioTokens() []string        { return tokensLabels(grabRenameAudioTokens) }
+func HdrTokens() []string          { return tokensLabels(grabRenameHdrTokens) }
 
 func tokensLabels(set []namedTokenRegex) []string {
 	out := make([]string, len(set))
@@ -356,6 +393,7 @@ func CleanReleaseName(name string) string {
 //   - equal to a leading non-Latin bracket (Radarr took the bracket as
 //     the group, e.g. "<non-Latin>") → use the name;
 //   - itself non-ASCII (garbage) → use the name.
+//
 // A normal ASCII group that matches the name is always kept, so correctly
 // named releases are never touched.
 func ResolveReleaseGroup(radarrRG, name string) string {
@@ -427,6 +465,10 @@ func DiffMissingSources(current, grab string) []string {
 
 func DiffMissingAudio(current, grab string) []string {
 	return DiffMissingTokens(current, grab, grabRenameAudioTokens)
+}
+
+func DiffMissingHdr(current, grab string) []string {
+	return DiffMissingTokens(current, grab, grabRenameHdrTokens)
 }
 
 // MatchCustomTokens applies a slice of user-defined "Label:regex"

@@ -9380,6 +9380,10 @@
                 <span><strong>Audio mismatch</strong> — rename when the grab title has an audio-format token (<code>TrueHD Atmos</code>, <code>DTS-HD MA</code>, <code>DTS-X</code>, etc.) the qBit name lacks.</span>
               </label>
               <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body);line-height:1.5">
+                <input type="checkbox" x-model="editingRule.grabRename.triggerOnHdrMismatch" style="accent-color:var(--accent-blue);margin-top:2px">
+                <span><strong>HDR mismatch</strong>: rename when the grab title has a dynamic-range token (<code>HDR10+</code>, <code>Dolby Vision</code>, <code>HLG</code>) the qBit name lacks. Mainly for setups where one tool grabs by the full release name and another by the torrent name while a file is still downloading, so the two names stay matchable before Radarr can read the file.</span>
+              </label>
+              <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;color:var(--text-body);line-height:1.5">
                 <input type="checkbox" x-model="editingRule.grabRename.triggerOnSceneMismatch" style="accent-color:var(--accent-blue);margin-top:2px">
                 <span><strong>Scene mismatch</strong> — rename when the qBit name looks scene-stripped (<code>WEB</code> without <code>WEB-DL</code>, etc.) AND the release group is NOT on the TRaSH scene-CF list. Legit scene releases are left alone.</span>
               </label>
