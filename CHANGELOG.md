@@ -2,6 +2,16 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.59-dev — Grab Rename: HDR trigger and more edition tokens (2026-06-20)
+
+### Added
+
+- **Grab Rename can now keep HDR / Dolby Vision in the torrent name.** A new optional "HDR mismatch" toggle on a Grab Rename rule renames the qBittorrent torrent when the grabbed release name carries a dynamic-range tag (HDR10+, Dolby Vision, HLG) the torrent name lost. This is not about Radarr's own scoring (Radarr reads HDR from the file). It helps setups that grab by the full release name with one tool and by the torrent name with another while a file is still downloading, so the two names stay matchable before the file can be analysed. Off by default.
+
+### Improved
+
+- **Grab Rename recognises more movie-version tokens.** Edition detection now also covers IMAX Enhanced (separate from IMAX), 4K Remaster (separate from Remaster), Special Edition, and Uncensored, matching the full TRaSH Optional Movie Versions list.
+
 ## v0.6.58-dev — Season vs episode tagging now reads the torrent's contents (2026-06-19)
 
 ### Improved

@@ -43,12 +43,12 @@ var reQbitCategoryName = regexp.MustCompile(`^[^\x00-\x1f\\]+$`)
 // path or balloon the config file. Picked generously so honest users
 // never hit them; rejection messages tell exactly which limit tripped.
 const (
-	webhookRuleNameMaxLen          = 200  // generous; UI displays will truncate at ~40
-	webhookRuleTokenListMaxLen     = 200  // SourceTokens / MovieVersionTokens / GroupBlocklist / ReleaseGroupIDs each
-	webhookRuleCustomTokensMaxLen  = 50   // typical user has 5-10
+	webhookRuleNameMaxLen          = 200 // generous; UI displays will truncate at ~40
+	webhookRuleTokenListMaxLen     = 200 // SourceTokens / MovieVersionTokens / GroupBlocklist / ReleaseGroupIDs each
+	webhookRuleCustomTokensMaxLen  = 50  // typical user has 5-10
 	webhookRuleCustomLabelMaxLen   = 80
-	webhookRuleCustomRegexMaxLen   = 500  // RE2 compiles these in microseconds; cap deters DoS-by-config-edit
-	webhookRuleTokenEntryMaxLen    = 80   // per-entry length on token allow-lists
+	webhookRuleCustomRegexMaxLen   = 500       // RE2 compiles these in microseconds; cap deters DoS-by-config-edit
+	webhookRuleTokenEntryMaxLen    = 80        // per-entry length on token allow-lists
 	webhookRuleRequestBodyMaxBytes = 64 * 1024 // POST/PUT body cap — matches schedules.go posture; honest payloads are <5 KB
 )
 
@@ -60,28 +60,28 @@ const (
 // to "preserve existing on update / nil on create" (the wizard always
 // sends them, but a partial PATCH-style call would not).
 type webhookRuleRequest struct {
-	Name                  string                    `json:"name"`
-	Enabled               bool                      `json:"enabled"`
-	InstanceID            string                    `json:"instanceId"`
-	AppType               string                    `json:"appType"`
-	Functions             []core.WebhookFunction    `json:"functions"`
-	Filters               *engine.FilterConfig      `json:"filters,omitempty"`
-	AudioTags             *core.AudioTagsConfig     `json:"audioTags,omitempty"`
-	VideoTags             *core.VideoTagsConfig     `json:"videoTags,omitempty"`
-	DvDetail              *core.DvDetailConfig      `json:"dvDetail,omitempty"`
-	ReleaseGroupIDs       []string                  `json:"releaseGroupIds,omitempty"`
-	SyncToInstanceID      string                    `json:"syncToInstanceId,omitempty"`
-	SyncSkipOrphanCleanup bool                      `json:"syncSkipOrphanCleanup,omitempty"`
-	DiscoverAutoEnable    bool                      `json:"discoverAutoEnable,omitempty"`
+	Name                  string                 `json:"name"`
+	Enabled               bool                   `json:"enabled"`
+	InstanceID            string                 `json:"instanceId"`
+	AppType               string                 `json:"appType"`
+	Functions             []core.WebhookFunction `json:"functions"`
+	Filters               *engine.FilterConfig   `json:"filters,omitempty"`
+	AudioTags             *core.AudioTagsConfig  `json:"audioTags,omitempty"`
+	VideoTags             *core.VideoTagsConfig  `json:"videoTags,omitempty"`
+	DvDetail              *core.DvDetailConfig   `json:"dvDetail,omitempty"`
+	ReleaseGroupIDs       []string               `json:"releaseGroupIds,omitempty"`
+	SyncToInstanceID      string                 `json:"syncToInstanceId,omitempty"`
+	SyncSkipOrphanCleanup bool                   `json:"syncSkipOrphanCleanup,omitempty"`
+	DiscoverAutoEnable    bool                   `json:"discoverAutoEnable,omitempty"`
 	// TagSource + FilterOnlyTag mirror the same fields on
 	// ScheduledJob.options + scanRunRequest. Webhook frontend sends
 	// these only when the rule is in filter-only mode.
-	TagSource     string `json:"tagSource,omitempty"`
-	FilterOnlyTag string `json:"filterOnlyTag,omitempty"`
-	GrabRename            *core.GrabRenameCriteria  `json:"grabRename,omitempty"`
-	QbitSe                *core.QbitSeRules         `json:"qbitSe,omitempty"`
-	QbitCategoryFix       *core.QbitCategoryFixRules `json:"qbitCategoryFix,omitempty"`
-	PlexLabelSync         *core.PlexLabelSyncConfig `json:"plexLabelSync,omitempty"`
+	TagSource       string                     `json:"tagSource,omitempty"`
+	FilterOnlyTag   string                     `json:"filterOnlyTag,omitempty"`
+	GrabRename      *core.GrabRenameCriteria   `json:"grabRename,omitempty"`
+	QbitSe          *core.QbitSeRules          `json:"qbitSe,omitempty"`
+	QbitCategoryFix *core.QbitCategoryFixRules `json:"qbitCategoryFix,omitempty"`
+	PlexLabelSync   *core.PlexLabelSyncConfig  `json:"plexLabelSync,omitempty"`
 	// NotifyOnFire — master per-rule kill-switch. Which agents receive
 	// the notification + which functions each renders is per-agent
 	// config (agents.Agent.Events + .Functions), not per-rule.
@@ -389,6 +389,7 @@ func validateGrabRenameCriteria(c *core.GrabRenameCriteria, appType string) *api
 		!c.TriggerOnMovieVersionMismatch &&
 		!c.TriggerOnSourceMismatch &&
 		!c.TriggerOnAudioMismatch &&
+		!c.TriggerOnHdrMismatch &&
 		!c.TriggerOnSceneMismatch &&
 		!c.TriggerOnBadNaming &&
 		!c.TriggerAlways &&
@@ -514,9 +515,10 @@ func (req *webhookRuleRequest) applyTo(rule *core.WebhookRule, isUpdate bool) {
 // applicability matrix.
 //
 // Shape:
-//   { "functionsByAppType": { "radarr": [...], "sonarr": [...] },
-//     "eventsByFunction":   { "radarr": { "tagAudio": ["Download"], ... },
-//                              "sonarr": { ... } } }
+//
+//	{ "functionsByAppType": { "radarr": [...], "sonarr": [...] },
+//	  "eventsByFunction":   { "radarr": { "tagAudio": ["Download"], ... },
+//	                           "sonarr": { ... } } }
 func (s *Server) handleWebhookRulesMeta(w http.ResponseWriter, r *http.Request) {
 	functionsByAppType := map[string][]core.WebhookFunction{
 		"radarr": collectApplicableFunctions("radarr"),

@@ -38,6 +38,22 @@ func TestDiffMissingMovieVersions(t *testing.T) {
 			"Movie 2024 1080p-FLUX",
 			"Movie 2024 Open Matte 1080p-FLUX",
 			[]string{"Open Matte"}},
+		{"IMAX Enhanced lost but plain IMAX kept",
+			"Movie 2024 IMAX 1080p-FLUX",
+			"Movie 2024 IMAX Enhanced 1080p-FLUX",
+			[]string{"IMAX Enhanced"}},
+		{"4K Remaster distinct from generic Remaster",
+			"Movie 2024 Remaster 1080p-FLUX",
+			"Movie 2024 4K Remaster 1080p-FLUX",
+			[]string{"4K Remaster"}},
+		{"special edition token",
+			"Movie 2024 1080p-FLUX",
+			"Movie 2024 Special Edition 1080p-FLUX",
+			[]string{"Special Edition"}},
+		{"uncensored token",
+			"Movie 2024 1080p-FLUX",
+			"Movie 2024 Uncensored 1080p-FLUX",
+			[]string{"Uncensored"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -198,6 +214,53 @@ func TestDiffMissingAudio(t *testing.T) {
 	}
 }
 
+func TestDiffMissingHdr(t *testing.T) {
+	cases := []struct {
+		name    string
+		current string
+		grab    string
+		want    []string
+	}{
+		{"HDR10+ lost to HDR",
+			"Movie 2024 2160p HDR x265-FLUX",
+			"Movie 2024 2160p HDR10+ x265-FLUX",
+			[]string{"HDR10+"}},
+		{"HDR10Plus lost to HDR10",
+			"Movie 2024 2160p HDR10 x265-FLUX",
+			"Movie 2024 2160p HDR10Plus x265-FLUX",
+			[]string{"HDR10+"}},
+		{"Dolby Vision missing",
+			"Movie 2024 2160p HDR x265-FLUX",
+			"Movie 2024 2160p DV HDR x265-FLUX",
+			[]string{"Dolby Vision"}},
+		{"HLG missing",
+			"Movie 2024 1080p x264-FLUX",
+			"Movie 2024 1080p HLG x264-FLUX",
+			[]string{"HLG"}},
+		{"already present — no diff",
+			"Movie 2024 2160p HDR10+ x265-FLUX",
+			"Movie 2024 2160p HDR10+ x265-FLUX",
+			nil},
+		{"generic HDR in both — no diff (only granular tokens count)",
+			"Movie 2024 2160p HDR x265-FLUX",
+			"Movie 2024 2160p HDR x265-FLUX",
+			nil},
+		{"DVDRip must not false-match Dolby Vision",
+			"Movie 2024 DVDRip x264-FLUX",
+			"Movie 2024 DVDRip DV x264-FLUX",
+			[]string{"Dolby Vision"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := DiffMissingHdr(c.current, c.grab)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("DiffMissingHdr(%q, %q) = %v, want %v",
+					c.current, c.grab, got, c.want)
+			}
+		})
+	}
+}
+
 func TestIsKnownSceneGroup(t *testing.T) {
 	cases := map[string]bool{
 		"":               false,
@@ -206,7 +269,7 @@ func TestIsKnownSceneGroup(t *testing.T) {
 		"GLHF":           true,
 		"FLUX":           false, // P2P group
 		"NTb":            false,
-		"  GGEZ  ":       true, // trim whitespace
+		"  GGEZ  ":       true,  // trim whitespace
 		"SumVision":      false, // would-be-renamed group
 		"SuccessfulCrab": true,
 	}
@@ -380,10 +443,10 @@ func TestResolveReleaseGroup(t *testing.T) {
 
 func TestDuplicateYear(t *testing.T) {
 	cases := []struct {
-		name      string
-		in        string
-		wantHas   bool
-		wantOut   string
+		name    string
+		in      string
+		wantHas bool
+		wantOut string
 	}{
 		{"same year twice dot", "Movie.2026.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo", true, "Movie.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo"},
 		{"same year twice dot (alt)", "Film.2016.2016.2160p.ATVP.WEB-DL.DD.5.1.DV.HDR.H.265", true, "Film.2016.2160p.ATVP.WEB-DL.DD.5.1.DV.HDR.H.265"},
