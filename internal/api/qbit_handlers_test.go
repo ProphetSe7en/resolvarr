@@ -453,6 +453,60 @@ func TestIsMaskedQbitURL(t *testing.T) {
 	}
 }
 
+// TestRestoreQbitProxyToken: editing the host/port of a qui-proxy
+// instance while the masked /proxy/<stars> token is round-tripped must
+// keep the user's host edit AND splice the real stored token back in,
+// not revert the whole URL. Regression for the "can't change the host of
+// a qui-proxy instance" bug (the old code discarded the entire edited
+// URL when it saw a masked token).
+func TestRestoreQbitProxyToken(t *testing.T) {
+	stored := "http://192.168.178.23:7476/proxy/" + realQuiToken
+	masked := maskQbitURL(stored) // what the GET/List returns to the UI
+	// User changes the host IP to a container name; masked token stays.
+	submitted := strings.Replace(masked, "192.168.178.23", "qui", 1)
+
+	got := restoreQbitProxyToken(submitted, stored)
+	want := "http://qui:7476/proxy/" + realQuiToken
+	if got != want {
+		t.Errorf("restoreQbitProxyToken host edit:\n got  %q\n want %q", got, want)
+	}
+	if strings.Contains(got, "*") {
+		t.Errorf("result still contains a masked token: %q", got)
+	}
+}
+
+// TestUpdateQbitInstance_HostEditPreservesToken: the end-to-end PUT
+// path: a host-only edit on a qui-proxy instance persists the new host
+// and keeps the original token, instead of reverting to the stored URL.
+func TestUpdateQbitInstance_HostEditPreservesToken(t *testing.T) {
+	s, store := newQbitTestServer(t)
+
+	if err := store.Update(func(c *core.Config) {
+		c.QbitInstances = []core.QbitInstance{{
+			ID: "q1", Name: "qui", URL: "http://192.168.178.23:7476/proxy/" + realQuiToken,
+			WebhookSecret: "seed",
+		}}
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	masked := maskQbitURL("http://192.168.178.23:7476/proxy/" + realQuiToken)
+	editedURL := strings.Replace(masked, "192.168.178.23", "qui", 1)
+	body := `{"name":"qui","url":"` + editedURL + `"}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/qbit-instances/q1", strings.NewReader(body))
+	req.SetPathValue("id", "q1")
+	s.handleUpdateQbitInstance(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT status %d, body %s", rr.Code, rr.Body.String())
+	}
+	got := store.Get().QbitInstances[0].URL
+	want := "http://qui:7476/proxy/" + realQuiToken
+	if got != want {
+		t.Errorf("stored URL after host edit = %q, want %q", got, want)
+	}
+}
+
 // TestMaskQbitURL_RoundTripDetected — output of maskQbitURL must be
 // identified as masked by isMaskedQbitURL. Pairs the two halves the
 // way masking_test.go does for maskKey ↔ isMasked.

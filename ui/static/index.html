@@ -9312,8 +9312,9 @@
                    timing bug fix as the Arr instance picker above. -->
               <select class="input"
                       x-model="editingRule.grabRename.qbitInstanceId"
+                      @change="editingRule.grabRename.qbitInstanceId = $event.target.value"
                       :class="!editingRule.grabRename.qbitInstanceId && 'input-invalid'"
-                      x-init="$nextTick(() => { if (editingRule.grabRename) { if (!editingRule.grabRename.qbitInstanceId) editingRule.grabRename.qbitInstanceId = defaultQbitForArr(editingRule.instanceId); $el.value = editingRule.grabRename.qbitInstanceId || '' } })"
+                      x-init="$nextTick(() => { if (editingRule.grabRename) { const cur = editingRule.grabRename.qbitInstanceId; if (!cur || !(qbitInstances||[]).some(q => q.id === cur)) editingRule.grabRename.qbitInstanceId = defaultQbitForArr(editingRule.instanceId); $el.value = editingRule.grabRename.qbitInstanceId || '' } })"
                       style="max-width:320px">
                 <option value="">Select a qBit instance...</option>
                 <template x-for="q in (qbitInstances || [])" :key="q.id">
@@ -9526,8 +9527,9 @@
                        at the top of the wizard. -->
                   <select class="input"
                           x-model="editingRule.qbitSe.qbitInstanceId"
+                          @change="editingRule.qbitSe.qbitInstanceId = $event.target.value"
                           :class="!editingRule.qbitSe.qbitInstanceId && 'input-invalid'"
-                          x-init="$nextTick(() => { if (editingRule.qbitSe) { if (!editingRule.qbitSe.qbitInstanceId) editingRule.qbitSe.qbitInstanceId = defaultQbitForArr(editingRule.instanceId); $el.value = editingRule.qbitSe.qbitInstanceId || '' } })"
+                          x-init="$nextTick(() => { if (editingRule.qbitSe) { const cur = editingRule.qbitSe.qbitInstanceId; if (!cur || !(qbitInstances||[]).some(q => q.id === cur)) editingRule.qbitSe.qbitInstanceId = defaultQbitForArr(editingRule.instanceId); $el.value = editingRule.qbitSe.qbitInstanceId || '' } })"
                           style="max-width:320px">
                     <option value="">Select a qBit instance...</option>
                     <template x-for="q in (qbitInstances || [])" :key="q.id">
@@ -9698,8 +9700,9 @@
                    timing bug fix as the other instance pickers. -->
               <select class="input"
                       x-model="editingRule.qbitCategoryFix.qbitInstanceId"
+                      @change="editingRule.qbitCategoryFix.qbitInstanceId = $event.target.value"
                       :class="!editingRule.qbitCategoryFix.qbitInstanceId && 'input-invalid'"
-                      x-init="$nextTick(() => { if (editingRule.qbitCategoryFix) { if (!editingRule.qbitCategoryFix.qbitInstanceId) editingRule.qbitCategoryFix.qbitInstanceId = defaultQbitForArr(editingRule.instanceId); $el.value = editingRule.qbitCategoryFix.qbitInstanceId || '' } })"
+                      x-init="$nextTick(() => { if (editingRule.qbitCategoryFix) { const cur = editingRule.qbitCategoryFix.qbitInstanceId; if (!cur || !(qbitInstances||[]).some(q => q.id === cur)) editingRule.qbitCategoryFix.qbitInstanceId = defaultQbitForArr(editingRule.instanceId); $el.value = editingRule.qbitCategoryFix.qbitInstanceId || '' } })"
                       style="max-width:320px">
                 <option value="">Select a qBit instance...</option>
                 <template x-for="q in (qbitInstances || [])" :key="q.id">

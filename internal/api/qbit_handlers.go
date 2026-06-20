@@ -61,10 +61,30 @@ func maskQbitURL(raw string) string {
 
 // isMaskedQbitURL returns true if the URL's /proxy/ segment contains
 // our masked-output stars — which means the user round-tripped a value
-// the server sent earlier and we should preserve the stored URL on
+// the server sent earlier and we should preserve the stored token on
 // PUT instead of validating + saving the masked form.
 func isMaskedQbitURL(raw string) bool {
 	return maskedProxyPattern.MatchString(raw)
+}
+
+// proxyTokenSegment matches the whole `/proxy/<token>` path segment
+// (token = any run of non-slash/query/fragment chars), masked or not.
+// Used to splice a real token back into an edited URL.
+var proxyTokenSegment = regexp.MustCompile(`(?i)/proxy/[^/?#]+`)
+
+// restoreQbitProxyToken splices the real /proxy/<token> from the stored
+// URL into the submitted URL, preserving any host/port edits the user
+// made around the masked token. The submitted URL is known to carry a
+// masked token (caller checks isMaskedQbitURL). If the stored URL has no
+// real token to recover (shouldn't happen in practice), the safe
+// fallback is the stored URL unchanged.
+func restoreQbitProxyToken(submitted, stored string) string {
+	m := proxyTokenPattern.FindStringSubmatch(stored)
+	if len(m) != 3 {
+		return stored
+	}
+	realSegment := "/proxy/" + m[2]
+	return proxyTokenSegment.ReplaceAllString(submitted, realSegment)
 }
 
 // validateQbitInstanceBody rejects malformed creates / updates. Lets
@@ -215,12 +235,15 @@ func (s *Server) handleUpdateQbitInstance(w http.ResponseWriter, r *http.Request
 		writeError(w, 404, "qBit instance not found")
 		return
 	}
-	// URL preservation — when the input still contains our masked
-	// /proxy/<stars> form the user didn't intend to change it, so
-	// keep the stored URL. Anything else (a fresh qui token, a
-	// non-proxy URL, etc.) is treated as a real edit and validated.
+	// URL preservation: when the input still carries our masked
+	// /proxy/<stars> token, the user kept the token (they can't see the
+	// real one) but may have edited the host/port around it. Splice the
+	// real token from the stored URL back into the submitted URL so
+	// those edits survive, instead of discarding the whole URL. A fresh
+	// real token, or a non-proxy URL, is treated as a real edit and
+	// validated as-is.
 	if isMaskedQbitURL(req.URL) {
-		req.URL = existing.URL
+		req.URL = restoreQbitProxyToken(req.URL, existing.URL)
 	}
 	if err := validateQbitInstanceBody(req, cfg.QbitInstances, id); err != nil {
 		writeError(w, 400, err.Error())
