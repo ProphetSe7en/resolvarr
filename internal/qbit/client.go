@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -66,8 +67,8 @@ type Client struct {
 	baseURL string // normalised: trailing slash stripped, scheme verified
 	http    *http.Client
 
-	mu      sync.Mutex
-	cookieReady bool   // login already attempted + cookie set in jar
+	mu          sync.Mutex
+	cookieReady bool // login already attempted + cookie set in jar
 }
 
 // New constructs a Client. Validates the URL up front so callers
@@ -134,9 +135,10 @@ func normaliseBaseURL(raw string) (string, error) {
 // base URL with the API path. Path must start with "/" (e.g.
 // "/api/v2/auth/login"). For reverse-proxy setups where the user's
 // base URL already has a subpath, this preserves it correctly:
-//   base = https://example.com/qbit
-//   path = /api/v2/auth/login
-//   →     https://example.com/qbit/api/v2/auth/login
+//
+//	base = https://example.com/qbit
+//	path = /api/v2/auth/login
+//	→     https://example.com/qbit/api/v2/auth/login
 func (c *Client) apiURL(path string) string {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
@@ -261,7 +263,23 @@ func (c *Client) doOnce(ctx context.Context, method, path string, body io.Reader
 	if setHeader != nil {
 		setHeader(req.Header)
 	}
-	return c.http.Do(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		// Transport-level failure (DNS, refused, timeout): log the API
+		// path (no embedded token: path is the clean "/api/v2/..." arg,
+		// not the full URL) so a misconfigured host/port is visible.
+		fmt.Fprintf(os.Stderr, "resolvarr: qbit %s %s -> transport error: %v\n", method, path, err)
+		return nil, err
+	}
+	// Surface qBit-side rejections in the container log. qBit answers a
+	// CSRF Referer/Host mismatch (common behind a reverse proxy that
+	// rewrites the origin) with a 4xx; without this line the only signal
+	// is the per-event UI error, which the operator can't correlate to a
+	// server-side cause. Path is the token-free API path, safe to log.
+	if resp.StatusCode >= 400 {
+		fmt.Fprintf(os.Stderr, "resolvarr: qbit %s %s -> HTTP %d\n", method, path, resp.StatusCode)
+	}
+	return resp, nil
 }
 
 // Torrent is a minimal subset of qBit's /api/v2/torrents/info entry —
@@ -271,7 +289,7 @@ func (c *Client) doOnce(ctx context.Context, method, path string, body io.Reader
 type Torrent struct {
 	Hash     string `json:"hash"`
 	Name     string `json:"name"`
-	Tags     string `json:"tags"`     // comma-separated; "" when none
+	Tags     string `json:"tags"` // comma-separated; "" when none
 	Category string `json:"category"`
 	State    string `json:"state"`
 }

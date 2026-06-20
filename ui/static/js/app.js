@@ -235,6 +235,13 @@ function app() {
       if (this.currentPage === 'settings' && this.section === 'plex') {
         this.loadPlexInstances();
       }
+      // Same lazy-load for the qBit panel. A refresh while on
+      // Settings -> qBittorrent otherwise leaves the instance list empty
+      // (only the section-change handler loaded it), so the rows vanish
+      // until the user switches tabs and back.
+      if (this.currentPage === 'settings' && this.section === 'qbit') {
+        this.loadQbitInstances();
+      }
       // qBit instances feed the qBit S/E one-off sub-tab + the schedule
       // / QFA qBit S/E step dropdowns. Load on a direct-hash / refresh
       // landing on the Scan tab so those dropdowns aren't empty there.

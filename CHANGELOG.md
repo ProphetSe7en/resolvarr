@@ -2,6 +2,18 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.62-dev — Fixes: editing qBittorrent instances (2026-06-20)
+
+### Fixed
+
+- **The qBittorrent instance list no longer disappears on refresh.** Reloading the page while on Settings -> qBittorrent left the list blank until you switched tabs and back. It now loads on the page itself.
+- **You can change the host of a qBittorrent instance that uses a qui proxy URL.** Editing the address (for example swapping an IP for a container name) and saving used to silently revert to the old address, because the masked access token in the URL was treated as "no change". The edit now keeps your new address and preserves the stored token.
+- **Picking a newly-added qBittorrent instance in a webhook rule works.** After deleting an instance and adding a new one, selecting it in a rule could fail with "qbitInstanceId not found", because a rule function still pointed at the deleted instance behind the scenes. Instance pickers now clear a stale selection and reliably save the one you choose.
+
+### Improved
+
+- **qBittorrent connection problems are now logged.** When a qBittorrent call is rejected (for example a 401 from a reverse proxy's cross-site check), resolvarr writes the method, endpoint, and status to the container log so the cause is visible instead of only showing a per-event error.
+
 ## v0.6.61-dev — Fix: disabling authentication now asks for your password (2026-06-20)
 
 ### Fixed
