@@ -1224,7 +1224,14 @@ function appState() {
     securitySaving: false,
     securitySaveMsg: '',
     securitySaveOk: false,
-    authStatus: { trustedNetworksLocked: false, trustedProxiesLocked: false },
+    authStatus: { trustedNetworksLocked: false, trustedProxiesLocked: false, authentication: '', authenticationRequired: '' },
+    // Disable-auth confirmation modal. Turning authentication off entirely
+    // is the one protected transition (the backend requires the current
+    // password as confirm_password); this modal collects it. Declared here
+    // so the binding is in template scope before loadSecurityPanel runs.
+    disableAuthModalOpen: false,
+    disableAuthPassword: '',
+    disableAuthError: '',
     securityApiKey: '',
     securityApiKeyVisible: false,
     securityApiKeyCopied: false,

@@ -7724,6 +7724,10 @@ function app() {
           this.authStatus = {
             trustedNetworksLocked: !!(d.trusted_networks_locked || d.trustedNetworksLocked),
             trustedProxiesLocked:  !!(d.trusted_proxies_locked  || d.trustedProxiesLocked),
+            // Saved auth mode, drives the disable-auth modal trigger and
+            // the modal's Cancel reset (backend uses snake_case).
+            authentication:        d.authentication || d.authentication_mode || 'forms',
+            authenticationRequired: d.authentication_required || d.authenticationRequired || 'disabled_for_local_addresses',
           };
         }
       } catch {}
@@ -7784,21 +7788,63 @@ function app() {
       }
     },
 
-    async saveSecurityConfig() {
+    async saveSecurityConfig(confirmedNone) {
+      // Disabling authentication entirely is the one protected transition
+      // (Radarr/Sonarr parity): the backend requires the current admin
+      // password as confirm_password when authentication goes to "none"
+      // from anything else. Intercept that case and collect the password
+      // through the confirmation modal before sending the save.
+      if (this.securityForm.authentication === 'none' && !confirmedNone) {
+        try {
+          const r = await this.apiFetch('/api/auth/status');
+          if (r.ok) {
+            const d = await r.json();
+            const savedMode = d.authentication || d.authentication_mode || '';
+            if (savedMode !== 'none') {
+              this.disableAuthPassword = '';
+              this.disableAuthError = '';
+              this.disableAuthModalOpen = true;
+              return;
+            }
+          }
+        } catch (_) { /* fall through and let the backend gate it */ }
+      }
+
       this.securitySaving = true;
       this.securitySaveMsg = '';
       try {
+        const body = { ...this.securityForm };
+        const headers = { 'Content-Type': 'application/json' };
+        if (confirmedNone && this.disableAuthPassword) {
+          body.confirm_password = this.disableAuthPassword;
+          // A wrong password returns 401 here meaning "password incorrect",
+          // not "session expired", so opt out of apiFetch's /login
+          // redirect so the error surfaces in the modal.
+          headers['X-Skip-Login-Redirect'] = '1';
+        }
         const r = await this.apiFetch('/api/config/auth', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(this.securityForm),
+          headers,
+          body: JSON.stringify(body),
         });
         const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        if (!r.ok) {
+          if (r.status === 401 && confirmedNone) {
+            // Wrong confirm password: reopen the modal with the error.
+            this.disableAuthError = d.error || 'Current password is incorrect';
+            this.disableAuthPassword = '';
+            this.disableAuthModalOpen = true;
+            return;
+          }
+          throw new Error(d.error || 'HTTP ' + r.status);
+        }
         // Mirror saved values back into the live config object so other
         // surfaces (the loadConfig cache) stay consistent.
         Object.assign(this.config || {}, this.securityForm);
+        this.authStatus.authentication = this.securityForm.authentication;
         this.securityFormDirty = false;
+        this.disableAuthPassword = '';
+        this.disableAuthError = '';
         this.securitySaveOk = true;
         this.securitySaveMsg = 'Saved.';
         setTimeout(() => { this.securitySaveMsg = ''; }, 4000);

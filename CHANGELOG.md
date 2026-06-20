@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.61-dev — Fix: disabling authentication now asks for your password (2026-06-20)
+
+### Fixed
+
+- **Settings → Security: turning authentication off now works.** Setting Authentication to None and saving used to fail with "disabling authentication requires your current password" but gave you nowhere to enter it. There is now a confirmation dialog that asks for your current admin password before authentication is turned off. Every other security change (login mode, trusted networks, session length) still saves with no extra prompt.
+
 ## v0.6.60-dev — Anime episodes recognised by name (2026-06-20)
 
 ### Improved
