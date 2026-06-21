@@ -7,7 +7,7 @@
 // Two-process pipeline mirrors the upstream bash script
 // (TRaSH/Starr-taggers/Radarr-DV-HDR-Tagarr/dv-hdr_tagarr.sh:180-197):
 //
-//	ffmpeg -loglevel error -i $FILE -c:v copy -vbsf hevc_mp4toannexb -f hevc -frames:v 100 - \
+//	ffmpeg -loglevel error -i $FILE -c:v copy -bsf:v hevc_mp4toannexb -f hevc -frames:v 100 - \
 //	  | dovi_tool extract-rpu - -o $TMP_RPU
 //	dovi_tool info -i $TMP_RPU --summary
 //

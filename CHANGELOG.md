@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.66-dev — Toolchain refresh (2026-06-22)
+
+### Changed
+
+- **Updated the bundled video toolchain used for Dolby Vision detection** to Alpine 3.24 (ffmpeg 8.1.1). No change in behaviour; the Dolby Vision extraction step was verified against the new ffmpeg.
+
 ## v0.6.65-dev — Clearer, safer connection error messages (2026-06-21)
 
 ### Fixed
