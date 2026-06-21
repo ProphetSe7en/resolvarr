@@ -267,6 +267,15 @@ type GrabRenameCriteria struct {
 	// disagree before any MediaInfo exists.
 	TriggerOnHdrMismatch bool `json:"triggerOnHdrMismatch,omitempty"`
 
+	// TriggerOnLanguageMismatch: rename when the grab title carries a
+	// language / audio-version release tag (MULTi / VFQ / VFF / German /
+	// Italian etc.) the qBit name lacks. Like HDR, this is for the
+	// download-window name comparison (autobrr push vs RSS torrent name),
+	// not the post-import Language-field CFs Radarr derives from MediaInfo.
+	// Common on French/foreign trackers that strip the language tag from
+	// the torrent name.
+	TriggerOnLanguageMismatch bool `json:"triggerOnLanguageMismatch,omitempty"`
+
 	// TriggerOnSceneMismatch: nuanced — fire rename when the current
 	// torrent name looks scene-stripped (has WEB without WEB-DL, etc.)
 	// AND the release-group is NOT in the TRaSH Scene CF group list.
@@ -421,6 +430,7 @@ func (c *GrabRenameCriteria) MigrateLegacyTriggerFlags() {
 		c.TriggerOnSourceMismatch ||
 		c.TriggerOnAudioMismatch ||
 		c.TriggerOnHdrMismatch ||
+		c.TriggerOnLanguageMismatch ||
 		c.TriggerOnSceneMismatch ||
 		c.TriggerOnBadNaming ||
 		c.TriggerAlways {

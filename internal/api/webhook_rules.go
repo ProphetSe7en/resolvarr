@@ -390,6 +390,7 @@ func validateGrabRenameCriteria(c *core.GrabRenameCriteria, appType string) *api
 		!c.TriggerOnSourceMismatch &&
 		!c.TriggerOnAudioMismatch &&
 		!c.TriggerOnHdrMismatch &&
+		!c.TriggerOnLanguageMismatch &&
 		!c.TriggerOnSceneMismatch &&
 		!c.TriggerOnBadNaming &&
 		!c.TriggerAlways &&

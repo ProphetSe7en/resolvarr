@@ -80,6 +80,9 @@ type qbitAddEvent struct {
 	AppliedTag  string    // classified tag, empty when no rule branch matched
 	ApplyErrMsg string    // populated when AddTags failed at receive time
 	Matched     bool      // true when AppliedTag != "" — the rule had a tag to apply
+	Reason      string    // plain-language classification reason (for the qBit-webhook activity view), set even when no tag applies
+	RuleID      string    // the rule this per-rule event was classified against
+	RuleName    string    // rule display name, for the activity outcome row
 }
 
 // qbitFlushFn is invoked when a window expires. The buffer hands the

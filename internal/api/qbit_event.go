@@ -145,6 +145,7 @@ func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) 
 	buf := s.QbitEventBuffer()
 	enqueued := 0
 	matchedAny := false
+	perRuleEvents := make([]qbitAddEvent, 0, len(matchingRules))
 	for _, rule := range matchingRules {
 		// Per-rule event so eager-apply results (Matched / AppliedTag /
 		// ApplyErrMsg) stay scoped to the rule that produced them.
@@ -155,6 +156,8 @@ func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) 
 			Name:     name,
 			Category: category,
 			Received: receivedAt,
+			RuleID:   rule.ID,
+			RuleName: rule.Name,
 		}
 		s.eagerApplyQbitSeTag(r.Context(), qbitInst, &rule, &ev, movieCats, seriesCats)
 		if ev.Matched {
@@ -165,8 +168,18 @@ func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) 
 			windowSec = rule.QbitSe.AggregationWindowSeconds
 		}
 		buf.Enqueue(rule.ID, ev, windowSec)
+		perRuleEvents = append(perRuleEvents, ev)
 		enqueued++
 	}
+
+	// Log one activity entry per torrent into the qBit-webhook view
+	// (webhook log keyed by the qBit instance ID, a separate key
+	// namespace from Arr-Connect events). This is what makes "did the
+	// qBit webhook fire, and what did it do / why" visible in Recent
+	// Activity. Logged even when no rule matched, so a delivered-but-
+	// ignored add is still visible (the common "wrong instance / no
+	// qBit S/E rule" confusion).
+	s.logQbitAddActivity(instanceID, genID(), receivedAt, infoHash, name, category, perRuleEvents, false)
 
 	// One-line receipt log per torrent. Truncated name + short hash
 	// keeps the line scannable; rule-count surfaces the most-common
@@ -245,6 +258,10 @@ func (s *Server) eagerApplyQbitSeTag(
 	}
 	hint := categoryHint(ev.Category, movieCats, seriesCats)
 	res := engine.ClassifyTorrentTypeWithHint(ev.Name, fileViews, hint)
+	// Capture the reason regardless of whether a tag applies, so the
+	// qBit-webhook activity view can explain a skip ("why nothing happened")
+	// as well as a tag.
+	ev.Reason = res.Reason
 	tag := engine.DetermineQbitTagFromClass(res.Class, view)
 	if tag == "" {
 		// No tag for this torrent — leave Matched=false and ApplyErrMsg

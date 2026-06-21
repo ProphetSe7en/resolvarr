@@ -145,6 +145,43 @@ var grabRenameHdrTokens = []namedTokenRegex{
 	{Label: "HLG", Pattern: regexp.MustCompile(`(?i)\bhlg\b`)},
 }
 
+// grabRenameLanguageTokens: French audio-version release-NAME tags (plus
+// MULTi). Like HDR, these matter during the download window (autobrr
+// pushes the full release name, an RSS sync sees the stripped torrent
+// name, and the Arr compares the two NAMES before MediaInfo exists). A
+// French tracker release pushed as "MULTi.VFQ" arriving in qBit as
+// "MULTi" (VFQ stripped) loses the score until the name is restored.
+//
+// Scope is deliberately narrow: only TRaSH language CFs that score on the
+// release-NAME belong here, which is exactly the French audio-version set
+// (MULTi + the VF*/VO* variants + VOSTFR). German is intentionally NOT
+// here: TRaSH's german.json / german-dl.json score on the Arr's Language
+// field (LanguageSpecification, from MediaInfo), which a torrent rename
+// can't influence. TRaSH ships no Italian / Spanish / Dutch / Nordic
+// Radarr CFs at all. A user who needs something else can add a Custom
+// token. Sources: docs/json/radarr/cf/multi.json + french-vf*/vof/voq/
+// vostfr.json.
+//
+// RE2-safe: TRaSH's regexes use lookbehind/lookahead (e.g.
+// "(?<=MULTi[ .])FR", "Multi(?![ ._-]?sub)") which Go can't run; here we
+// only need to detect the LOSS of a literal token, so word-bounded
+// literals (plus the Exclude field for the Multi-subs case) suffice. The
+// bare 2-letter "VQ" CF is omitted: \bvq\b false-matches inside titles.
+var grabRenameLanguageTokens = []namedTokenRegex{
+	// MULTi, but not "Multi-subs" (subs-only, a different CF). Exclude
+	// drops the match when the subs form is present.
+	{Label: "MULTi", Pattern: regexp.MustCompile(`(?i)\bmulti\b`), Exclude: regexp.MustCompile(`(?i)\bmulti[ ._-]?subs?\b`)},
+	{Label: "TrueFrench", Pattern: regexp.MustCompile(`(?i)\btrue[ ._-]?french\b`)},
+	{Label: "VOSTFR", Pattern: regexp.MustCompile(`(?i)\bvostfr\b`)},
+	{Label: "VFF", Pattern: regexp.MustCompile(`(?i)\bvff\b`)},
+	{Label: "VFQ", Pattern: regexp.MustCompile(`(?i)\bvfq\b`)},
+	{Label: "VF2", Pattern: regexp.MustCompile(`(?i)\bvf2\b`)},
+	{Label: "VFB", Pattern: regexp.MustCompile(`(?i)\bvfb\b`)},
+	{Label: "VFI", Pattern: regexp.MustCompile(`(?i)\bvfi\b`)},
+	{Label: "VOF", Pattern: regexp.MustCompile(`(?i)\bvof\b`)},
+	{Label: "VOQ", Pattern: regexp.MustCompile(`(?i)\bvoq\b`)},
+}
+
 // grabRenameSceneCFGroups is the lowercased name-set of release-groups
 // the TRaSH Scene CF identifies as legitimate scene releases. When a
 // rule's TriggerOnSceneMismatch fires, this set is consulted: if rg
@@ -227,6 +264,7 @@ func MovieVersionTokens() []string { return tokensLabels(grabRenameMovieVersionT
 func SourceTokens() []string       { return tokensLabels(grabRenameSourceTokens) }
 func AudioTokens() []string        { return tokensLabels(grabRenameAudioTokens) }
 func HdrTokens() []string          { return tokensLabels(grabRenameHdrTokens) }
+func LanguageTokens() []string     { return tokensLabels(grabRenameLanguageTokens) }
 
 func tokensLabels(set []namedTokenRegex) []string {
 	out := make([]string, len(set))
@@ -469,6 +507,10 @@ func DiffMissingAudio(current, grab string) []string {
 
 func DiffMissingHdr(current, grab string) []string {
 	return DiffMissingTokens(current, grab, grabRenameHdrTokens)
+}
+
+func DiffMissingLanguage(current, grab string) []string {
+	return DiffMissingTokens(current, grab, grabRenameLanguageTokens)
 }
 
 // MatchCustomTokens applies a slice of user-defined "Label:regex"

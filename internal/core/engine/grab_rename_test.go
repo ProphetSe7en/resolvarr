@@ -261,6 +261,49 @@ func TestDiffMissingHdr(t *testing.T) {
 	}
 }
 
+func TestDiffMissingLanguage(t *testing.T) {
+	cases := []struct {
+		name    string
+		current string
+		grab    string
+		want    []string
+	}{
+		{"VFQ stripped from torrent name (the tester case)",
+			"Movie.2026.MULTi.WEB-DL.x264-GROUP",
+			"Movie.2026.MULTi.VFQ.WEB-DL.x264-GROUP",
+			[]string{"VFQ"}},
+		{"MULTi lost entirely",
+			"Movie.2026.WEB-DL.x264-GROUP",
+			"Movie.2026.MULTi.VFF.WEB-DL.x264-GROUP",
+			[]string{"MULTi", "VFF"}},
+		{"VOF missing",
+			"Movie.2026.1080p.BluRay-GROUP",
+			"Movie.2026.VOF.1080p.BluRay-GROUP",
+			[]string{"VOF"}},
+		{"VOSTFR missing",
+			"Show.2026.1080p-GROUP",
+			"Show.2026.VOSTFR.1080p-GROUP",
+			[]string{"VOSTFR"}},
+		{"nothing missing (names already agree)",
+			"Movie.2026.MULTi.VFQ.WEB-DL-GROUP",
+			"Movie.2026.MULTi.VFQ.WEB-DL-GROUP",
+			nil},
+		{"Multi-subs must NOT count as MULTi",
+			"Movie.2026.WEB-DL-GROUP",
+			"Movie.2026.Multi-Subs.WEB-DL-GROUP",
+			nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := DiffMissingLanguage(c.current, c.grab)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("DiffMissingLanguage(%q, %q) = %v, want %v",
+					c.current, c.grab, got, c.want)
+			}
+		})
+	}
+}
+
 func TestIsKnownSceneGroup(t *testing.T) {
 	cases := map[string]bool{
 		"":               false,
