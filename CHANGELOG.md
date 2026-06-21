@@ -2,6 +2,17 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.64-dev — qBit webhook activity view + Grab Rename language tag trigger (2026-06-21)
+
+### Added
+
+- **A qBit webhook activity view.** Webhooks page → new "qBit webhook" tab. Pick a qBit instance to see every torrent qBit reported to resolvarr on it (cross-seed, manual, and Sonarr/Radarr adds), what each one did and why (the season/episode tag applied, or the reason it was skipped), and any error. It also shows adds that matched no rule, so you can tell the webhook is firing even when nothing is tagged. Re-run a failed one with "Run again".
+- **Grab Rename: keep a French audio-version tag in the torrent name.** A new "French audio version mismatch" trigger renames the qBittorrent torrent when the grabbed release name carries a French audio-version tag (MULTi, VFQ, VFF, VF2, VOF, VOSTFR, and the other VF/VO variants) the torrent name lost. Common on French trackers that strip the version tag. It covers the TRaSH French audio Custom Formats; German and other languages are detected from the file rather than the name, so a rename does not help those. This is for the download-window name comparison, not Radarr's own language detection.
+
+### Improved
+
+- **Season/Episode tagging: a heads-up on the Unmatched option.** If a qBittorrent instance holds both movies and TV, enabling Unmatched tags every movie added to it as Unmatched (a movie is never an Episode or Season). The rule editor now says so, so you can leave Unmatched off on a shared instance if you only want TV tagged.
+
 ## v0.6.63-dev — Re-run a failed webhook event (2026-06-21)
 
 ### Added

@@ -4222,6 +4222,55 @@ function app() {
       this.startWebhookEventStream(instanceId);
     },
 
+    // ===== qBit webhook activity (separate from Connect events) =====
+    // qBit-add events are logged per qBit instance, so this view is scoped
+    // to a qBit instance, not an Arr instance. Shows what each add did, why,
+    // and any error, with Run again on failures.
+    async loadQbitWebhookEvents(qbitInstanceId) {
+      if (!qbitInstanceId) return;
+      this.qbitWebhookEventsLoading = true;
+      try {
+        let events = [];
+        const r = await this.apiFetch('/api/qbit-instances/' + qbitInstanceId + '/webhook/events');
+        if (r.ok) {
+          const d = await r.json();
+          events = Array.isArray(d) ? d : [];
+        }
+        this.qbitWebhookEvents = { ...this.qbitWebhookEvents, [qbitInstanceId]: events };
+      } catch (e) {
+        this.qbitWebhookEvents = { ...this.qbitWebhookEvents, [qbitInstanceId]: [] };
+      } finally {
+        this.qbitWebhookEventsLoading = false;
+      }
+    },
+
+    // openQbitReplay opens the confirm modal for re-running a failed qBit-add
+    // (reuses the replay modal with kind='qbit'; no preview fetch needed,
+    // the action is "re-classify + re-tag this one torrent").
+    openQbitReplay(ev) {
+      this.replayModal = { open: true, kind: 'qbit', loading: false, running: false, event: ev, preview: null, error: '' };
+    },
+
+    // confirmQbitReplay POSTs the qBit-add re-run. The backend logs a fresh
+    // (re-run) entry so the original failure stays visible.
+    async confirmQbitReplay() {
+      const ev = this.replayModal.event;
+      if (!ev || !ev.instanceId) return;
+      this.replayModal.running = true;
+      try {
+        const r = await this.apiFetch('/api/qbit-instances/' + ev.instanceId + '/webhook/events/' + encodeURIComponent(ev.id) + '/replay', { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        this.replayModal.open = false;
+        this.showToast('qBit add re-run. See the new entry at the top.', 'success');
+        this.loadQbitWebhookEvents(ev.instanceId);
+      } catch (e) {
+        this.replayModal.error = e.message || 'Re-run failed';
+      } finally {
+        this.replayModal.running = false;
+      }
+    },
+
     // Lightweight events-only fetch (no SSE, no loading flag) used by
     // the Setup tab to populate webhookLastReceivedLabel for every
     // configured instance. Without this the label says "Never received"

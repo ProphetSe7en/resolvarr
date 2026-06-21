@@ -50,7 +50,12 @@ function appState() {
     webhookEventsLoading: false,
     // Replay (Run again) modal for a failed/partial event. preview holds
     // the GET replay-preview response (which rules + functions would fire).
-    replayModal: { open: false, loading: false, running: false, event: null, preview: null, error: '' },
+    // kind: '' = Connect-event replay, 'qbit' = qBit-add re-run.
+    replayModal: { open: false, kind: '', loading: false, running: false, event: null, preview: null, error: '' },
+    // qBit-webhook activity view (qBit-add events, scoped per qBit instance).
+    qbitActivityInstanceId: '',
+    qbitWebhookEvents: {},
+    qbitWebhookEventsLoading: false,
     webhookActivityInstanceId: '',
     webhookEventFilter: 'all',     // 'all' | <eventType> — chip filter on activity panel
     webhookActivitySearch: '',     // case-insensitive substring on event title + subtitle
