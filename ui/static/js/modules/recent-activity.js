@@ -124,6 +124,63 @@ function appRecentActivity() {
       }));
     },
 
+    // eventHasFailure reports whether any rule on the event ended in
+    // error or partial: the only events that get a "Run again" button
+    // (a clean run or a no-rule-match has nothing useful to re-run, since
+    // the functions are idempotent).
+    eventHasFailure(ev) {
+      return (ev.outcomes || []).some(o => o.status === 'error' || o.status === 'partial');
+    },
+
+    // openReplayModal fetches the replay preview (which rules + functions
+    // would fire, no execution) and opens the confirmation modal so the
+    // user sees exactly what re-running will do before committing.
+    async openReplayModal(ev) {
+      this.replayModal = { open: true, loading: true, event: ev, preview: null, error: '', running: false };
+      try {
+        const r = await this.apiFetch('/api/webhooks/events/' + encodeURIComponent(ev.id) + '/replay-preview');
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        this.replayModal.preview = d;
+      } catch (e) {
+        this.replayModal.error = e.message || 'Could not load preview';
+      } finally {
+        this.replayModal.loading = false;
+      }
+    },
+
+    closeReplayModal() {
+      if (this.replayModal.running) return;
+      this.replayModal.open = false;
+    },
+
+    // replayModalRuleLabels maps a preview rule's function keys to their
+    // display names for the modal list.
+    replayModalRuleLabels(rule) {
+      return (rule.functions || []).map(fn => this.webhookFnDisplayName(fn)).join(', ');
+    },
+
+    // confirmReplay POSTs the replay. The backend appends a fresh log
+    // entry (so the original failure stays visible) and re-dispatches.
+    async confirmReplay() {
+      const ev = this.replayModal.event;
+      if (!ev) return;
+      this.replayModal.running = true;
+      try {
+        const r = await this.apiFetch('/api/webhooks/events/' + encodeURIComponent(ev.id) + '/replay', { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        this.replayModal.open = false;
+        this.showToast('Event re-run (' + (d.rulesFired || 0) + ' rule' + ((d.rulesFired === 1) ? '' : 's') + ' fired). See the new entry at the top.', 'success');
+        const instId = ev.instanceId || (this.replayModal.preview && this.replayModal.preview.instanceId);
+        if (instId && typeof this.loadWebhookEvents === 'function') this.loadWebhookEvents(instId);
+      } catch (e) {
+        this.replayModal.error = e.message || 'Re-run failed';
+      } finally {
+        this.replayModal.running = false;
+      }
+    },
+
     // eventOutcomeFilterMatch returns true when the event's outcomes
     // satisfy the current outcome filter. Drives webhookEventsFiltered
     // when the outcome dropdown isn't "all".

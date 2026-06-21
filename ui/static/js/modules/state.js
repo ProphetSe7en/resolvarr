@@ -48,6 +48,9 @@ function appState() {
     // arrays of WebhookEvent objects.
     webhookEvents: {},
     webhookEventsLoading: false,
+    // Replay (Run again) modal for a failed/partial event. preview holds
+    // the GET replay-preview response (which rules + functions would fire).
+    replayModal: { open: false, loading: false, running: false, event: null, preview: null, error: '' },
     webhookActivityInstanceId: '',
     webhookEventFilter: 'all',     // 'all' | <eventType> — chip filter on activity panel
     webhookActivitySearch: '',     // case-insensitive substring on event title + subtitle

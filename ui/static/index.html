@@ -55,7 +55,7 @@
            can see what's coming. Each navigates to a "coming soon"
            page describing the feature scope. -->
       <a class="tab" :class="currentPage === 'lists' && 'active'" :href="navHref('lists')" @click="setCurrentPage('lists')" style="opacity:0.7" title="Coming with M5">Lists <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:500">M5</span></a>
-      <a class="tab" :class="currentPage === 'webhooks' && 'active'" :href="navHref('webhooks')" @click="setCurrentPage('webhooks')" title="Receive Sonarr/Radarr Connect events — logging-only today; per-event functions land in later releases">Webhooks <span style="font-size:10px;color:var(--accent-orange);background:var(--accent-orange-bg);padding:1px 6px;border-radius:8px;margin-left:4px;font-weight:500">logging</span></a>
+      <a class="tab" :class="currentPage === 'webhooks' && 'active'" :href="navHref('webhooks')" @click="setCurrentPage('webhooks')" title="Receive Sonarr and Radarr Connect events and run per-event rules (tag, grab rename, recover, season and episode tagging, category fix)">Webhooks</a>
       <a class="tab" :class="currentPage === 'settings' && 'active'" :href="navHref('settings')" @click="setCurrentPage('settings')">Settings</a>
     </div>
     <!-- Right-side area: logout. Pushed to far right via margin-left:auto.
@@ -6198,6 +6198,9 @@
                     <!-- Col 3: title + subtitle + quality summary -->
                     <div style="min-width:0;display:flex;flex-direction:column;gap:2px">
                       <div style="font-size:13px;color:var(--text-primary);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                        <template x-if="ev.replay">
+                          <span style="font-size:10px;color:var(--accent-sky);background:var(--alpha-blue);padding:1px 6px;border-radius:8px;margin-right:6px;font-weight:500">re-run</span>
+                        </template>
                         <span x-text="ev.title || '(no title)'"></span>
                         <template x-if="ev.subtitle">
                           <span style="color:var(--text-secondary);font-weight:400;margin-left:6px" x-text="ev.subtitle"></span>
@@ -6270,6 +6273,16 @@
                               </div>
                             </div>
                           </template>
+                        </div>
+                      </template>
+                      <!-- Run again, only for events where a rule errored
+                           or partially failed. Idempotent functions make
+                           re-running a clean event pointless, so it's hidden
+                           there. Opens a confirm modal describing what fires. -->
+                      <template x-if="eventHasFailure(ev)">
+                        <div style="border-top:1px solid var(--border-subtle);padding-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                          <button class="btn btn-sm btn-primary" @click="openReplayModal(ev)" title="Re-run this event through the matching rules. You'll see exactly what it will do before it runs.">Run again</button>
+                          <span style="font-size:11px;color:var(--text-secondary)">Re-runs this event after you fix the cause (for example a qBittorrent connection problem).</span>
                         </div>
                       </template>
                       <!-- Raw JSON toggle — collapsed by default to keep card readable -->
@@ -11407,6 +11420,77 @@
           <span x-show="deleteAgentBusy">Deleting…</span>
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- Replay (Run again) confirmation modal. Shows exactly which rules and
+       functions will re-fire for the event before the user commits, and
+       that it performs real actions (not a dry run). Backdrop does NOT
+       close (it triggers real changes); Cancel or Escape only. -->
+  <div class="modal-overlay" x-show="replayModal.open" x-cloak
+       @keydown.escape.window="if (replayModal.open) closeReplayModal()">
+    <div class="modal" style="width:min(560px,96vw);padding:24px 28px;max-height:90vh;overflow-y:auto" role="dialog" aria-modal="true" aria-labelledby="replay-title">
+      <h2 id="replay-title" style="margin:0 0 6px;font-size:19px;color:var(--text-primary)">Run this event again?</h2>
+
+      <template x-if="replayModal.loading">
+        <div style="padding:20px 0;color:var(--text-muted)">Loading what this will do…</div>
+      </template>
+
+      <template x-if="!replayModal.loading && replayModal.preview && !replayModal.preview.replayable">
+        <div>
+          <div style="font-size:13px;color:var(--accent-orange);background:var(--alpha-orange);border:1px solid var(--accent-orange);border-radius:6px;padding:10px 12px;margin:10px 0" x-text="replayModal.preview.reason || 'This event cannot be re-run.'"></div>
+          <div style="display:flex;justify-content:flex-end"><button class="btn" @click="closeReplayModal()">Close</button></div>
+        </div>
+      </template>
+
+      <template x-if="!replayModal.loading && replayModal.preview && replayModal.preview.replayable">
+        <div>
+          <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin:8px 0 12px">
+            Re-sends this <strong x-text="connectEventLabel(replayModal.preview.eventType)"></strong> event
+            <template x-if="replayModal.preview.title"><span> for <strong x-text="replayModal.preview.title"></strong></span></template>
+            through <strong x-text="replayModal.preview.instanceName || 'the instance'"></strong>.
+          </div>
+
+          <template x-if="(replayModal.preview.rules || []).length === 0">
+            <div style="font-size:13px;color:var(--accent-orange);background:var(--alpha-orange);border:1px solid var(--accent-orange);border-radius:6px;padding:10px 12px;margin-bottom:12px">
+              No rule currently matches this event, so re-running would do nothing. (The rule may have been changed, disabled, or deleted, or it uses its own webhook URL.)
+            </div>
+          </template>
+
+          <template x-if="(replayModal.preview.rules || []).length > 0">
+            <div style="margin-bottom:12px">
+              <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.4px;color:var(--text-muted-secondary);margin-bottom:6px">It will run</div>
+              <template x-for="rule in replayModal.preview.rules" :key="rule.ruleId">
+                <div style="font-size:13px;padding:6px 0;border-bottom:1px solid var(--border-subtle)">
+                  <div style="color:var(--text-primary);font-weight:500" x-text="rule.ruleName"></div>
+                  <div style="color:var(--text-secondary);font-size:12px;margin-top:2px" x-text="replayModalRuleLabels(rule) || '(no matching functions)'"></div>
+                </div>
+              </template>
+              <div style="font-size:12px;color:var(--accent-orange);margin-top:10px">This performs real actions (tagging, renaming, recover, and so on). It is not a dry run.</div>
+            </div>
+          </template>
+
+          <template x-if="replayModal.error">
+            <div style="font-size:12px;color:var(--accent-red);margin-bottom:10px" x-text="replayModal.error"></div>
+          </template>
+
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+            <button class="btn" @click="closeReplayModal()" :disabled="replayModal.running">Cancel</button>
+            <button class="btn btn-primary" @click="confirmReplay()"
+                    :disabled="replayModal.running || (replayModal.preview.rules || []).length === 0">
+              <span x-show="!replayModal.running">Run again</span>
+              <span x-show="replayModal.running">Running…</span>
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <template x-if="!replayModal.loading && !replayModal.preview && replayModal.error">
+        <div>
+          <div style="font-size:13px;color:var(--accent-red);margin:10px 0" x-text="replayModal.error"></div>
+          <div style="display:flex;justify-content:flex-end"><button class="btn" @click="closeReplayModal()">Close</button></div>
+        </div>
+      </template>
     </div>
   </div>
 

@@ -52,10 +52,10 @@ type WebhookEvent struct {
 	ID         string          `json:"id"`
 	InstanceID string          `json:"instanceId"`
 	ReceivedAt time.Time       `json:"receivedAt"`
-	EventType  string          `json:"eventType"`         // "Test", "Grab", "Download", etc. — straight from Arr's `eventType` field
-	Title      string          `json:"title,omitempty"`   // movie/series title pulled out for the card
+	EventType  string          `json:"eventType"`          // "Test", "Grab", "Download", etc. — straight from Arr's `eventType` field
+	Title      string          `json:"title,omitempty"`    // movie/series title pulled out for the card
 	Subtitle   string          `json:"subtitle,omitempty"` // year / S01E05 / etc. — best-effort second line
-	Raw        json.RawMessage `json:"raw"`               // full decoded body, pretty-printable on expand
+	Raw        json.RawMessage `json:"raw"`                // full decoded body, pretty-printable on expand
 	// Outcomes records which rule(s) fired on this event and what
 	// they did. Populated AFTER dispatch completes via
 	// webhookLog.attachOutcomes — append() writes the raw event, the
@@ -67,6 +67,12 @@ type WebhookEvent struct {
 	// changes" / "No change" / "Errors only" filters without a join
 	// against per-rule history.
 	Outcomes []WebhookEventOutcome `json:"outcomes,omitempty"`
+
+	// Replay marks an event that the user manually re-ran from Recent
+	// Activity (rather than one Sonarr/Radarr sent). The replay appends a
+	// fresh entry so the original failure stays in the log next to the
+	// re-run result. The UI badges it so the two are distinguishable.
+	Replay bool `json:"replay,omitempty"`
 }
 
 // WebhookEventOutcome is the per-rule summary attached to a logged
@@ -330,6 +336,30 @@ func (l *webhookLog) list(instanceID string) []WebhookEvent {
 		out[len(bucket)-1-i] = copied
 	}
 	return out
+}
+
+// findByID returns a deep copy of the event with the given ID plus the
+// instance it belongs to. Used by the replay path, which needs the stored
+// Raw payload + its instance to re-dispatch. ok is false when no event
+// matches (e.g. it aged out of the ring buffer since the UI listed it).
+func (l *webhookLog) findByID(id string) (ev WebhookEvent, instanceID string, ok bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for inst, bucket := range l.events {
+		for i := range bucket {
+			if bucket[i].ID != id {
+				continue
+			}
+			copied := bucket[i]
+			if bucket[i].Raw != nil {
+				rawCopy := make(json.RawMessage, len(bucket[i].Raw))
+				copy(rawCopy, bucket[i].Raw)
+				copied.Raw = rawCopy
+			}
+			return copied, inst, true
+		}
+	}
+	return WebhookEvent{}, "", false
 }
 
 // clear wipes events for one instance. Used by the "Clear log" button
