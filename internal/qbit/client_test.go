@@ -2,6 +2,7 @@ package qbit
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -245,5 +246,33 @@ func TestPing_ForcesFreshLogin(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&loginCalls); got != 2 {
 		t.Errorf("Ping should force re-login: want 2 total logins, got %d", got)
+	}
+}
+
+// TestScrubErr_RedactsProxyToken: a transport error embedding the qui
+// /proxy/<token> URL (Go's *url.Error includes the full request URL) must
+// have the token redacted before it can reach the log or the UI.
+func TestScrubErr_RedactsProxyToken(t *testing.T) {
+	token := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	c, err := New(Config{URL: "http://qbit:7476/proxy/" + token})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if c.proxyToken != token {
+		t.Fatalf("proxyToken = %q, want the token", c.proxyToken)
+	}
+	raw := errors.New(`Get "http://qbit:7476/proxy/` + token + `/api/v2/torrents/info?filter=stalled": dial tcp: lookup qbit: no such host`)
+	got := c.scrubErr(raw).Error()
+	if strings.Contains(got, token) {
+		t.Errorf("scrubErr leaked the token: %q", got)
+	}
+	if !strings.Contains(got, "/proxy/<redacted>") {
+		t.Errorf("scrubErr should mark the redaction, got %q", got)
+	}
+	// Direct (non-proxy) URLs have no token: scrubErr is a passthrough.
+	c2, _ := New(Config{URL: "http://192.168.1.100:8080"})
+	e2 := errors.New("dial tcp 192.168.1.100:8080: connect: connection refused")
+	if c2.scrubErr(e2).Error() != e2.Error() {
+		t.Errorf("scrubErr altered a non-proxy error")
 	}
 }

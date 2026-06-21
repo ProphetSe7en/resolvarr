@@ -118,9 +118,23 @@ function appQbitInstances() {
         });
         const d = await r.json();
         if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        const savedId = m.id || (d && d.id);
         await this.loadQbitInstances();
         this.qbitInstanceModal.open = false;
-        this.showToast('qBit instance saved', 'success');
+        // Warn-on-save: the instance is saved regardless (qBit may be down
+        // now, or you're setting up ahead of time), but run a connection
+        // test so a bad address/port surfaces immediately instead of only
+        // as a red row the user might miss.
+        if (savedId) {
+          await this.testQbitInstance(savedId);
+          if (this.qbitStatus[savedId] === 'failed') {
+            this.showToast('Saved, but could not connect: ' + this.connErrorShort(this.qbitError[savedId]), 'error');
+          } else {
+            this.showToast('qBit instance saved', 'success');
+          }
+        } else {
+          this.showToast('qBit instance saved', 'success');
+        }
       } catch (e) {
         this.showToast('Save failed: ' + e.message, 'error');
       } finally {

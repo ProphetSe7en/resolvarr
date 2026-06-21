@@ -133,7 +133,9 @@
                   <span class="status-connected">Connected<span x-show="instVersion[inst.id]" style="color:var(--text-muted);font-weight:400;font-size:12px" x-text="' · v' + instVersion[inst.id]"></span></span>
                 </template>
                 <template x-if="instStatus[inst.id] === 'failed'">
-                  <span class="status-failed" x-text="'Failed' + (instError[inst.id] ? ' — ' + instError[inst.id] : '')"></span>
+                  <span class="status-failed" :title="instError[inst.id] || ''"
+                        style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:middle"
+                        x-text="'Failed' + (instError[inst.id] ? ' — ' + connErrorShort(instError[inst.id]) : '')"></span>
                 </template>
                 <template x-if="!instStatus[inst.id]">
                   <span style="font-size:12px;color:var(--text-muted)">Not tested</span>
@@ -194,7 +196,9 @@
                     <span class="status-connected">Connected</span>
                   </template>
                   <template x-if="qbitStatus[qi.id] === 'failed'">
-                    <span class="status-failed" :title="qbitError[qi.id] || ''" x-text="'Failed' + (qbitError[qi.id] ? ' — ' + qbitError[qi.id] : '')"></span>
+                    <span class="status-failed" :title="qbitError[qi.id] || ''"
+                          style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:middle"
+                          x-text="'Failed' + (qbitError[qi.id] ? ' — ' + connErrorShort(qbitError[qi.id]) : '')"></span>
                   </template>
                   <template x-if="!qbitStatus[qi.id]">
                     <span style="font-size:12px;color:var(--text-muted)">Not tested</span>
@@ -257,7 +261,9 @@
                     <span class="status-connected">Connected</span>
                   </template>
                   <template x-if="plexStatus[pi.id] === 'failed'">
-                    <span class="status-failed" :title="plexError[pi.id] || ''" x-text="'Failed' + (plexError[pi.id] ? ' — ' + plexError[pi.id] : '')"></span>
+                    <span class="status-failed" :title="plexError[pi.id] || ''"
+                          style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:middle"
+                          x-text="'Failed' + (plexError[pi.id] ? ' — ' + connErrorShort(plexError[pi.id]) : '')"></span>
                   </template>
                   <template x-if="!plexStatus[pi.id]">
                     <span style="font-size:12px;color:var(--text-muted)">Not tested</span>

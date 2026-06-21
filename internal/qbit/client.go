@@ -37,6 +37,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -67,8 +68,32 @@ type Client struct {
 	baseURL string // normalised: trailing slash stripped, scheme verified
 	http    *http.Client
 
+	// proxyToken is the qui /proxy/<token> secret extracted from baseURL,
+	// or "" for direct/reverse-proxy URLs. Held so scrubErr can redact it
+	// from error strings: Go's net/http wraps failures in a *url.Error
+	// that embeds the full request URL (token included), which would
+	// otherwise leak the secret into the UI's status/test messages.
+	proxyToken string
+
 	mu          sync.Mutex
 	cookieReady bool // login already attempted + cookie set in jar
+}
+
+// proxyTokenRE extracts a qui /proxy/<hex> token from a base URL.
+var proxyTokenRE = regexp.MustCompile(`(?i)/proxy/([a-f0-9]{16,})`)
+
+// scrubErr redacts this client's qui proxy token from an error message so
+// it never reaches the UI in plaintext. Returns the original error when
+// there's no token or the token isn't present (preserves wrapping).
+func (c *Client) scrubErr(err error) error {
+	if err == nil || c.proxyToken == "" {
+		return err
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, c.proxyToken) {
+		return err
+	}
+	return errors.New(strings.ReplaceAll(msg, c.proxyToken, "<redacted>"))
 }
 
 // New constructs a Client. Validates the URL up front so callers
@@ -98,10 +123,15 @@ func New(cfg Config) (*Client, error) {
 			TLSHandshakeTimeout: 10 * time.Second,
 		},
 	}
+	var token string
+	if m := proxyTokenRE.FindStringSubmatch(base); len(m) == 2 {
+		token = m[1]
+	}
 	return &Client{
-		cfg:     cfg,
-		baseURL: base,
-		http:    httpClient,
+		cfg:        cfg,
+		baseURL:    base,
+		http:       httpClient,
+		proxyToken: token,
 	}, nil
 }
 
@@ -187,7 +217,8 @@ func (c *Client) loginLocked(ctx context.Context) error {
 	resp, err := c.http.Do(req)
 	if err != nil {
 		c.cookieReady = false
-		return fmt.Errorf("login request failed: %w", err)
+		// Scrub the qui token from the transport error before it surfaces.
+		return fmt.Errorf("login request failed: %w", c.scrubErr(err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -265,9 +296,11 @@ func (c *Client) doOnce(ctx context.Context, method, path string, body io.Reader
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		// Transport-level failure (DNS, refused, timeout): log the API
-		// path (no embedded token: path is the clean "/api/v2/..." arg,
-		// not the full URL) so a misconfigured host/port is visible.
+		// Transport-level failure (DNS, refused, timeout). Scrub the qui
+		// proxy token from the error first: Go's *url.Error embeds the full
+		// request URL (token included), which must not reach the log or the
+		// UI. The path arg itself is token-free.
+		err = c.scrubErr(err)
 		fmt.Fprintf(os.Stderr, "resolvarr: qbit %s %s -> transport error: %v\n", method, path, err)
 		return nil, err
 	}

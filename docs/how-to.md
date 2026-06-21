@@ -161,6 +161,32 @@ Every movie or series that had the old tag keeps the tag — just with the new n
 
 ---
 
+## Webhooks (Sonarr/Radarr Connect)
+
+**What it does:** lets Sonarr and Radarr tell resolvarr the moment something happens (a grab, an import, a file delete), so your rules run automatically on that event instead of only on a manual or scheduled scan.
+
+**Why:** the action happens right when the release arrives, while the data you want to fix (release group, language tag, season/episode) is still known.
+
+**How to set it up:**
+
+1. On the Webhooks page, open an instance and click **Set up webhook** to get its URL.
+2. In Sonarr/Radarr → Settings → Connect, add a Webhook connection and paste that URL.
+3. Add one or more **rules** on the instance (the + Add rule button) to pick which functions fire (tag, grab rename, recover, season/episode tag, and so on).
+
+The **Recent activity** tab shows the Connect events as they arrive, with what each rule did. The separate **qBit webhook** tab shows torrents qBittorrent reported directly (cross-seed and manual adds).
+
+### One Sonarr/Radarr feeding several qBittorrent clients
+
+If a single Sonarr or Radarr sends downloads to more than one qBittorrent instance (for example you route items to different clients by tag), give each rule its own webhook URL so each one only ever sees its own grabs. That avoids every rule firing on every grab and reporting "not found" for the torrents that live in a different client.
+
+1. In resolvarr, create one rule per qBittorrent instance. On each rule, use the button that gives it its own dedicated webhook URL.
+2. In Sonarr/Radarr → Settings → Connect, add one Webhook connection per rule and paste that rule's URL.
+3. On each connection, set the **Tags** field to the same tag you use to route items to that download client.
+
+Sonarr/Radarr then sends each grab only to the connection whose tag matches, so each resolvarr rule fires only for the items meant for its qBittorrent instance. A rule that uses its own URL never fires from the shared instance URL, so it never trips over a torrent that lives in a different client.
+
+---
+
 ## Coming later
 
 These sections will be added as the feature ships:

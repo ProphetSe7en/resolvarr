@@ -132,5 +132,26 @@ function appTbaRefresh() {
         return iso;
       }
     },
+
+    // connErrorShort turns a raw connection/test error (Go's transport
+    // errors are verbose: `Get "..." : dial tcp: lookup host on
+    // 127.0.0.1:53: no such host`) into a short, plain message for the
+    // instance status rows (Instances / qBittorrent / Plex). The full
+    // message stays in the row's title tooltip. Secrets are already
+    // scrubbed server-side; this only improves readability + keeps the
+    // row from overflowing. Falls back to a trimmed raw for unknown cases.
+    connErrorShort(msg) {
+      if (!msg) return '';
+      const m = String(msg).toLowerCase();
+      if (m.includes('no such host') || m.includes('lookup'))         return 'Host not found (check the address)';
+      if (m.includes('connection refused'))                           return 'Connection refused (running on that port?)';
+      if (m.includes('no route to host') || m.includes('network is unreachable')) return 'Host unreachable (check the address/network)';
+      if (m.includes('timeout') || m.includes('deadline exceeded') || m.includes('i/o timeout')) return 'Timed out (host unreachable?)';
+      if (m.includes('x509') || m.includes('certificate'))            return 'Certificate error (enable Trusted certs for self-signed?)';
+      if (m.includes('401') || m.includes('unauthorized'))            return 'Authentication failed (check credentials / token)';
+      if (m.includes('403') || m.includes('forbidden'))               return 'Access forbidden (check credentials)';
+      const t = String(msg).trim();
+      return t.length > 90 ? t.slice(0, 90) + '…' : t;
+    },
   };
 }

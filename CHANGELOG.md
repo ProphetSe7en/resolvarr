@@ -2,6 +2,18 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.65-dev — Clearer, safer connection error messages (2026-06-21)
+
+### Fixed
+
+- **A failed qBittorrent connection no longer shows the qui proxy token.** When a qui-proxy instance could not be reached, the error message printed the full proxy URL including the access token in plain text. The token is now redacted from every connection error (in the UI and the container log).
+- **Connection errors no longer stretch the row off-screen.** A long error on an Instances, qBittorrent, or Plex row is now shortened with the full text on hover, instead of pushing the row wide.
+
+### Improved
+
+- **Connection errors are now in plain language.** Instead of a raw technical dump, a failed test reads as, for example, "Host not found (check the address)", "Connection refused (running on that port?)", "Certificate error (enable Trusted certs for self-signed?)", or "Timed out".
+- **Saving a qBittorrent instance now tells you right away if it can't connect.** The instance still saves (useful when qBittorrent is down or not set up yet), but a failed connection shows a clear "Saved, but could not connect" message instead of only a red row you might miss.
+
 ## v0.6.64-dev — qBit webhook activity view + Grab Rename language tag trigger (2026-06-21)
 
 ### Added
