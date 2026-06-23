@@ -429,7 +429,7 @@ func TestReasonsNeedGrabBase(t *testing.T) {
 }
 
 func TestEvaluateGrabRenameTriggers_FileExtension(t *testing.T) {
-	c := &core.GrabRenameCriteria{TriggerOnBadNaming: true}
+	c := &core.GrabRenameCriteria{TriggerOnFileExtension: true}
 	t.Run("trailing .mkv in display → fire", func(t *testing.T) {
 		got := evaluateGrabRenameTriggers("Movie.2024.2160p.MA.WEB-DL-FLUX.mkv", "Movie.2024.2160p.MA.WEB-DL-FLUX", "FLUX", c)
 		if len(got) != 1 || !strings.Contains(got[0], "file-extension") {
@@ -442,4 +442,15 @@ func TestEvaluateGrabRenameTriggers_FileExtension(t *testing.T) {
 			t.Errorf("got %v, want []", got)
 		}
 	})
+}
+
+func TestEvaluateGrabRenameTriggers_BadNamingIgnoresExtension(t *testing.T) {
+	// Bad naming no longer fires on a trailing extension; only the
+	// dedicated file-extension trigger does. A name whose ONLY defect is a
+	// ".mkv" must not fire when only Bad naming is enabled.
+	c := &core.GrabRenameCriteria{TriggerOnBadNaming: true}
+	got := evaluateGrabRenameTriggers("Movie.2024.2160p.MA.WEB-DL-FLUX.mkv", "Movie.2024.2160p.MA.WEB-DL-FLUX", "FLUX", c)
+	if len(got) != 0 {
+		t.Errorf("got %v, want [] (Bad naming must ignore a trailing extension)", got)
+	}
 }

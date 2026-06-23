@@ -393,6 +393,7 @@ func validateGrabRenameCriteria(c *core.GrabRenameCriteria, appType string) *api
 		!c.TriggerOnLanguageMismatch &&
 		!c.TriggerOnSceneMismatch &&
 		!c.TriggerOnBadNaming &&
+		!c.TriggerOnFileExtension &&
 		!c.TriggerAlways &&
 		len(c.CustomTokens) == 0 {
 		return newAPIError(400, "grabRename must enable at least one trigger (or define custom tokens) — otherwise the rule never fires")

@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.67-dev — Stripping the file extension is now its own choice (2026-06-23)
+
+### Changed
+
+- **Removing a trailing file extension (`.mkv`, `.mp4`, etc.) from a torrent name is now a separate, optional setting in Grab Rename.** It used to be bundled into "Bad naming", so the extension was taken off whenever that was on, and it could also be removed as a side effect of any other rename. There is now a dedicated "Strip file extension" toggle. Turn it on if you want the extension removed; leave it off to keep the name as it is. Existing rules do not strip the extension unless you switch the new setting on.
+
 ## v0.6.66-dev — Toolchain refresh (2026-06-22)
 
 ### Changed
