@@ -447,18 +447,36 @@ func TestStripLeadingForeignBracket(t *testing.T) {
 }
 
 func TestCleanReleaseName(t *testing.T) {
+	// CleanReleaseName strips a leading non-Latin bracket and collapses a
+	// duplicate year. It deliberately does NOT strip a trailing video
+	// extension; that is the opt-in file-extension trigger's job, so any
+	// ".mkv" below survives untouched here.
 	cases := []struct{ in, want string }{
 		{"[测试名].Movie.1969.1080p.iTunes.WEB-DL.H264.DD5.1-UBWEB", "Movie.1969.1080p.iTunes.WEB-DL.H264.DD5.1-UBWEB"},
-		{"Movie.The.Secret.Service.2015.2160p.MA.WEB-DL-FLUX.mkv", "Movie.The.Secret.Service.2015.2160p.MA.WEB-DL-FLUX"},
+		{"Movie.The.Secret.Service.2015.2160p.MA.WEB-DL-FLUX.mkv", "Movie.The.Secret.Service.2015.2160p.MA.WEB-DL-FLUX.mkv"},
 		{"Movie.2020.2020.1080p-RG", "Movie.2020.1080p-RG"},
-		{"[测试名].Movie.2020.2020.1080p-RG.mkv", "Movie.2020.1080p-RG"},
+		{"[测试名].Movie.2020.2020.1080p-RG.mkv", "Movie.2020.1080p-RG.mkv"},
 		{"Movie.2024.1080p.WEB-DL-FLUX", "Movie.2024.1080p.WEB-DL-FLUX"},
-		{"[SubGroup] Show 2024 1080p WEB-DL-RG.mkv", "[SubGroup] Show 2024 1080p WEB-DL-RG"},
+		{"[SubGroup] Show 2024 1080p WEB-DL-RG.mkv", "[SubGroup] Show 2024 1080p WEB-DL-RG.mkv"},
 	}
 	for _, c := range cases {
 		if got := CleanReleaseName(c.in); got != c.want {
 			t.Errorf("CleanReleaseName(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestHasBadNaming_ExcludesFileExtension(t *testing.T) {
+	// A trailing extension alone is no longer "bad naming"; it has its own
+	// opt-in trigger. Bracket / duplicate-year defects still count.
+	if HasBadNaming("Movie.2024.1080p.WEB-DL-FLUX.mkv") {
+		t.Error("HasBadNaming should be false for a clean name with only a trailing extension")
+	}
+	if !HasBadNaming("[测试名].Movie.2024-RG") {
+		t.Error("HasBadNaming should still be true for a leading non-Latin bracket")
+	}
+	if !HasBadNaming("Movie.2020.2020.1080p-RG") {
+		t.Error("HasBadNaming should still be true for a duplicate year")
 	}
 }
 

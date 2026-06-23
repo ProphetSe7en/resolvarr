@@ -220,12 +220,18 @@ func (s *Server) dispatchGrabRename(
 		base = grabTitle
 	}
 	// Target = the chosen base, rg-segment normalised then cleaned. The
-	// cleanups (strip leading non-Latin bracket / file extension, collapse
-	// dup-year) run on EVERY path and are no-ops on clean names, so no
-	// trigger or Always-rename combination can leave or reintroduce
-	// garbage — and a correctly-named release is never altered.
+	// cleanups (strip leading non-Latin bracket, collapse dup-year) run on
+	// EVERY path and are no-ops on clean names, so no trigger or
+	// Always-rename combination can leave or reintroduce garbage, and a
+	// correctly-named release is never altered. The file-extension strip is
+	// deliberately NOT in this always-on set: it runs only when the user
+	// enabled the file-extension trigger, so other triggers can't silently
+	// drop a trailing ".mkv".
 	targetRG := engine.ResolveReleaseGroup(payload.Release.ReleaseGroup, base)
 	target := engine.CleanReleaseName(engine.NormalizeRgSegment(base, targetRG))
+	if criteria.TriggerOnFileExtension {
+		target = engine.StripFileExtension(target)
+	}
 	if target == currentName {
 		return functionResult{
 			Function: core.WebhookFnGrabRename, OK: true,
@@ -432,7 +438,12 @@ func evaluateGrabRenameTriggers(currentName, grabTitle, rg string, c *core.GrabR
 		if engine.HasDuplicateYear(currentName) {
 			reasons = append(reasons, "duplicate-year (same year twice; collapsed to one)")
 		}
-		// File extension leaked into the torrent display name.
+	}
+
+	// File extension: its own opt-in trigger (split out of Bad naming so
+	// users who want a trailing ".mkv" left alone can keep it). Fires the
+	// rename and the strip is applied to the target only when this is on.
+	if c.TriggerOnFileExtension {
 		if engine.HasFileExtension(currentName) {
 			reasons = append(reasons, "file-extension (.mkv/.mp4 etc in the torrent name)")
 		}

@@ -300,9 +300,17 @@ type GrabRenameCriteria struct {
 	//     year, "Movie.2049.2017") are left alone.
 	//
 	// Both are objective name defects with safe fixes, so they share one
-	// toggle (and future name-cleanup heuristics join here, not as new
-	// checkboxes).
+	// toggle. The file-extension cleanup used to live here too, but it is
+	// now its own opt-in trigger (TriggerOnFileExtension) so users who
+	// want to keep a trailing ".mkv" in the torrent name can.
 	TriggerOnBadNaming bool `json:"triggerOnBadNaming,omitempty"`
+
+	// TriggerOnFileExtension: rename when the torrent display name ends in
+	// a video-container extension (".mkv", ".mp4", etc.) and strip it.
+	// Split out of Bad naming so extension removal is opt-in; some users
+	// prefer the extension left untouched. Default off; existing Bad-naming
+	// rules are NOT auto-migrated to this trigger.
+	TriggerOnFileExtension bool `json:"triggerOnFileExtension,omitempty"`
 
 	// TriggerAlways: bypass all token checks; rename if current qBit
 	// name differs from grab title at all. Cosmetic-churn risk but
@@ -433,6 +441,7 @@ func (c *GrabRenameCriteria) MigrateLegacyTriggerFlags() {
 		c.TriggerOnLanguageMismatch ||
 		c.TriggerOnSceneMismatch ||
 		c.TriggerOnBadNaming ||
+		c.TriggerOnFileExtension ||
 		c.TriggerAlways {
 		return
 	}

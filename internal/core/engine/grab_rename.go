@@ -405,21 +405,23 @@ func CollapseDuplicateYear(name string) string {
 }
 
 // HasBadNaming reports whether name carries any objective "bad naming"
-// defect Radarr mis-parses: a leading non-Latin bracket, a trailing
-// video extension, or a same-year duplication. Drives the Bad-naming
-// trigger (whether to fire a rename when the display is malformed).
+// defect Radarr mis-parses: a leading non-Latin bracket or a same-year
+// duplication. Drives the Bad-naming trigger (whether to fire a rename
+// when the display is malformed). A trailing video extension is handled
+// separately by the opt-in file-extension trigger, not here.
 func HasBadNaming(name string) bool {
-	return HasLeadingForeignBracket(name) || HasFileExtension(name) || HasDuplicateYear(name)
+	return HasLeadingForeignBracket(name) || HasDuplicateYear(name)
 }
 
 // CleanReleaseName removes the bad-naming defects from a rename target:
-// strips a leading non-Latin bracket, collapses a same-year duplication,
-// and strips a trailing video extension. Each step is a no-op when its
-// defect is absent, so a correctly-named release passes through unchanged.
+// strips a leading non-Latin bracket and collapses a same-year
+// duplication. Each step is a no-op when its defect is absent, so a
+// correctly-named release passes through unchanged. A trailing video
+// extension is NOT stripped here; that is the opt-in file-extension
+// trigger's job, applied by the dispatcher only when the user enabled it.
 func CleanReleaseName(name string) string {
 	out := StripLeadingForeignBracket(name)
 	out = CollapseDuplicateYear(out)
-	out = StripFileExtension(out)
 	return out
 }
 
