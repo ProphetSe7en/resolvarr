@@ -181,11 +181,15 @@ function appDvScan() {
                section === 'tba-refresh' ||
                section === 'qbit-se' ||
                section === 'reconcile' ||
+               section === 'release-type-overview' ||
+               section === 'release-type-recover' ||
                section === 'history';
       }
       // Radarr: every visible section EXCEPT the Sonarr-only ones.
-      // (qbit-se = qBit Season/Episode tagging is Sonarr-only too.)
-      if (section === 'missing-episodes' || section === 'tba-refresh' || section === 'qbit-se') return false;
+      // (qbit-se = qBit Season/Episode tagging is Sonarr-only too;
+      // release types only exist on Sonarr episode files.)
+      if (section === 'missing-episodes' || section === 'tba-refresh' || section === 'qbit-se' ||
+          section === 'release-type-overview' || section === 'release-type-recover') return false;
       return true;
     },
 

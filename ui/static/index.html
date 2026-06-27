@@ -38,6 +38,15 @@
          title="Section id (dev build) — see docs/resolvarr/ui-section-map.md"
          style="position:fixed;bottom:8px;left:8px;z-index:9999;font-family:monospace;font-size:10px;font-weight:700;letter-spacing:0.5px;padding:2px 7px;border-radius:6px;background:var(--accent-orange-bg, #3a2a10);color:var(--accent-orange, #e0a030);border:1px solid var(--accent-orange, #e0a030);pointer-events:none;opacity:0.85"></div>
   </template>
+  <!-- Dev-build banner. Visible on every -dev build until the user dismisses
+       THIS version (stored in localStorage); a new dev build shows it again. -->
+  <template x-if="devBannerShow">
+    <div style="display:flex;align-items:center;gap:10px;padding:7px 16px;background:var(--accent-orange-bg, rgba(234,179,8,0.12));border-bottom:1px solid var(--accent-orange, #e0a030);font-size:12.5px;color:var(--text-body);line-height:1.4">
+      <span style="font-size:14px">🧪</span>
+      <span style="flex:1">Development build <strong x-text="version"></strong>. Things can change between versions and some features aren't fully tested yet, so use it at your own risk.</span>
+      <button @click="dismissDevBanner()" title="Hide until the next dev version" style="flex:none;background:transparent;border:none;cursor:pointer;color:var(--text-muted-secondary);font-size:16px;line-height:1;padding:2px 6px">✕</button>
+    </div>
+  </template>
   <div class="topnav">
     <div class="logo">Resolvarr</div>
     <div class="version" x-text="'v' + version"></div>
@@ -696,6 +705,12 @@
         </template>
         <template x-if="scanSectionVisible('reconcile')">
           <a class="settings-nav" :class="scanSection === 'reconcile' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'reconcile' })" @click="setScanSection('reconcile')" title="Find downloads stuck in the queue that a better release already replaced, and move them out of the way">Stuck downloads</a>
+        </template>
+        <template x-if="scanSectionVisible('release-type-overview')">
+          <a class="settings-nav" :class="scanSection === 'release-type-overview' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'release-type-overview' })" @click="setScanSection('release-type-overview')" title="See which episodes Sonarr has as Single Episode, Multi-Episode, or Season Pack, per series and season">Release types</a>
+        </template>
+        <template x-if="scanSectionVisible('release-type-recover')">
+          <a class="settings-nav" :class="scanSection === 'release-type-recover' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'release-type-recover' })" @click="setScanSection('release-type-recover')" title="Work out the true release type of files Sonarr lists as Unknown, from the grab history, and preview what would be fixed">Recover release types</a>
         </template>
         <template x-if="scanSectionVisible('profile-by-tag')">
           <a class="settings-nav" :class="scanSection === 'profile-by-tag' && 'settings-nav-active'" :href="navHref('scan', { scanSection: 'profile-by-tag' })" @click="setScanSection('profile-by-tag')" title="Automatically switch a movie or series to a different quality profile based on its tags, using AND/OR rules">Profile switcher</a>
@@ -3604,6 +3619,303 @@
           </template>
         </div>
 
+        <!-- ===== Release types (release-type-overview): read-only Sonarr view ===== -->
+        <div x-show="scanSection === 'release-type-overview' && scanAppType === 'sonarr'" x-cloak>
+          <div class="settings-section-title">Release types</div>
+          <div class="settings-section-desc">
+            Shows how Sonarr has classified every episode file on disk: Single Episode, Multi-Episode, Season Pack, or Unknown. Sonarr stores this but never lists it anywhere, so here is a read-only overview per series and per season. Nothing is changed. Note: a file's release type can only be changed by re-importing it in Sonarr, not from here.
+          </div>
+
+          <div style="margin:14px 0">
+            <button class="btn btn-primary" @click="runReleaseTypeOverview()" :disabled="releaseTypeLoading || !scanAvailableInstances().some(i => i.type === 'sonarr')">
+              <span x-show="!releaseTypeLoading">Run scan</span>
+              <span x-show="releaseTypeLoading">Scanning…</span>
+            </button>
+          </div>
+
+          <template x-if="releaseTypeError">
+            <div style="padding:10px 14px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;color:var(--accent-red);font-size:13px;margin-bottom:14px" x-text="releaseTypeError"></div>
+          </template>
+
+          <template x-if="releaseTypeResults">
+            <div>
+              <!-- Instance-wide tally — each type is a clickable filter chip -->
+              <div style="font-size:12px;color:var(--text-muted-secondary);margin-bottom:6px"><strong x-text="releaseTypeResults.totals.releaseTypeTotal || 0"></strong> episode files. Click a type to show only the series and seasons that have it.</div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px">
+                <span :style="releaseTypeChipStyle('seasonPack')" @click="setReleaseTypeFilter('seasonPack')"><strong x-text="releaseTypeResults.totals.releaseTypeSeasonPack || 0"></strong> Season Pack</span>
+                <span :style="releaseTypeChipStyle('singleEpisode')" @click="setReleaseTypeFilter('singleEpisode')"><strong x-text="releaseTypeResults.totals.releaseTypeSingle || 0"></strong> Single Episode</span>
+                <span :style="releaseTypeChipStyle('multiEpisode')" @click="setReleaseTypeFilter('multiEpisode')"><strong x-text="releaseTypeResults.totals.releaseTypeMulti || 0"></strong> Multi-Episode</span>
+                <span :style="releaseTypeChipStyle('unknown')" @click="setReleaseTypeFilter('unknown')"><strong x-text="releaseTypeResults.totals.releaseTypeUnknown || 0"></strong> Unknown</span>
+                <button x-show="releaseTypeFilter" type="button" class="btn btn-secondary" @click="releaseTypeFilter = ''" style="font-size:12px;padding:3px 10px">Show all</button>
+              </div>
+
+              <template x-if="releaseTypeFilteredSeries().length === 0">
+                <div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:13px;border:1px dashed var(--border-subtle);border-radius:8px" x-text="releaseTypeFilter ? 'No series have files of this type.' : 'No episode files found.'"></div>
+              </template>
+
+              <!-- Per-series rows (click to expand the per-season breakdown) -->
+              <template x-if="releaseTypeFilteredSeries().length > 0">
+                <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+                  <template x-for="s in releaseTypeFilteredSeries()" :key="s.seriesId">
+                    <div style="border-bottom:1px solid var(--bg-muted)">
+                      <div @click="toggleReleaseTypeExpanded(s.seriesId)" style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer">
+                        <span style="color:var(--text-muted-secondary);font-size:11px;width:10px" x-text="releaseTypeExpanded[s.seriesId] ? '▾' : '▸'"></span>
+                        <div style="flex:1;min-width:0">
+                          <span style="font-size:13px;color:var(--text-body);font-weight:500" x-text="s.seriesTitle"></span>
+                          <span x-show="s.year" style="font-size:12px;color:var(--text-muted-secondary)"> (<span x-text="s.year"></span>)</span>
+                        </div>
+                        <div style="font-size:12px;color:var(--text-secondary);white-space:nowrap;display:flex;gap:10px">
+                          <template x-if="s.seasonPack > 0"><span class="v-num-keep"><span x-text="s.seasonPack"></span> SP</span></template>
+                          <template x-if="s.singleEpisode > 0"><span class="v-num-add"><span x-text="s.singleEpisode"></span> SE</span></template>
+                          <template x-if="s.multiEpisode > 0"><span><span x-text="s.multiEpisode"></span> ME</span></template>
+                          <template x-if="s.unknown > 0"><span style="color:var(--accent-orange)"><span x-text="s.unknown"></span> ?</span></template>
+                        </div>
+                      </div>
+                      <template x-if="releaseTypeExpanded[s.seriesId]">
+                        <div style="padding:2px 14px 12px 34px">
+                          <template x-for="se in releaseTypeFilteredSeasons(s)" :key="se.seasonNumber">
+                            <div style="display:flex;align-items:center;gap:12px;padding:5px 0;font-size:12px;color:var(--text-secondary);border-top:1px solid var(--bg-muted)">
+                              <span style="width:90px;color:var(--text-muted-secondary);flex-shrink:0" x-text="se.seasonNumber === 0 ? 'Specials' : ('Season ' + se.seasonNumber)"></span>
+                              <span style="display:flex;gap:12px;flex-wrap:wrap">
+                                <template x-if="se.seasonPack > 0"><span class="v-num-keep"><span x-text="se.seasonPack"></span> Season Pack</span></template>
+                                <template x-if="se.singleEpisode > 0"><span class="v-num-add"><span x-text="se.singleEpisode"></span> Single</span></template>
+                                <template x-if="se.multiEpisode > 0"><span><span x-text="se.multiEpisode"></span> Multi</span></template>
+                                <template x-if="se.unknown > 0"><span style="color:var(--accent-orange)"><span x-text="se.unknown"></span> Unknown</span></template>
+                              </span>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+
+
+        <!-- ===== Recover release types (release-type-recover): preview ===== -->
+        <div x-show="scanSection === 'release-type-recover' && scanAppType === 'sonarr'" x-cloak>
+          <div class="settings-section-title">Recover release types</div>
+          <div class="settings-section-desc">
+            For episode files Sonarr lists as Unknown, this reads the grab history to work out what the release actually was (Season Pack, Single Episode, or Multi-Episode) and previews what it would set. It matches on the grab's release group and the season/episode pattern in the grab name, and leaves anything unclear alone. This is a preview only. Note: actually applying a fix re-imports the file in Sonarr (the only way to set release type), which is coming in a later step.
+          </div>
+
+          <!-- Sonarr instance picker (when 2+ configured). -->
+          <template x-if="scanAvailableInstances().filter(i => i.type === 'sonarr').length > 1">
+            <div class="form-group" style="max-width:340px">
+              <label class="label">Sonarr instance</label>
+              <select class="input" x-model="scanInstanceId"
+                      x-init="$nextTick(() => { if (scanInstanceId) $el.value = scanInstanceId })">
+                <template x-for="inst in scanAvailableInstances().filter(i => i.type === 'sonarr')" :key="inst.id">
+                  <option :value="inst.id" x-text="inst.name"></option>
+                </template>
+              </select>
+            </div>
+          </template>
+
+          <!-- Optional qBittorrent verification (Tier 2). Confirms each
+               candidate by matching the file to a torrent on exact byte
+               size, the only way to settle Unconfirmed items for real. -->
+          <div class="form-group" style="max-width:420px">
+            <label class="label">Verify with qBittorrent (optional)</label>
+            <select class="input" x-model="rtrQbitInstanceId">
+              <option value="">Don't verify, use grab history only</option>
+              <template x-for="q in (qbitInstances || [])" :key="q.id">
+                <option :value="q.id" x-text="q.name"></option>
+              </template>
+            </select>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;line-height:1.5">
+              When picked, resolvarr matches each file to the torrent that holds it by exact byte size and reads the real release type from it. This settles Unconfirmed items and double-checks the rest. Leave it off to rely on grab history alone.
+            </div>
+          </div>
+
+          <div style="margin:14px 0">
+            <button class="btn btn-primary" @click="runReleaseTypeRecover()" :disabled="rtrLoading || !scanAvailableInstances().some(i => i.type === 'sonarr')">
+              <span x-show="!rtrLoading">Preview fixes</span>
+              <span x-show="rtrLoading">Scanning…</span>
+            </button>
+          </div>
+
+          <template x-if="rtrError">
+            <div style="padding:10px 14px;background:var(--accent-red-bg);border:1px solid var(--accent-red);border-radius:6px;color:var(--accent-red);font-size:13px;margin-bottom:14px" x-text="rtrError"></div>
+          </template>
+
+          <template x-if="rtrResults">
+            <div>
+              <!-- Summary -->
+              <div style="font-size:13px;color:var(--text-secondary);margin-bottom:10px">
+                <strong x-text="rtrResults.totals.releaseTypeRecoverChecked || 0"></strong> unknown files checked ·
+                <strong x-text="rtrResults.totals.releaseTypeRecoverCandidates || 0"></strong> can be determined
+                <template x-if="(rtrResults.totals.releaseTypeRecoverQbitConfirmed || 0) > 0">
+                  <span> · <strong x-text="rtrResults.totals.releaseTypeRecoverQbitConfirmed"></strong> confirmed by qBittorrent</span>
+                </template>
+                <template x-if="rtrResults.mode === 'apply'">
+                  <span> · <strong style="color:var(--accent-green)" x-text="rtrResults.totals.releaseTypeRecoverFixed || 0"></strong> sent to Sonarr<template x-if="(rtrResults.totals.releaseTypeRecoverFixFailed || 0) > 0"><span style="color:var(--accent-red)"> · <strong x-text="rtrResults.totals.releaseTypeRecoverFixFailed"></strong> failed</span></template></span>
+                </template>
+              </div>
+
+              <!-- Confidence filter. Real buttons + object :style so the
+                   static chip styling survives (Alpine :style string form
+                   replaces the static style attribute). -->
+              <template x-if="(rtrResults.releaseTypeRecover || []).length > 0">
+                <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px">
+                  <button type="button" @click="rtrSetFilter('')" :style="rtrChipStyle('')">All <span x-text="(rtrResults.releaseTypeRecover || []).length"></span></button>
+                  <button type="button" @click="rtrSetFilter('high')" :style="rtrChipStyle('high')">High <span x-text="rtrResults.totals.releaseTypeRecoverHigh || 0"></span></button>
+                  <button type="button" @click="rtrSetFilter('medium')" :style="rtrChipStyle('medium')">Medium <span x-text="rtrResults.totals.releaseTypeRecoverMedium || 0"></span></button>
+                  <button type="button" @click="rtrSetFilter('unconfirmed')" :style="rtrChipStyle('unconfirmed')">Unconfirmed <span x-text="rtrResults.totals.releaseTypeRecoverUnconfirmed || 0"></span></button>
+                </div>
+              </template>
+
+              <template x-if="(rtrResults.totals.releaseTypeRecoverUnconfirmed || 0) > 0">
+                <div style="font-size:12px;color:var(--text-secondary);background:var(--bg-muted);border-radius:6px;padding:8px 12px;margin-bottom:12px;line-height:1.5">
+                  <strong>Unconfirmed</strong> items look like single episodes from the grab name, but a season pack imported episode-by-episode produces the exact same files on disk. Without qBittorrent verification we can't tell them apart, so these are shown for information and will not be applied automatically. <span x-show="!rtrQbitInstanceId">Pick a qBittorrent instance above and run again to confirm them.</span><span x-show="rtrQbitInstanceId">These ones weren't found in the selected qBittorrent (the torrents may have been removed).</span>
+                </div>
+              </template>
+
+              <template x-if="rtrFilteredCandidates().length === 0">
+                <div style="padding:20px;text-align:center;color:var(--text-secondary);font-size:13px;border:1px dashed var(--border-subtle);border-radius:8px">No recovery candidates. Every unknown file was either ambiguous or had no usable grab history.</div>
+              </template>
+
+              <!-- Apply: tick rows and "Fix selected", or use the per-row Fix
+                   button for one file. Re-import is the only way to set
+                   release type in Sonarr (PUT ignores the field). -->
+              <template x-if="rtrApplyableCandidates().length > 0">
+                <div style="margin-bottom:12px">
+                  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);cursor:pointer">
+                      <input type="checkbox" :checked="rtrAllApplyableSelected()" @change="rtrToggleSelectAll()" :disabled="rtrApplying">
+                      Select all <span x-text="rtrApplyableCandidates().length"></span> fixable
+                    </label>
+                    <button class="btn btn-primary" @click="rtrApplySelected()" :disabled="rtrApplying || rtrSelectedIds().length === 0">
+                      <span x-show="!rtrApplying">Fix <span x-text="rtrSelectedIds().length"></span> selected</span>
+                      <span x-show="rtrApplying">Sending…</span>
+                    </button>
+                    <span x-show="!rtrApplying" style="font-size:11px;color:var(--text-muted-secondary)">Tick a series or season to select it all, or use the Fix button on each row. Unconfirmed items can't be fixed automatically.</span>
+                  </div>
+                  <!-- Live progress + Cancel. This tracks how many files we
+                       have SENT to Sonarr, not how many it has finished
+                       importing (the command is async; Sonarr keeps working
+                       in the background after this fills up). -->
+                  <template x-if="rtrApplying">
+                    <div style="margin-top:10px">
+                      <div style="display:flex;align-items:center;gap:12px">
+                        <progress :value="rtrApplyProgress.done" :max="rtrApplyProgress.total || 1" style="flex:1;max-width:320px;height:8px"></progress>
+                        <span style="font-size:12px;color:var(--text-secondary);white-space:nowrap"><strong x-text="rtrApplyProgress.done"></strong> / <span x-text="rtrApplyProgress.total"></span> sent to Sonarr<template x-if="rtrApplyProgress.failed > 0"><span style="color:var(--accent-red)"> · <span x-text="rtrApplyProgress.failed"></span> failed</span></template></span>
+                        <button class="btn" @click="rtrCancelApplyRun()" :disabled="rtrCancelApply" style="font-size:12px;padding:3px 12px" x-text="rtrCancelApply ? 'Stopping…' : 'Cancel'"></button>
+                      </div>
+                      <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:5px">Sonarr finishes importing these in the background, so it keeps working for a bit after this reaches the end.</div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <!-- Grouped candidate list: series -> season -> episodes.
+                   Series start collapsed (lighter on big libraries; tick a
+                   series or season header to select it all without expanding). -->
+              <template x-if="rtrFilteredCandidates().length > 0">
+                <div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+                  <template x-for="g in rtrGroupedSeries()" :key="g.seriesId">
+                    <div style="border-bottom:1px solid var(--bg-muted)">
+                      <!-- Series header -->
+                      <div @click="rtrToggleSeriesOpen(g.seriesId)" style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;background:var(--bg-card)">
+                        <input type="checkbox" x-show="rtrApplyableIn(rtrSeriesItems(g)).length > 0" :checked="rtrGroupAllSelected(rtrSeriesItems(g))" @click.stop="rtrToggleGroup(rtrSeriesItems(g))" :disabled="rtrApplying" style="flex:none;cursor:pointer" title="Select every fixable file in this series">
+                        <span x-show="rtrApplyableIn(rtrSeriesItems(g)).length === 0" style="width:13px;flex:none"></span>
+                        <span style="color:var(--text-muted-secondary);font-size:11px;width:10px" x-text="rtrSeriesOpen[g.seriesId] ? '▾' : '▸'"></span>
+                        <div style="flex:1;min-width:0;font-size:13px;color:var(--text-body);font-weight:600">
+                          <span x-text="g.seriesTitle"></span>
+                          <span x-show="g.year" style="color:var(--text-muted-secondary);font-weight:400"> (<span x-text="g.year"></span>)</span>
+                        </div>
+                        <span style="font-size:11px;color:var(--text-muted-secondary);white-space:nowrap"><span x-text="g.count"></span> file<span x-show="g.count !== 1">s</span></span>
+                      </div>
+                      <!-- Seasons (only when the series is expanded) -->
+                      <template x-if="rtrSeriesOpen[g.seriesId]">
+                        <div>
+                          <template x-for="se in g.seasons" :key="se.seasonNumber">
+                            <div>
+                              <!-- Season header -->
+                              <div @click="rtrToggleSeasonOpen(rtrSeasonKey(g.seriesId, se.seasonNumber))" style="display:flex;align-items:center;gap:10px;padding:7px 14px 7px 28px;cursor:pointer;background:var(--bg-page);border-top:1px solid var(--bg-muted)">
+                                <input type="checkbox" x-show="rtrApplyableIn(rtrSeasonItems(se)).length > 0" :checked="rtrGroupAllSelected(rtrSeasonItems(se))" @click.stop="rtrToggleGroup(rtrSeasonItems(se))" :disabled="rtrApplying" style="flex:none;cursor:pointer" title="Select every fixable file in this season">
+                                <span x-show="rtrApplyableIn(rtrSeasonItems(se)).length === 0" style="width:13px;flex:none"></span>
+                                <span style="color:var(--text-muted-secondary);font-size:11px;width:10px" x-text="rtrSeasonOpen[rtrSeasonKey(g.seriesId, se.seasonNumber)] ? '▾' : '▸'"></span>
+                                <div style="flex:1;font-size:12px;color:var(--text-body);font-weight:500">Season <span x-text="se.seasonNumber"></span></div>
+                                <span style="font-size:11px;color:var(--text-muted-secondary)" x-text="se.items.length"></span>
+                              </div>
+                              <!-- Episodes (only when the season is expanded) -->
+                              <template x-if="rtrSeasonOpen[rtrSeasonKey(g.seriesId, se.seasonNumber)]">
+                                <div>
+                                  <template x-for="c in se.items" :key="c.episodeFileId">
+                                    <div style="border-top:1px solid var(--bg-muted)">
+                      <div @click="toggleRtrExpanded(c.episodeFileId)" style="display:flex;align-items:flex-start;gap:10px;padding:10px 14px 10px 42px;cursor:pointer">
+                        <input type="checkbox" x-show="rtrIsApplyable(c)" :checked="!!rtrSelected[c.episodeFileId]" @click.stop="rtrToggleSelect(c.episodeFileId)" :disabled="rtrApplying" style="margin-top:3px;flex:none;cursor:pointer" title="Tick for 'Fix selected'">
+                        <span x-show="!rtrIsApplyable(c)" style="width:13px;flex:none"></span>
+                        <span style="color:var(--text-muted-secondary);font-size:11px;width:10px;margin-top:3px" x-text="rtrExpanded[c.episodeFileId] ? '▾' : '▸'"></span>
+                        <div style="flex:1;min-width:0">
+                          <div style="font-size:13px;color:var(--text-body);font-weight:500">
+                            <span x-text="c.episodeLabel || 'Episode file'"></span>
+                          </div>
+                          <div style="font-size:12px;color:var(--text-secondary);margin-top:3px">
+                            <span class="v-num-remove" x-text="rtrTypeLabel(c.currentType)"></span>
+                            <span style="color:var(--text-muted-secondary)"> → </span>
+                            <span class="v-num-add" x-text="rtrTypeLabel(c.recoveredType)"></span>
+                            <span style="color:var(--text-muted-secondary)"> · <span x-text="c.reason"></span></span>
+                          </div>
+                          <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:2px;word-break:break-word" x-text="c.relativePath"></div>
+                        </div>
+                        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+                          <span style="font-size:11px;white-space:nowrap;padding:2px 8px;border-radius:10px" :style="c.confidence==='high' ? 'background:var(--accent-green-bg, rgba(34,197,94,0.15));color:var(--accent-green)' : (c.confidence==='medium' ? 'background:var(--accent-orange-bg, rgba(234,179,8,0.15));color:var(--accent-orange)' : 'background:var(--bg-muted);color:var(--text-muted-secondary)')" x-text="c.confidence"></span>
+                          <span x-show="c.qbitConfirmed" style="font-size:10px;white-space:nowrap;padding:1px 7px;border-radius:10px;background:var(--accent-blue-bg, rgba(59,130,246,0.15));color:var(--accent-blue)" title="Confirmed against qBittorrent by exact file size">✓ qBit</span>
+                          <span x-show="c.status === 'fixed'" style="font-size:10px;white-space:nowrap;padding:1px 7px;border-radius:10px;background:var(--accent-green-bg, rgba(34,197,94,0.15));color:var(--accent-green)" title="Sent to Sonarr; it finishes importing in the background">✓ sent</span>
+                          <span x-show="c.status === 'fix-failed'" :title="c.error" style="font-size:10px;white-space:nowrap;padding:1px 7px;border-radius:10px;background:var(--accent-red-bg, rgba(239,68,68,0.15));color:var(--accent-red);cursor:help">✗ failed</span>
+                        </div>
+                        <!-- Fix button, its own column, kept apart from the badges -->
+                        <div style="display:flex;align-items:center;align-self:stretch">
+                          <button x-show="rtrIsApplyable(c)" @click.stop="rtrApplyOne(c)" :disabled="rtrApplying" class="btn" style="font-size:11px;padding:3px 14px" title="Re-import this file with the corrected release type">Fix</button>
+                        </div>
+                      </div>
+                      <!-- Why high/medium + grab evidence -->
+                      <template x-if="rtrExpanded[c.episodeFileId]">
+                        <div style="padding:0 14px 12px 62px">
+                          <div style="font-size:12px;color:var(--text-body);background:var(--bg-muted);border-radius:6px;padding:8px 12px;margin-bottom:8px" x-text="c.explanation"></div>
+                          <template x-if="c.qbitConfirmed">
+                            <div style="font-size:12px;color:var(--text-body);background:var(--accent-blue-bg, rgba(59,130,246,0.10));border-left:2px solid var(--accent-blue);border-radius:5px;padding:6px 10px;margin-bottom:8px;word-break:break-word">
+                              Matched torrent <strong x-text="c.qbitTorrentName"></strong> · <span x-text="(c.qbitVideoFiles || 0) + (c.qbitVideoFiles === 1 ? ' video file' : ' video files')"></span>
+                            </div>
+                          </template>
+                          <template x-if="c.qbitChecked && !c.qbitConfirmed && c.qbitNote">
+                            <div style="font-size:12px;color:var(--text-secondary);background:var(--bg-muted);border-radius:5px;padding:6px 10px;margin-bottom:8px" x-text="c.qbitNote"></div>
+                          </template>
+                          <div style="font-size:11px;color:var(--text-muted-secondary);margin-bottom:4px">Grabs found in this episode's history (the ones that counted are highlighted):</div>
+                          <template x-for="(g, gi) in (c.grabs || [])" :key="gi">
+                            <div :style="'font-size:12px;padding:5px 8px;border-radius:5px;margin-bottom:4px;' + (g.usedInDecision ? 'background:var(--accent-green-bg, rgba(34,197,94,0.10));border-left:2px solid var(--accent-green)' : 'opacity:0.6;border-left:2px solid var(--border-subtle)')">
+                              <div style="color:var(--text-body);word-break:break-word" x-text="g.sourceTitle"></div>
+                              <div style="color:var(--text-secondary);margin-top:1px">
+                                group <strong x-text="g.releaseGroup || '—'"></strong>
+                                · <span x-text="g.storedType ? ('Sonarr stored: ' + rtrTypeLabel(g.storedType)) : ('from name: ' + rtrTypeLabel(g.impliedType))"></span>
+                                · <span x-text="g.groupMatch ? 'group matches the file' : 'group differs'"></span>
+                                <span x-show="!g.usedInDecision" style="color:var(--text-muted-secondary)"> · ignored</span>
+                              </div>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+                                    </div><!-- /episode row -->
+                                  </template><!-- /x-for episode -->
+                                </div><!-- /episodes wrapper -->
+                              </template><!-- /x-if season open -->
+                            </div><!-- /season wrapper -->
+                          </template><!-- /x-for season -->
+                        </div><!-- /seasons wrapper -->
+                      </template><!-- /x-if series open -->
+                    </div><!-- /series group -->
+                  </template><!-- /x-for series -->
+                </div><!-- /list container -->
+              </template><!-- /x-if has candidates -->
+            </div><!-- /rtrResults inner -->
+          </template><!-- /x-if rtrResults -->
+        </div><!-- /release-type-recover section -->
+
 
         <!-- ===== Profile by tag sub-tab (launcher; wizard + result are modals) ===== -->
         <div x-show="scanSection === 'profile-by-tag'" x-cloak>
@@ -4736,6 +5048,42 @@
         <button class="btn btn-primary" @click="confirmAudioTagsApply()" :disabled="scanLoading">
           <span x-show="!scanLoading">Apply now</span>
           <span x-show="scanLoading">Applying…</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ RECOVER RELEASE TYPE APPLY CONFIRM MODAL ============ -->
+  <div class="modal-overlay" x-show="rtrApplyConfirm" x-cloak @click.self="rtrApplyConfirm = false" @keydown.escape.window="rtrApplyConfirm = false">
+    <div class="modal" style="width:560px;max-width:96vw">
+      <div class="modal-title">Re-import <span x-text="rtrPendingIds.length"></span> file<span x-show="rtrPendingIds.length !== 1">s</span>?</div>
+      <div style="font-size:13px;color:var(--text-body);line-height:1.5;margin-bottom:12px">
+        Setting the release type in Sonarr means re-importing each file (Sonarr has no other way to write the field). The file stays in place, but Sonarr renames it to your naming format and gives it a new file entry, so a Plex rescan will see a change. Nothing is deleted.
+      </div>
+      <template x-if="rtrPendingIds.length > 60">
+        <div style="font-size:12px;color:var(--text-secondary);background:var(--bg-muted);border-radius:6px;padding:8px 12px;margin-bottom:12px;line-height:1.5">
+          That's a lot of files. They re-import one series at a time, so it can take a while. A progress bar appears and you can press <strong>Cancel</strong> to stop after the current series.
+        </div>
+      </template>
+      <div style="max-height:260px;overflow:auto;border:1px solid var(--border-subtle);border-radius:6px;margin-bottom:16px">
+        <template x-for="c in rtrPendingRowsCapped()" :key="c.episodeFileId">
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--bg-muted);font-size:12px">
+            <div style="flex:1;min-width:0">
+              <span style="color:var(--text-body)" x-text="c.seriesTitle"></span>
+              <span x-show="c.episodeLabel" style="color:var(--text-muted-secondary)"> · <span x-text="c.episodeLabel"></span></span>
+            </div>
+            <span style="color:var(--text-muted-secondary);white-space:nowrap" x-text="rtrTypeLabel(c.recoveredType)"></span>
+          </div>
+        </template>
+        <template x-if="rtrPendingIds.length > 50">
+          <div style="padding:6px 10px;font-size:12px;color:var(--text-muted-secondary)">and <span x-text="rtrPendingIds.length - 50"></span> more…</div>
+        </template>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" @click="rtrApplyConfirm = false" :disabled="rtrApplying">Cancel</button>
+        <button class="btn btn-primary" @click="runRtrApply()" :disabled="rtrApplying">
+          <span x-show="!rtrApplying">Re-import now</span>
+          <span x-show="rtrApplying">Sending…</span>
         </button>
       </div>
     </div>
@@ -11682,6 +12030,7 @@
 <script src="/js/modules/qfa-wizards.js"></script>
 <script src="/js/modules/rule-editor-core.js"></script>
 <script src="/js/modules/webhook-config-wizard.js"></script>
+<script src="/js/modules/release-type.js"></script>
 <script src="/js/app.js"></script>
 </body>
 </html>

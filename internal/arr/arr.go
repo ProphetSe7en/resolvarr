@@ -728,8 +728,19 @@ type HistoryRecord struct {
 		// file currently on disk to the import (and thus grab) that produced
 		// it — see ImportedFileID().
 		FileID string `json:"fileId"`
+		// ReleaseType is Sonarr v4's grab-time release classification
+		// ("seasonPack" / "singleEpisode" / "multiEpisode"). Populated on
+		// grab events from a v4 indexer; EMPTY on pre-v4 grabs (the release
+		// type must then be inferred from SourceTitle). Tier 1 of the
+		// release-type recovery cascade.
+		ReleaseType string `json:"releaseType"`
 	} `json:"data"`
 }
+
+// GrabReleaseType returns the grab event's stored releaseType, or "" when
+// the grab predates Sonarr v4's release-type tracking (the caller then
+// falls back to SourceTitle inference).
+func (h HistoryRecord) GrabReleaseType() string { return h.Data.ReleaseType }
 
 // ImportedFileID returns data.fileId parsed to an int — the movieFile /
 // episodeFile id an import event created. Returns 0 when the field is absent
@@ -900,6 +911,11 @@ type EpisodeFile struct {
 	// file on disk. Used by reconcile-stuck-downloads to compare the
 	// imported file against a stuck queue item's score.
 	CustomFormatScore int `json:"customFormatScore,omitempty"`
+	// ReleaseType is Sonarr v4's stored classification of how the file was
+	// grabbed: "singleEpisode" / "multiEpisode" / "seasonPack" / "unknown".
+	// Drives the Release Type Overview scan. Note: this field is read-only
+	// over the API — PUT episodefile ignores it; only ManualImport sets it.
+	ReleaseType string `json:"releaseType,omitempty"`
 }
 
 // EpisodeRef is just the ID — that's all the Sonarr recover flow needs
@@ -1241,6 +1257,65 @@ func (c *Client) ListHistoryForSeries(ctx context.Context, seriesID int) ([]Hist
 		return nil, fmt.Errorf("parse history (array): %w", err)
 	}
 	return records, nil
+}
+
+// SetEpisodeFileReleaseType re-imports a Sonarr episode file with a corrected
+// release type. The field is WRITE-ONLY via ManualImport (PUT /episodefile
+// ignores releaseType, verified), so this is the only way to set it. The file
+// is already on disk, so importMode "move" is effectively a re-link + rename
+// to the naming-format path (it creates a new episodeFileId).
+//
+// currentJSON is the existing /episodefile/{id} record (carries the path,
+// seriesId, quality, languages, releaseGroup we must echo back so Sonarr
+// re-imports it identically apart from the release type). episodeIDs are the
+// episodes the file covers (the caller's episode-ID join, since /episodefile
+// returns episodes:null). releaseType is the canonical value
+// (singleEpisode / multiEpisode / seasonPack).
+func (c *Client) SetEpisodeFileReleaseType(ctx context.Context, currentJSON []byte, episodeIDs []int, releaseType string) error {
+	var ef map[string]any
+	if err := json.Unmarshal(currentJSON, &ef); err != nil {
+		return fmt.Errorf("decode episodefile: %w", err)
+	}
+	path, _ := ef["path"].(string)
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("episodefile has no path")
+	}
+	if len(episodeIDs) == 0 {
+		return fmt.Errorf("no episode ids for this file")
+	}
+	file := map[string]any{
+		"path":        path,
+		"seriesId":    ef["seriesId"],
+		"episodeIds":  episodeIDs,
+		"releaseType": releaseType,
+	}
+	// Echo back what Sonarr already knows so the re-import doesn't drop
+	// quality / languages / group / flags. Only set keys that exist.
+	for _, k := range []string{"quality", "languages", "releaseGroup", "indexerFlags"} {
+		if val, ok := ef[k]; ok {
+			file[k] = val
+		}
+	}
+	body := map[string]any{
+		"name":       "ManualImport",
+		"importMode": "move",
+		"files":      []any{file},
+	}
+	resp, err := c.do(ctx, "POST", "/api/v3/command", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 200 || resp.StatusCode == 201 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	snippet := strings.TrimSpace(string(bodyBytes))
+	if snippet == "" {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, snippet)
 }
 
 // TriggerSonarrRenameFiles is the Sonarr equivalent of TriggerRadarrRenameFiles.

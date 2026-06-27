@@ -29,6 +29,7 @@ function app() {
     ...appQbitCategoryFix(),
     ...appGrabRenameEditor(),
     ...appSonarrGrouping(),
+    ...appReleaseType(),
     ...appDvDetailDrillin(),
     ...appModeAvailability(),
     ...appFunctionInfo(),
@@ -211,6 +212,8 @@ function app() {
         const d = await r.json();
         this.version = d.version || 'dev';
         this.isDevBuild = (d.version || '').includes('-dev');
+        // Show the dev banner unless this exact version was dismissed.
+        this.devBannerShow = this.isDevBuild && localStorage.getItem('resolvarr-dev-banner-dismissed') !== this.version;
         if (d.timezone) this.serverTimezone = d.timezone;
         if (d.locale)   this.serverLocale = d.locale;
       } catch {}

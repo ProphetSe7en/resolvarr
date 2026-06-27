@@ -86,6 +86,25 @@ type scanRunRequest struct {
 	ReconcilePostCategory   string   `json:"reconcilePostCategory,omitempty"`   // apply-only: category to set on redundant downloads
 	ReconcileApplyItems     []string `json:"reconcileApplyItems,omitempty"`     // apply-only: downloadIds (hashes) the user selected to act on
 
+	// Release-type-recover Tier 2 (optional). When set, the recover preview
+	// confirms each candidate against the chosen qBittorrent instance by
+	// matching the on-disk file to a torrent on exact byte size; the
+	// torrent's video-file count is ground truth and overrides the grab
+	// cascade (settles the Unconfirmed bucket, double-checks High). Empty =
+	// grab-history cascade only (Stage A behaviour).
+	ReleaseTypeQbitInstanceID string `json:"releaseTypeQbitInstanceId,omitempty"`
+
+	// Release-type-recover apply (Stage C). When mode=apply, restrict the
+	// re-import to these episodeFileIds (the rows the user ticked). Empty in
+	// apply mode means "every applicable candidate". Unconfirmed candidates
+	// are never applied regardless of selection (the server re-derives the
+	// verdict and refuses them).
+	ReleaseTypeApplyItems []int `json:"releaseTypeApplyItems,omitempty"`
+	// ReleaseTypeApplySeriesIds scopes an apply run to these Sonarr series
+	// only, so the client can re-import series-by-series (progress + cancel)
+	// without each batch re-scanning the whole library. Empty = scan all.
+	ReleaseTypeApplySeriesIds []int `json:"releaseTypeApplySeriesIds,omitempty"`
+
 	// Per-request overlay (rule-style). When set, these overrides win
 	// over the persisted globals for THIS run only. Used by the
 	// Quick fix-all wizard so the user can test alternative rules
@@ -292,6 +311,31 @@ type scanTotals struct {
 	RecoverFailedVerify int `json:"recoverFailedVerify,omitempty"` // no grab matched the newest import
 	RecoverFixFailed    int `json:"recoverFixFailed,omitempty"`    // apply-only: PUT or rename returned an error
 	RecoverRenameFailed int `json:"recoverRenameFailed,omitempty"` // apply-only: PUT succeeded but RenameFiles command failed
+
+	// Release Type Overview tally (Sonarr-only, read-only scan). Summed
+	// across every episode file in scope; the four buckets sum to
+	// ReleaseTypeTotal.
+	ReleaseTypeTotal      int `json:"releaseTypeTotal,omitempty"`
+	ReleaseTypeSingle     int `json:"releaseTypeSingle,omitempty"`
+	ReleaseTypeMulti      int `json:"releaseTypeMulti,omitempty"`
+	ReleaseTypeSeasonPack int `json:"releaseTypeSeasonPack,omitempty"`
+	ReleaseTypeUnknown    int `json:"releaseTypeUnknown,omitempty"`
+
+	// Release-type recovery counts (preview). Checked = unknown files
+	// examined; Candidates = files with a determinable type that differs
+	// from current; split by confidence tier.
+	ReleaseTypeRecoverChecked     int `json:"releaseTypeRecoverChecked,omitempty"`
+	ReleaseTypeRecoverCandidates  int `json:"releaseTypeRecoverCandidates,omitempty"`
+	ReleaseTypeRecoverHigh        int `json:"releaseTypeRecoverHigh,omitempty"`
+	ReleaseTypeRecoverMedium      int `json:"releaseTypeRecoverMedium,omitempty"`
+	ReleaseTypeRecoverUnconfirmed int `json:"releaseTypeRecoverUnconfirmed,omitempty"`
+	// QbitConfirmed = candidates whose type was confirmed against the
+	// chosen qBittorrent instance by exact byte-size match (Tier 2).
+	ReleaseTypeRecoverQbitConfirmed int `json:"releaseTypeRecoverQbitConfirmed,omitempty"`
+	// Apply counts (Stage C). Fixed = files re-imported with the corrected
+	// release type; FixFailed = the ManualImport call errored.
+	ReleaseTypeRecoverFixed     int `json:"releaseTypeRecoverFixed,omitempty"`
+	ReleaseTypeRecoverFixFailed int `json:"releaseTypeRecoverFixFailed,omitempty"`
 
 	// Reconcile-mode bucket counts (reconcile-stuck-downloads). Each
 	// stuck queue item lands in redundant or needs-attention; apply adds
@@ -592,6 +636,87 @@ type scanInstanceInfo struct {
 // scanResponse is the full API response for every action+mode combination.
 // Action echoes back what the request asked for so the UI can switch on it
 // when rendering. Items / Applied are tag-mode only; Discovered is
+// scanReleaseTypeItem is one series' release-type breakdown for the
+// Release Type Overview scan (Sonarr-only, read-only). Seasons carry the
+// per-season buckets; the series-level counts are the rolled-up summary.
+type scanReleaseTypeItem struct {
+	SeriesID    int    `json:"seriesId"`
+	SeriesTitle string `json:"seriesTitle"`
+	Year        int    `json:"year,omitempty"`
+	TvdbID      int    `json:"tvdbId,omitempty"`
+
+	Seasons []scanReleaseTypeSeason `json:"seasons"` // ascending by season number
+
+	// Series-level summary (sums of the seasons). The four type buckets
+	// sum to Total.
+	Total         int `json:"total"`
+	SingleEpisode int `json:"singleEpisode"`
+	MultiEpisode  int `json:"multiEpisode"`
+	SeasonPack    int `json:"seasonPack"`
+	Unknown       int `json:"unknown"`
+}
+
+// scanReleaseTypeSeason is one season's bucket counts within a series.
+type scanReleaseTypeSeason struct {
+	SeasonNumber  int `json:"seasonNumber"`
+	Total         int `json:"total"`
+	SingleEpisode int `json:"singleEpisode"`
+	MultiEpisode  int `json:"multiEpisode"`
+	SeasonPack    int `json:"seasonPack"`
+	Unknown       int `json:"unknown"`
+}
+
+// scanReleaseTypeRecoverItem is one episode file the recovery scan would
+// re-classify: its current (usually "unknown") release type, the type the
+// grab cascade determined, and how confident that verdict is. Preview-only
+// in Stage A — no write happens until apply (Stage C) lands.
+type scanReleaseTypeRecoverItem struct {
+	SeriesID      int    `json:"seriesId"`
+	SeriesTitle   string `json:"seriesTitle"`
+	Year          int    `json:"year,omitempty"`
+	EpisodeFileID int    `json:"episodeFileId"`
+	SeasonNumber  int    `json:"seasonNumber"`
+	EpisodeLabel  string `json:"episodeLabel,omitempty"` // "S01E01" parsed from the path
+	RelativePath  string `json:"relativePath"`
+
+	CurrentType   string `json:"currentType"`   // file's releaseType today (e.g. "unknown")
+	RecoveredType string `json:"recoveredType"` // what the cascade determined
+	Confidence    string `json:"confidence"`    // "high" | "medium" | "unconfirmed"
+	Source        string `json:"source"`        // "field" | "title" | "qbit"
+	GroupMatched  bool   `json:"groupMatched"`
+	Reason        string `json:"reason"`       // short, for the collapsed row
+	Explanation   string `json:"explanation"`  // full "why this confidence", for the drill-down
+
+	// Tier 2 qBit verification (set only when a qBit instance was picked).
+	// Checked = we looked for a matching torrent; Confirmed = an exact
+	// byte-size match settled the type (overrides the grab cascade);
+	// Note carries a short reason when checked but not confirmed.
+	QbitChecked     bool   `json:"qbitChecked,omitempty"`
+	QbitConfirmed   bool   `json:"qbitConfirmed,omitempty"`
+	QbitVideoFiles  int    `json:"qbitVideoFiles,omitempty"`
+	QbitTorrentName string `json:"qbitTorrentName,omitempty"`
+	QbitNote        string `json:"qbitNote,omitempty"`
+
+	// Apply outcome (Stage C). Preview leaves Status "would-fix"; apply sets
+	// "fixed" / "fix-failed" / "skipped" (Unconfirmed or not selected), with
+	// Error populated on failure.
+	Status string `json:"status,omitempty"`
+	Error  string `json:"error,omitempty"`
+
+	Grabs []scanReleaseTypeGrab `json:"grabs,omitempty"` // the grabs considered (evidence)
+}
+
+// scanReleaseTypeGrab is one grab surfaced as evidence in the recovery
+// drill-down.
+type scanReleaseTypeGrab struct {
+	SourceTitle    string `json:"sourceTitle"`
+	ReleaseGroup   string `json:"releaseGroup,omitempty"`
+	StoredType     string `json:"storedType,omitempty"`  // Sonarr's stored grab type, "" if pre-v4
+	ImpliedType    string `json:"impliedType,omitempty"` // type this grab implies
+	GroupMatch     bool   `json:"groupMatch"`
+	UsedInDecision bool   `json:"usedInDecision"`
+}
+
 // discover-mode only.
 type scanResponse struct {
 	Mode       string                `json:"mode"`
@@ -603,6 +728,8 @@ type scanResponse struct {
 	Discovered []scanDiscoveredGroup `json:"discovered,omitempty"` // discover only
 	Recover    []scanRecoverItem     `json:"recover,omitempty"`    // recover only
 	Reconcile  []scanReconcileItem   `json:"reconcile,omitempty"`  // reconcile-stuck-downloads only
+	ReleaseTypeOverview []scanReleaseTypeItem        `json:"releaseTypeOverview,omitempty"`      // release-type-overview only
+	ReleaseTypeRecover  []scanReleaseTypeRecoverItem `json:"releaseTypeRecover,omitempty"`       // release-type-recover only
 	// Reconcile category hints — the Arr's qBittorrent download-client
 	// pre/post-import categories, so the UI pre-fills the target category
 	// (post-import) instead of making the user retype it. Override-able.
