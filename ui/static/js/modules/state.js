@@ -13,6 +13,10 @@ function appState() {
     // scan-result Debug strip). Mirrors the backend's s.isDev() gate so
     // the two stay in lockstep. See docs/resolvarr/ui-section-map.md.
     isDevBuild: false,
+    // Dev-build banner. Shown whenever this is a -dev build and the user
+    // hasn't dismissed THIS exact version (the dismissed version is stored
+    // in localStorage, so a new dev build shows the banner again).
+    devBannerShow: false,
     // Server-side context for time formatting. Loaded from /api/version
     // on init. Defaults are safe-but-neutral; real values arrive after
     // the first fetch. timezone is an IANA name (e.g. "Europe/Oslo")
@@ -426,6 +430,31 @@ function appState() {
     reconcilePostCategory: '',     // category to move redundant downloads to (set in the modal)
     reconcilePreCategory: '',      // info: the category stuck downloads currently sit in
     reconcileLastInstanceId: '',   // tracks which instance the qBit + categories were resolved for
+    // Release Type Overview (Sonarr-only, read-only scan). Shows each
+    // series' episode files grouped by Sonarr's stored releaseType
+    // (Single Episode / Multi-Episode / Season Pack / Unknown).
+    releaseTypeLoading: false,
+    releaseTypeError: '',
+    releaseTypeResults: null,      // { instance, totals, releaseTypeOverview: [{seriesId, seasons, ...}] }
+    releaseTypeExpanded: {},       // { [seriesId]: true } — which series rows show the per-season breakdown
+    releaseTypeFilter: '',         // '' = all | 'singleEpisode' | 'multiEpisode' | 'seasonPack' | 'unknown'
+                                   // click a tally chip to show only series/seasons that have that type
+    // Recover release types (Sonarr-only, preview). Reads grab history for
+    // unknown files and proposes the true release type via the cascade.
+    rtrLoading: false,
+    rtrError: '',
+    rtrResults: null,              // { instance, totals, releaseTypeRecover: [{...}] }
+    rtrConfFilter: '',             // '' = all | 'high' | 'medium' | 'unconfirmed' — confidence filter
+    rtrExpanded: {},               // { [episodeFileId]: true } — rows showing the why-explanation + grab evidence
+    rtrQbitInstanceId: '',         // optional qBit instance for Tier-2 byte-size verification ('' = grab cascade only)
+    rtrSelected: {},               // { [episodeFileId]: true } rows ticked for a bulk "Fix selected"
+    rtrPendingIds: [],             // episodeFileIds queued for the apply-confirm modal (one row, or the selection)
+    rtrApplying: false,            // apply in flight
+    rtrApplyConfirm: false,        // confirm modal (lists the files that will be re-imported)
+    rtrCancelApply: false,         // set by the Cancel button to stop the per-series apply loop
+    rtrApplyProgress: { done: 0, total: 0, fixed: 0, failed: 0 }, // live progress during a bulk apply
+    rtrSeriesOpen: {},             // { [seriesId]: true } expanded series groups
+    rtrSeasonOpen: {},             // { ['<seriesId>:<season>']: true } expanded season groups
     // Recover exclusions — per-instance "skip these in next scan"
     // list. User flags faulty / unfixable items via the Exclude
     // buttons in the result modal. Loaded from /api/recover/exclusions

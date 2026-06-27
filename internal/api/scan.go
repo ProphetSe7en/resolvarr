@@ -123,11 +123,31 @@ func (s *Server) handleScanRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, "mode must be preview or apply")
 			return
 		}
+	case "release-type-overview":
+		// Release Type Overview is read-only (reports Sonarr's stored
+		// releaseType per series/season). There is nothing to apply, so
+		// only preview is valid; accept empty and normalise to preview.
+		if req.Mode != "preview" && req.Mode != "" {
+			writeError(w, 400, "release-type-overview is read-only (preview only)")
+			return
+		}
+		req.Mode = "preview"
+	case "release-type-recover":
+		// Recover release type: preview lists candidates; apply re-imports
+		// the selected files via ManualImport (the only way to set the field).
+		// Accept empty and normalise to preview.
+		if req.Mode == "" {
+			req.Mode = "preview"
+		}
+		if req.Mode != "preview" && req.Mode != "apply" {
+			writeError(w, 400, "mode must be preview or apply")
+			return
+		}
 	case "combined":
 		writeError(w, 501, fmt.Sprintf("action %q is not implemented yet", req.Action))
 		return
 	default:
-		writeError(w, 400, "action must be tag, discover, cleanup, recover, reconcile, audiotags, videotags, or dvdetail")
+		writeError(w, 400, "action must be tag, discover, cleanup, recover, reconcile, release-type-overview, release-type-recover, audiotags, videotags, or dvdetail")
 		return
 	}
 
@@ -213,11 +233,12 @@ func (s *Server) handleScanRun(w http.ResponseWriter, r *http.Request) {
 		// every action supported
 	case "sonarr":
 		switch req.Action {
-		case "recover", "audiotags", "videotags", "reconcile":
+		case "recover", "audiotags", "videotags", "reconcile", "release-type-overview", "release-type-recover":
 			// supported — recover (M3c) + audio/video tags (M-Sonarr) +
-			// reconcile (reads the queue, works the same on both Arr types).
+			// reconcile (reads the queue, works the same on both Arr types) +
+			// release-type-overview/-recover (Sonarr-only, read-only / preview).
 		default:
-			writeError(w, 501, "Sonarr is supported for: recover, reconcile, audiotags, videotags. Other actions are coming as separate milestones.")
+			writeError(w, 501, "Sonarr is supported for: recover, reconcile, release-type-overview, release-type-recover, audiotags, videotags. Other actions are coming as separate milestones.")
 			return
 		}
 	default:
@@ -243,6 +264,10 @@ func (s *Server) handleScanRun(w http.ResponseWriter, r *http.Request) {
 		s.handleScanCleanup(w, r, cfg, inst, appType, req)
 	case "recover":
 		s.handleScanRecover(w, r, inst, appType, req)
+	case "release-type-overview":
+		s.handleScanReleaseTypeOverview(w, r, inst, appType, req)
+	case "release-type-recover":
+		s.handleScanReleaseTypeRecover(w, r, cfg, inst, appType, req)
 	case "reconcile":
 		s.handleScanReconcile(w, r, cfg, inst, appType, req)
 	case "tag":

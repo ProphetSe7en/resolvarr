@@ -2,6 +2,21 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.70-dev — Recover release types (Sonarr) (2026-06-27)
+
+### Added
+
+- **See and fix the release type of your Sonarr files.** After a mass rename or an old import, Sonarr often loses track of whether a file came from a Season Pack or a Single Episode and shows it as "Unknown", which can lower its score. Two new tools under Library scan, Sonarr:
+  - **Release types** is a read-only overview of what Sonarr has each series and season down as (Season Pack, Single Episode, Multi-Episode, or Unknown), with quick filter chips. No risk, it just shows you what is there.
+  - **Recover release types** works out the real type for the Unknown files from Sonarr's grab history and previews what it would set. It only acts when it is confident: a season pack is safe to assert, while a single episode that cannot be told apart from a pack on disk is left "Unconfirmed" and never changed on its own.
+- **Optional double-check against qBittorrent.** Pick a qBittorrent instance and Recover matches each file to the torrent that actually holds it and reads the real type from it. This settles the Unconfirmed ones for certain and double-checks the rest. It is optional; without it you still safely recover season packs.
+- **Apply the fix, your way.** Tick a whole series, a whole season, or single episodes (or use the Fix button on a row), and Recover sets the release type in Sonarr. Large runs go one series at a time with a progress bar and a Cancel button.
+- **A reminder banner on dev builds.** A small banner notes that `:dev` can change between versions and that some features are not fully tested yet. You can dismiss it; a new dev build brings it back.
+
+### Note
+
+- Setting the release type works by re-importing the file in Sonarr, because that is the only way Sonarr lets you write the field. Your other custom format scores are kept, and the file is renamed to your own naming format, so a Plex rescan will see the new name. Sonarr does not record this in its own history, so the record lives in resolvarr's scan result instead.
+
 ## v0.6.67-dev — Stripping the file extension is now its own choice (2026-06-23)
 
 ### Changed
