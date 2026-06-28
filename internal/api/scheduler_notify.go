@@ -18,7 +18,7 @@ import (
 // is the only way the user knows they happened.
 //
 // Embed format mirrors bash tagarr.sh:
-//   - Title: "Resolvarr — <schedule>"
+//   - Title: "Resolvarr: <schedule>"
 //   - Color: orange (16753920) for ok, red for error, gray for partial
 //   - Fields-grid: Primary inline + Secondary inline (when sync) +
 //     Runtime full-width
@@ -49,7 +49,7 @@ func (r *schedulerRunner) notifyScheduleResult(inst *core.Instance, job core.Sch
 		severity = core.NotificationSeverityWarning
 	}
 
-	title := fmt.Sprintf("Resolvarr — %s", job.Name)
+	title := fmt.Sprintf("Resolvarr: %s", job.Name)
 	fields := buildScheduleFields(inst, job, summary, runErr, duration)
 	plainMessage := buildPlainScheduleMessage(fields)
 	detail := buildScheduleDetail(job, summary, runErr)
@@ -314,7 +314,7 @@ func autoTagsModeFields(inst *core.Instance, summary core.RunSummary, label stri
 	resp, _ := summary.Result.(*scanResponse)
 	if resp == nil {
 		return []agents.PayloadField{{
-			Name:   inst.Name + " — " + label,
+			Name:   inst.Name + " · " + label,
 			Value:  truncateField(summary.Summary),
 			Inline: false,
 		}}
@@ -366,7 +366,7 @@ func dvDetailModeFields(inst *core.Instance, summary core.RunSummary) []agents.P
 	resp, _ := summary.Result.(*scanResponse)
 	if resp == nil {
 		return []agents.PayloadField{{
-			Name:   inst.Name + " — DV detail",
+			Name:   inst.Name + " · DV detail",
 			Value:  truncateField(summary.Summary),
 			Inline: false,
 		}}
@@ -541,7 +541,7 @@ func plexSyncModeField(summary core.RunSummary) []agents.PayloadField {
 //  2. "**DV detail — removed/to remove:**" — symmetric subtraction
 //     side. Cleanup pass + RemoveOrphanedTags can produce these.
 //
-//  3. "**DV detail — extraction warnings:**" — when failed +
+//  3. "**DV detail extraction warnings:**" — when failed +
 //     unreachable rows exist, list the per-movie reasons so the user
 //     has a starting point for diagnosis. Truncated to the first 25
 //     to keep the message under Discord's content limit; the full
@@ -557,10 +557,10 @@ func buildDvDetailDetail(summary core.RunSummary) string {
 
 	applyMode := resp.Applied != nil
 	addSuffix, removeSuffix := "to add", "to remove"
-	addHeader, removeHeader := "**DV detail — to add:**", "**DV detail — to remove:**"
+	addHeader, removeHeader := "**DV detail to add:**", "**DV detail to remove:**"
 	if applyMode {
 		addSuffix, removeSuffix = "added", "removed"
-		addHeader, removeHeader = "**DV detail — added:**", "**DV detail — removed:**"
+		addHeader, removeHeader = "**DV detail added:**", "**DV detail removed:**"
 	}
 
 	formatRollup := func(rows []scanDvDetailRollup, suffix string) string {
@@ -621,7 +621,7 @@ func buildDvDetailDetail(summary core.RunSummary) string {
 			if reason == "" {
 				reason = item.DvStatus
 			}
-			line := truncateRune(fmt.Sprintf("%s — %s", title, reason), dvDetailFailureLineMax)
+			line := truncateRune(fmt.Sprintf("%s · %s", title, reason), dvDetailFailureLineMax)
 			// Budget check: appending this line + a "\n" would exceed
 			// the body cap. Stop here — caller surfaces a "…and N
 			// more" footer.
@@ -637,7 +637,7 @@ func buildDvDetailDetail(summary core.RunSummary) string {
 			if total > len(failureLines) {
 				body += fmt.Sprintf("…and %d more (see log file)\n", total-len(failureLines))
 			}
-			sections = append(sections, "**DV detail — extraction warnings:**\n```\n"+body+"```")
+			sections = append(sections, "**DV detail extraction warnings:**\n```\n"+body+"```")
 		}
 	}
 
@@ -819,12 +819,12 @@ func buildAutoTagsDetailFromResponse(resp *scanResponse, label string) string {
 	}
 
 	addSuffix, removeSuffix := "to add", "to remove"
-	addHeader := fmt.Sprintf("**%s — to add:**", label)
-	removeHeader := fmt.Sprintf("**%s — to remove:**", label)
+	addHeader := fmt.Sprintf("**%s to add:**", label)
+	removeHeader := fmt.Sprintf("**%s to remove:**", label)
 	if applyMode {
 		addSuffix, removeSuffix = "added", "removed"
-		addHeader = fmt.Sprintf("**%s — added:**", label)
-		removeHeader = fmt.Sprintf("**%s — removed:**", label)
+		addHeader = fmt.Sprintf("**%s added:**", label)
+		removeHeader = fmt.Sprintf("**%s removed:**", label)
 	}
 
 	if body := formatRows(addRows, addSuffix); body != "" {

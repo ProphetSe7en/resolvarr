@@ -148,13 +148,13 @@ func TestDvDetailModeFields_OmitsExtractionWhenAllZero(t *testing.T) {
 func TestBuildDvDetailDetail_AddRollupSection(t *testing.T) {
 	resp := newDvDetailResponse()
 	got := buildDvDetailDetail(core.RunSummary{Result: resp})
-	if !strings.Contains(got, "**DV detail — added:**") {
+	if !strings.Contains(got, "**DV detail added:**") {
 		t.Errorf("missing add header in apply mode: %s", got)
 	}
 	if !strings.Contains(got, "fel ") {
 		t.Errorf("missing fel rollup row: %s", got)
 	}
-	if !strings.Contains(got, "**DV detail — removed:**") {
+	if !strings.Contains(got, "**DV detail removed:**") {
 		t.Errorf("missing remove header: %s", got)
 	}
 }
@@ -163,10 +163,10 @@ func TestBuildDvDetailDetail_PreviewVerbTense(t *testing.T) {
 	resp := newDvDetailResponse()
 	resp.Applied = nil // preview mode
 	got := buildDvDetailDetail(core.RunSummary{Result: resp})
-	if !strings.Contains(got, "**DV detail — to add:**") {
+	if !strings.Contains(got, "**DV detail to add:**") {
 		t.Errorf("preview missing 'to add' header: %s", got)
 	}
-	if strings.Contains(got, "**DV detail — added:**") {
+	if strings.Contains(got, "**DV detail added:**") {
 		t.Errorf("preview should not say 'added'")
 	}
 }
@@ -174,7 +174,7 @@ func TestBuildDvDetailDetail_PreviewVerbTense(t *testing.T) {
 func TestBuildDvDetailDetail_FailureSection(t *testing.T) {
 	resp := newDvDetailResponse()
 	got := buildDvDetailDetail(core.RunSummary{Result: resp})
-	if !strings.Contains(got, "**DV detail — extraction warnings:**") {
+	if !strings.Contains(got, "**DV detail extraction warnings:**") {
 		t.Errorf("missing extraction-warnings section despite DvExtractFailed=1: %s", got)
 	}
 	if !strings.Contains(got, "Foo (2024)") {
@@ -249,7 +249,7 @@ func TestBuildDvDetailDetail_ToolsMissingSurfacesAsWarning(t *testing.T) {
 	}
 	resp.Applied = nil
 	got := buildDvDetailDetail(core.RunSummary{Result: resp})
-	if !strings.Contains(got, "**DV detail — extraction warnings:**") {
+	if !strings.Contains(got, "**DV detail extraction warnings:**") {
 		t.Errorf("tools-missing rows not surfaced as warnings: %s", got)
 	}
 	if !strings.Contains(got, "dv tools not installed") {

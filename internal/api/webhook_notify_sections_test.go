@@ -355,7 +355,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Video", Value: "4K · HDR", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -370,7 +370,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -389,7 +389,43 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Client", Value: "qBit", Inline: true},
 			{Name: "Event", Value: "Grab", Inline: true},
 		}
-		got := composeFields(core.WebhookEventGrab, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventGrab, results, nil, "", "", "", "")
+		fieldsEqual(t, got, want)
+	})
+
+	t.Run("Grab — qBit S/E alone renders its section + universal Release", func(t *testing.T) {
+		// Regression: the Connect qbitSe path used to return Changed=true
+		// with no Detail, so composeFields produced nothing and the embed
+		// was title-only. With a Detail set, Tag/Type/Client render, and the
+		// universal Release field surfaces the grabbed release name.
+		results := []functionResult{
+			{Function: core.WebhookFnQbitSeTag, OK: true, Changed: true,
+				Detail: QbitSeDetail{Tag: "Season", Classification: "Season pack", QbitInstance: "qBit-TV"}},
+		}
+		want := []agents.PayloadField{
+			{Name: "Tag", Value: "Season", Inline: true},
+			{Name: "Type", Value: "Season pack", Inline: true},
+			{Name: "Client", Value: "qBit-TV", Inline: true},
+			{Name: "Release", Value: "Show.S03.1080p-GRP", Inline: false},
+			{Name: "Event", Value: "Grab", Inline: true},
+		}
+		got := composeFields(core.WebhookEventGrab, results, nil, "", "", "", "Show.S03.1080p-GRP")
+		fieldsEqual(t, got, want)
+	})
+
+	t.Run("Download — Auto-tagged removal-only still renders a row", func(t *testing.T) {
+		// Regression: a removal-only auto-tag change left PlainSummary empty
+		// (it was built from added tags), so the row went blank and the embed
+		// showed just the "Auto-tagged" title. Removed tags now render too.
+		results := []functionResult{
+			{Function: core.WebhookFnTagAudio, OK: true, Changed: true,
+				Detail: AudioDetail{Removed: []string{"audio-atmos"}}},
+		}
+		want := []agents.PayloadField{
+			{Name: "Audio", Value: "removed atmos", Inline: true},
+			{Name: "Event", Value: "Import", Inline: true},
+		}
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -419,7 +455,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Removed", Value: "Quality tag", Inline: false},
 			{Name: "Event", Value: "File deleted", Inline: true},
 		}
-		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -451,7 +487,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Removed", Value: "Audio · Video · Quality tag", Inline: false},
 			{Name: "Event", Value: "File deleted", Inline: true},
 		}
-		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -472,13 +508,13 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Removed", Value: "Audio · Video · Quality tag", Inline: false},
 			{Name: "Event", Value: "File deleted", Inline: true},
 		}
-		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
 	t.Run("MovieFileDelete — nothing stripped → empty", func(t *testing.T) {
 		results := []functionResult{}
-		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventMovieFileDelete, results, nil, "", "", "", "")
 		if len(got) != 0 {
 			t.Errorf("expected empty fields slice, got %+v", got)
 		}
@@ -500,12 +536,12 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Video", Value: "1080p", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
 	t.Run("Empty results → empty fields", func(t *testing.T) {
-		got := composeFields(core.WebhookEventDownload, nil, nil, "", "", "")
+		got := composeFields(core.WebhookEventDownload, nil, nil, "", "", "", "")
 		if len(got) != 0 {
 			t.Errorf("expected empty fields, got %+v", got)
 		}
@@ -551,7 +587,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Client", Value: "qBit Movies", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -572,7 +608,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -586,7 +622,7 @@ func TestComposeFields(t *testing.T) {
 			{Function: core.WebhookFnSyncToSecondary, OK: true, Changed: true,
 				Detail: SyncDetail{SecondaryName: "Radarr 4K"}},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "", "")
 		if len(got) != 0 {
 			t.Errorf("expected empty fields for orphan Sync, got %+v", got)
 		}
@@ -610,7 +646,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -629,7 +665,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -648,7 +684,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Audio", Value: "TrueHD 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, nil, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -671,7 +707,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, []string{"tagAudio"}, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, []string{"tagAudio"}, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -689,7 +725,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Audio", Value: "TrueHD Atmos 7.1", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, []string{"tagReleaseGroups", "tagAudio"}, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, []string{"tagReleaseGroups", "tagAudio"}, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 
@@ -703,7 +739,7 @@ func TestComposeFields(t *testing.T) {
 		// composeFields returns no fields → caller skips dispatch
 		// (preserves the "only actual changes" rule combined with
 		// "agent only sees what it subscribed to").
-		got := composeFields(core.WebhookEventDownload, results, []string{"grabRename"}, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, []string{"grabRename"}, "", "", "", "")
 		if len(got) != 0 {
 			t.Errorf("expected empty fields when filter excludes everything, got %+v", got)
 		}
@@ -724,7 +760,7 @@ func TestComposeFields(t *testing.T) {
 			{Name: "Quality tag", Value: "FLUX", Inline: true},
 			{Name: "Event", Value: "Import", Inline: true},
 		}
-		got := composeFields(core.WebhookEventDownload, results, []string{"tagReleaseGroups"}, "", "", "")
+		got := composeFields(core.WebhookEventDownload, results, []string{"tagReleaseGroups"}, "", "", "", "")
 		fieldsEqual(t, got, want)
 	})
 }
