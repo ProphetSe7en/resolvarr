@@ -91,12 +91,12 @@ func buildNotificationPayload(
 	if rule != nil {
 		ruleName = rule.Name
 	}
-	_, filename := extractReleaseAndFilePath(body)
+	release, filename := extractReleaseAndFilePath(body)
 
 	payload := agents.Payload{
 		Title:        title,
 		Color:        pickColor(event, instType),
-		Fields:       composeFields(event, results, allowedFunctions, instName, ruleName, filename),
+		Fields:       composeFields(event, results, allowedFunctions, instName, ruleName, filename, release),
 		ThumbnailURL: extractPosterURL(body, instType),
 		Timestamp:    time.Now().UTC(),
 		Severity:     agents.SeverityInfo,

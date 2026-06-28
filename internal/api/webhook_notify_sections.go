@@ -107,7 +107,7 @@ func displayBucketForEngine(engineBucket string) string {
 // non-empty = render only results whose Function is in the list.
 // Each agent gets its own composeFields call with its own filter so
 // the embed body is tailored to what THAT agent subscribed to.
-func composeFields(event core.WebhookConnectEvent, results []functionResult, allowedFunctions []string, instanceName, ruleName, filename string) []agents.PayloadField {
+func composeFields(event core.WebhookConnectEvent, results []functionResult, allowedFunctions []string, instanceName, ruleName, filename, release string) []agents.PayloadField {
 	results = filterResultsByFunctions(results, allowedFunctions)
 	// Local names use `rec` for RecoverDetail to avoid shadowing
 	// the built-in `recover()` (vet -predeclared flags it; a future
@@ -323,6 +323,15 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 		fields = appendTaggedInSection(fields, resolvedInstance, mirroredSecondary)
 	}
 	fields = append(fields, detail...)
+	// Universal Release field: the grabbed release title, shown once on every
+	// per-item embed when known. Skipped when the Grab Rename block is present
+	// (it already shows the torrent + restored release names as a pair, so a
+	// separate Release row would duplicate).
+	if grab == nil {
+		if rel := strings.TrimSpace(release); rel != "" {
+			fields = append(fields, agents.PayloadField{Name: "Release", Value: truncateField(rel), Inline: false})
+		}
+	}
 	fields = appendRuleSection(fields, ruleName)
 	fields = appendEventFilenameSection(fields, event, filename)
 	return fields
@@ -406,33 +415,43 @@ func appendTagSection(fields []agents.PayloadField, d *TagDetail) []agents.Paylo
 // MEL · CM v4.0" rather than the engine's internal vocabulary.
 func appendAutoTagsSection(fields []agents.PayloadField, a *AudioDetail, v *VideoDetail, dv *DvDetail) []agents.PayloadField {
 	if a != nil {
-		if s := strings.TrimSpace(a.PlainSummary); s != "" {
-			fields = append(fields, agents.PayloadField{
-				Name:   "Audio",
-				Value:  s,
-				Inline: true,
-			})
+		if val := autoTagFieldValue(a.PlainSummary, a.Removed, "audio-", false); val != "" {
+			fields = append(fields, agents.PayloadField{Name: "Audio", Value: val, Inline: true})
 		}
 	}
 	if v != nil {
-		if s := strings.TrimSpace(v.PlainSummary); s != "" {
-			fields = append(fields, agents.PayloadField{
-				Name:   "Video",
-				Value:  s,
-				Inline: true,
-			})
+		if val := autoTagFieldValue(v.PlainSummary, v.Removed, "video-", false); val != "" {
+			fields = append(fields, agents.PayloadField{Name: "Video", Value: val, Inline: true})
 		}
 	}
 	if dv != nil {
-		if s := strings.TrimSpace(dv.PlainSummary); s != "" {
-			fields = append(fields, agents.PayloadField{
-				Name:   "Dolby Vision",
-				Value:  humaniseDvSummary(s),
-				Inline: true,
-			})
+		if val := autoTagFieldValue(humaniseDvSummary(dv.PlainSummary), dv.Removed, "dv-", true); val != "" {
+			fields = append(fields, agents.PayloadField{Name: "Dolby Vision", Value: val, Inline: true})
 		}
 	}
 	return fields
+}
+
+// autoTagFieldValue builds an auto-tag field value from the added-tag
+// summary (already formatted by the caller) plus the removed tags, so a
+// removal-only change still renders a row instead of going blank. dvHumanise
+// runs the removed tokens through the DV display map for the Dolby Vision row.
+func autoTagFieldValue(addedSummary string, removed []string, prefix string, dvHumanise bool) string {
+	added := strings.TrimSpace(addedSummary)
+	rem := formatAutoTagPlainSummary(removed, prefix)
+	if dvHumanise && rem != "" {
+		rem = humaniseDvSummary(rem)
+	}
+	switch {
+	case added != "" && rem != "":
+		return added + " (removed " + rem + ")"
+	case added != "":
+		return added
+	case rem != "":
+		return "removed " + rem
+	default:
+		return ""
+	}
 }
 
 // humaniseDvSummary turns the engine's raw DV-detail token list into a

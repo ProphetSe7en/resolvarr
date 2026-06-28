@@ -2,6 +2,18 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.71-dev — Clearer, more consistent notifications (2026-06-28)
+
+### Fixed
+
+- **"Episode tagged" notifications were nearly empty.** A Season/Episode tag applied from a Sonarr grab showed only the title, with no detail. They now show the tag, the type (Season pack / Single episode), the qBittorrent client, and the release name.
+- **"Auto-tagged" notifications went blank when a tag was only removed.** The Audio / Video / Dolby Vision line was built from added tags only, so a removal-only change left it empty. Removed tags now show too.
+
+### Changed
+
+- **Every per-item notification now shows the release name** in a consistent "Release" field, so you can always see which download it was about.
+- **One consistent layout across all notifications.** Same field names and order everywhere (Release, Tagged in, Client, Rule, Event), so a grab, an import, a qBit tag, and a scheduled scan all read the same way even though they carry different details. Renames continue to show both names (before and after).
+
 ## v0.6.70-dev — Recover release types (Sonarr) (2026-06-27)
 
 ### Added

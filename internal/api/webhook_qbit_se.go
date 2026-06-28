@@ -169,10 +169,18 @@ func (s *Server) dispatchQbitSeTag(
 		return functionResult{Function: core.WebhookFnQbitSeTag, OK: false, Summary: "qbit addTags", Err: err}
 	}
 	// Changed=true so the grab event actually notifies. A newly applied
-	// Season/Episode tag is a real change worth surfacing.
+	// Season/Episode tag is a real change worth surfacing. The Detail is
+	// what the notification renders (Tag / Type / Client); without it the
+	// embed would be title-only. The release name reaches the embed via the
+	// universal Release field (composeFields reads it from the event body).
 	return functionResult{
 		Function: core.WebhookFnQbitSeTag, OK: true, Changed: true,
 		Summary: fmt.Sprintf("tagged %s with %q", hash, tag),
+		Detail: QbitSeDetail{
+			Tag:            tag,
+			Classification: qbitSeClassification(tag),
+			QbitInstance:   qbitInst.Name,
+		},
 	}
 }
 

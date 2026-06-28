@@ -102,7 +102,7 @@ func (s *Server) notifyQbitAddResult(ruleID string, results []qbitTagResult, sta
 		}
 	}
 	torrentField := agents.PayloadField{
-		Name:   "Torrent",
+		Name:   "Release",
 		Value:  truncateField(strings.Join(torrentNames, "\n")),
 		Inline: false,
 	}
