@@ -6920,7 +6920,7 @@
                   <span x-show="!qbitWebhookShowCurl">Show command</span>
                   <span x-show="qbitWebhookShowCurl">Hide command</span>
                 </button>
-                <button class="btn" @click="doTestQbitWebhook()" :disabled="qbitWebhookActionInFlight" title="Synthetic in-process ping — verifies the receiver path is wired (does NOT verify qBit can reach resolvarr)">Test</button>
+                <button class="btn" @click="doTestQbitWebhook()" :disabled="qbitWebhookActionInFlight" title="Adds a tiny test torrent to qBittorrent so it fires the webhook back to resolvarr, then removes it. Verifies the full path end to end."><span x-show="!qbitWebhookActionInFlight">Test</span><span x-show="qbitWebhookActionInFlight">Testing…</span></button>
                 <template x-if="qbitWebhookData.qbitState && qbitWebhookData.qbitState.configuredByUs">
                   <button class="btn btn-danger" @click="doResetQbitWebhook()" :disabled="qbitWebhookActionInFlight" title="Restore qBit's pre-our-config autorun value (or clear it if there was no backup)">Reset</button>
                 </template>

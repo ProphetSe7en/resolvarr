@@ -25,9 +25,9 @@ import (
 type Server struct {
 	App       *core.App
 	Version   string
-	AuthStore *auth.Store      // nil-tolerated for handlers that don't touch auth
-	Health    *health.Poller   // nil-tolerated; /api/health/detailed returns 503 if missing
-	Scheduler *core.Scheduler  // nil-tolerated; schedules CRUD/run-now return 503 if missing
+	AuthStore *auth.Store     // nil-tolerated for handlers that don't touch auth
+	Health    *health.Poller  // nil-tolerated; /api/health/detailed returns 503 if missing
+	Scheduler *core.Scheduler // nil-tolerated; schedules CRUD/run-now return 503 if missing
 
 	// M4b Dolby Vision detail tagging — tools (ffmpeg + dovi_tool)
 	// ship baked into the image as of v0.3.5 (Dockerfile dv-tools
@@ -45,6 +45,13 @@ type Server struct {
 	// Nil when no scan is running.
 	DvScanState *DvScanState
 	dvScanMu    sync.Mutex
+
+	// qbitProbes correlates the qBit webhook round-trip test. A probe
+	// registers the key "instanceID:infohash" before adding a synthetic
+	// test torrent via qBit's API; the receive handler closes the channel
+	// when that torrent's webhook arrives, proving qBit can reach resolvarr.
+	qbitProbeMu sync.Mutex
+	qbitProbes  map[string]chan struct{}
 
 	// WebhookLog is the per-instance Connect-event ring buffer. Set
 	// by main.go via AttachWebhookLog after server construction. Nil
@@ -88,9 +95,9 @@ type Server struct {
 // Status="cancelled".
 type DvScanState struct {
 	StartedAt    time.Time `json:"startedAt"`
-	Total        int       `json:"total"`        // candidate count (after DV-type fast-path filter)
-	Processed    int       `json:"processed"`    // items walked so far (cached + extracted both count)
-	Extracted    int       `json:"extracted"`    // ran ffmpeg + dovi_tool successfully
+	Total        int       `json:"total"`     // candidate count (after DV-type fast-path filter)
+	Processed    int       `json:"processed"` // items walked so far (cached + extracted both count)
+	Extracted    int       `json:"extracted"` // ran ffmpeg + dovi_tool successfully
 	CacheHits    int       `json:"cacheHits"`
 	Failed       int       `json:"failed"`       // extraction errored or file unreachable
 	CurrentTitle string    `json:"currentTitle"` // movie currently being processed (best-effort)

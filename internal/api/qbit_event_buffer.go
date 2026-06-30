@@ -73,16 +73,17 @@ const (
 // receive-time outcome so the flush callback can build its summary
 // without re-classifying or re-calling qBit.
 type qbitAddEvent struct {
-	InfoHash    string    // qBit torrent hash (lowercased at receive)
-	Name        string    // torrent name — what engine.DetermineQbitTag classifies
-	Category    string    // qBit category at add-time (may be empty)
-	Received    time.Time // for ordering inside the window
-	AppliedTag  string    // classified tag, empty when no rule branch matched
-	ApplyErrMsg string    // populated when AddTags failed at receive time
-	Matched     bool      // true when AppliedTag != "" — the rule had a tag to apply
-	Reason      string    // plain-language classification reason (for the qBit-webhook activity view), set even when no tag applies
-	RuleID      string    // the rule this per-rule event was classified against
-	RuleName    string    // rule display name, for the activity outcome row
+	InfoHash      string    // qBit torrent hash (lowercased at receive)
+	Name          string    // torrent name — what engine.DetermineQbitTag classifies
+	Category      string    // qBit category at add-time (may be empty)
+	Received      time.Time // for ordering inside the window
+	AppliedTag    string    // classified tag, empty when no rule branch matched
+	ApplyErrMsg   string    // populated when AddTags failed at receive time
+	Matched       bool      // true when AppliedTag != "" — the rule had a tag to apply
+	AlreadyTagged bool      // torrent already carried AppliedTag at add-time → no real change, don't notify
+	Reason        string    // plain-language classification reason (for the qBit-webhook activity view), set even when no tag applies
+	RuleID        string    // the rule this per-rule event was classified against
+	RuleName      string    // rule display name, for the activity outcome row
 }
 
 // qbitFlushFn is invoked when a window expires. The buffer hands the
