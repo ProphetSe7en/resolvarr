@@ -2,6 +2,16 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.72-dev — Quieter qBit notifications + a real webhook test (2026-06-28)
+
+### Fixed
+
+- **No more notifications when nothing actually changed.** When qBittorrent reported a torrent that already had its Season/Episode tag (a re-add, a cross-seed copy, or a repeated hook), resolvarr still sent a notification even though nothing changed. It now only notifies when a tag is genuinely new. The activity view records the already-tagged ones as "no change" so you can still see they came in.
+
+### Changed
+
+- **The qBittorrent webhook "Test" button now checks the whole path for real.** It used to only confirm resolvarr's own receiver was alive. It now adds a tiny test torrent to qBittorrent, which makes qBittorrent fire its configured webhook back to resolvarr, confirms it arrived, then removes the test torrent. So a green result means qBittorrent can actually reach resolvarr with the right secret, end to end.
+
 ## v0.6.71-dev — Clearer, more consistent notifications (2026-06-28)
 
 ### Fixed

@@ -166,6 +166,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/qbit-instances/{id}/webhook/configure", s.handleQbitConfigureWebhook)
 	mux.HandleFunc("POST /api/qbit-instances/{id}/webhook/rotate-secret", s.handleQbitRotateWebhookSecret)
 	mux.HandleFunc("POST /api/qbit-instances/{id}/webhook/test", s.handleQbitTestWebhookEndpoint)
+	mux.HandleFunc("POST /api/qbit-instances/{id}/webhook/probe", s.handleQbitWebhookProbe) // real end-to-end round-trip
 	mux.HandleFunc("POST /api/qbit-instances/{id}/webhook/reset", s.handleQbitResetWebhook)
 	// qBit-webhook activity view (qBit-add events logged per qBit instance)
 	// + re-run a failed one.

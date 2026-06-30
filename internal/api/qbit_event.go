@@ -111,6 +111,17 @@ func (s *Server) handleQbitTorrentAdded(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, "missing infoHash")
 		return
 	}
+
+	// Webhook round-trip probe: if this is the synthetic test torrent for a
+	// pending probe on this instance, signal it and stop. The secret was
+	// already verified above, so a successful probe proves the full chain
+	// (qBit autorun -> network -> resolvarr receiver -> secret). The test
+	// torrent must NOT be classified, tagged, notified, or logged as a real
+	// add.
+	if s.signalQbitProbe(instanceID, infoHash) {
+		writeJSON(w, map[string]string{"status": "probe-received"})
+		return
+	}
 	if name == "" {
 		fmt.Fprintf(os.Stderr, "resolvarr: qbit-add 400 for instance %q — missing name (hash=%s)\n", instanceID, shortInfoHash(infoHash))
 		writeError(w, 400, "missing name")
@@ -277,6 +288,16 @@ func (s *Server) eagerApplyQbitSeTag(
 		ev.ApplyErrMsg = "qbit client init: " + initErr.Error()
 		return
 	}
+	// Skip when the torrent already carries this tag (re-add, cross-seed,
+	// a double-fire of the hook, or the Connect qbitSe path tagged it first).
+	// AddTags is idempotent on qBit's side, but counting it as a change would
+	// fire a notification with nothing actually changed. Mirrors the Connect
+	// path's qbitHasTag guard. Fail-open: if we can't read the tags, fall
+	// through to AddTags and behave as before.
+	if t, found, gerr := client.GetTorrent(opCtx, ev.InfoHash); gerr == nil && found && qbitHasTag(t.Tags, tag) {
+		ev.AlreadyTagged = true
+		return
+	}
 	if err := client.AddTags(opCtx, []string{ev.InfoHash}, []string{tag}); err != nil {
 		ev.ApplyErrMsg = err.Error()
 	}
@@ -360,11 +381,12 @@ type qbitTagBatch struct {
 // qbitTagResult is the per-tag outcome of a flushed window. Captured
 // for the rolled-up history summary.
 type qbitTagResult struct {
-	tag      string
-	applied  int
-	failed   bool
-	errMsg   string
-	examples []string // first few names for the history detail
+	tag           string
+	applied       int
+	alreadyTagged int // torrents that already had the tag (no change, no notify)
+	failed        bool
+	errMsg        string
+	examples      []string // first few names for the history detail
 }
 
 // flushQbitAggregated is the buffer's drain callback. Runs in a
@@ -392,11 +414,12 @@ func (s *Server) flushQbitAggregated(ctx context.Context, ruleID string, events 
 
 	// Roll up per-tag counts from the eager-apply results.
 	type aggRow struct {
-		tag      string
-		applied  int
-		failed   int
-		firstErr string
-		examples []string
+		tag           string
+		applied       int
+		alreadyTagged int
+		failed        int
+		firstErr      string
+		examples      []string
 	}
 	byTag := map[string]*aggRow{}
 	tagOrder := make([]string, 0, 3)
@@ -412,16 +435,24 @@ func (s *Server) flushQbitAggregated(ctx context.Context, ruleID string, events 
 			byTag[ev.AppliedTag] = row
 			tagOrder = append(tagOrder, ev.AppliedTag)
 		}
-		if ev.ApplyErrMsg != "" {
+		switch {
+		case ev.ApplyErrMsg != "":
 			row.failed++
 			if row.firstErr == "" {
 				row.firstErr = ev.ApplyErrMsg
 			}
-		} else {
+			if len(row.examples) < 5 {
+				row.examples = append(row.examples, ev.Name)
+			}
+		case ev.AlreadyTagged:
+			// Already had the tag → no change. Counted for the history view,
+			// but not as an "applied" so it never triggers a notification.
+			row.alreadyTagged++
+		default:
 			row.applied++
-		}
-		if len(row.examples) < 5 {
-			row.examples = append(row.examples, ev.Name)
+			if len(row.examples) < 5 {
+				row.examples = append(row.examples, ev.Name)
+			}
 		}
 	}
 
@@ -440,7 +471,7 @@ func (s *Server) flushQbitAggregated(ctx context.Context, ruleID string, events 
 	hadSuccess := false
 	for _, tag := range tagOrder {
 		row := byTag[tag]
-		r := qbitTagResult{tag: tag, examples: row.examples}
+		r := qbitTagResult{tag: tag, examples: row.examples, alreadyTagged: row.alreadyTagged}
 		if row.failed > 0 {
 			hadError = true
 			r.failed = true
@@ -501,9 +532,11 @@ func (s *Server) appendQbitAggregatedHistory(
 	default:
 		totalApplied := 0
 		totalFailed := 0
+		totalAlready := 0
 		var firstErr string
 		parts := make([]string, 0, len(results))
 		for _, r := range results {
+			totalAlready += r.alreadyTagged
 			if r.failed {
 				totalFailed++
 				if firstErr == "" {
@@ -513,7 +546,14 @@ func (s *Server) appendQbitAggregatedHistory(
 				continue
 			}
 			totalApplied += r.applied
-			parts = append(parts, fmt.Sprintf("%s: %d", r.tag, r.applied))
+			switch {
+			case r.applied > 0 && r.alreadyTagged > 0:
+				parts = append(parts, fmt.Sprintf("%s: %d (%d already tagged)", r.tag, r.applied, r.alreadyTagged))
+			case r.applied > 0:
+				parts = append(parts, fmt.Sprintf("%s: %d", r.tag, r.applied))
+			case r.alreadyTagged > 0:
+				parts = append(parts, fmt.Sprintf("%s: already tagged %d", r.tag, r.alreadyTagged))
+			}
 		}
 		breakdown := strings.Join(parts, ", ")
 		switch {
@@ -525,8 +565,12 @@ func (s *Server) appendQbitAggregatedHistory(
 			// otherwise the green ▲ chip says "tagged 5" while the
 			// underlying status is "partial" + breakdown shows failures.
 			summary = fmt.Sprintf("qbitSeTag: tagged %d with %d error(s) (%s)", totalApplied, totalFailed, breakdown)
-		default:
+		case totalFailed > 0:
 			summary = fmt.Sprintf("qbitSeTag: error: tagging failed (%s)", breakdown)
+		default:
+			// No new tags and no failures: every matched torrent already had
+			// the tag. A real no-op, recorded but never notified.
+			summary = fmt.Sprintf("qbitSeTag: no change (already tagged %d)", totalAlready)
 		}
 	}
 

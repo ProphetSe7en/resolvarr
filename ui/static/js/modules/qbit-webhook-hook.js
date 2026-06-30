@@ -201,15 +201,18 @@ function appQbitWebhookHook() {
       }
     },
 
+    // Real end-to-end test: resolvarr adds a tiny paused test torrent to
+    // qBit, which makes qBit fire its configured webhook back to resolvarr.
+    // We wait for that callback (up to ~20s), then remove the test torrent.
     async doTestQbitWebhook() {
       if (!this.qbitWebhookInstance) return;
       this.qbitWebhookActionInFlight = true;
       this.qbitWebhookTestResult = null;
       try {
-        const r = await this.apiFetch('/api/qbit-instances/' + this.qbitWebhookInstance.id + '/webhook/test', { method: 'POST' });
+        const r = await this.apiFetch('/api/qbit-instances/' + this.qbitWebhookInstance.id + '/webhook/probe', { method: 'POST' });
         const d = await r.json();
         if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
-        this.qbitWebhookTestResult = { ok: true, message: 'Receiver is wired correctly. (This does NOT verify qBit can reach resolvarr — only an actual qBit add proves end-to-end.)' };
+        this.qbitWebhookTestResult = { ok: !!d.ok, message: d.message || (d.ok ? 'The webhook works.' : 'Test failed.') };
       } catch (e) {
         this.qbitWebhookTestResult = { ok: false, message: 'Test failed: ' + e.message };
       } finally {
