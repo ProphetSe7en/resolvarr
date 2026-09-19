@@ -287,6 +287,15 @@ func (r *schedulerRunner) runReconcileSchedule(ctx context.Context, cfg core.Con
 	if rc := job.Reconcile; rc != nil {
 		req.ReconcileQbitInstanceID = rc.QbitInstanceID
 		req.ReconcilePostCategory = rc.PostCategory
+		// Multi-download-client targets. reconcileTargetsFromRequest
+		// folds the legacy single pair above in as one more target, so
+		// schedules saved either way keep working.
+		for _, t := range rc.Targets {
+			req.ReconcileTargets = append(req.ReconcileTargets, scanReconcileTarget{
+				QbitInstanceID: t.QbitInstanceID,
+				PostCategory:   t.PostCategory,
+			})
+		}
 	}
 	resp, apiErr := r.server.runReconcile(ctx, cfg, inst, appType, req)
 	r.server.auditScan("schedule:"+job.ID, "reconcile", inst, req, resp, errMsgOf(apiErr))

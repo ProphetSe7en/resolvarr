@@ -133,7 +133,7 @@ function appState() {
       // Wizard-step help panels — same toggle pattern as the Library
       // scan fanes. Each wizard step renders its own collapsible
       // "How it works" panel so the inline form copy can stay short.
-      ruleBasics: false, ruleRG: false, ruleFilters: false, ruleAudio: false, ruleVideo: false, ruleDvDetail: false, ruleMissingEpisodes: false, ruleGrabRename: false, ruleQbitSe: false, ruleQbitCategoryFix: false, rulePlexLabelSync: false, ruleSchedule: false },
+      ruleBasics: false, ruleRG: false, ruleFilters: false, ruleAudio: false, ruleVideo: false, ruleDvDetail: false, ruleMissingEpisodes: false, ruleGrabRename: false, ruleQbitSe: false, ruleQbitCategoryFix: false, ruleStuckReconcile: false, rulePlexLabelSync: false, ruleSchedule: false },
 
     // Single source of truth for short function descriptions. Used by:
     // - Rule editor Basics step (schedule + webhook modes) to render
@@ -283,6 +283,17 @@ function appState() {
         webhookOnly: true,
         requiresQbit: true,
       },
+      stuckReconcile: {
+        id: 'stuckReconcile',
+        optionFlag: 'fnStuckReconcile',
+        label: 'Clear stuck downloads after import',
+        summary: 'The automatic version of the Stuck downloads page. When two releases of the same thing are grabbed seconds apart, the better one imports and the loser sits in the queue forever on its pre-import category. This runs right after every import, checks whether each stuck download is genuinely redundant (the file already on disk scores as good or better), and moves the redundant ones to a category your own qBittorrent cleanup handles. Downloads that are NOT redundant are left completely alone. Nothing is ever deleted. Works across several download clients at once — each one gets its own target category, and every stuck download is matched to the client that actually holds it.',
+        summaryWebhook: 'On every import: look for downloads of the same movie/series that finished but never imported, and move the redundant ones to a cleanup category — on every download client you list. Never deletes. Runs in the background a minute after the import so it never slows Sonarr/Radarr down.',
+        triggers: ['On File Import', 'On File Upgrade'],
+        appliesTo: 'both',
+        webhookOnly: true,
+        requiresQbit: true,
+      },
       qbitCategoryFix: {
         id: 'qbitCategoryFix',
         optionFlag: 'fnQbitCategoryFix',
@@ -428,6 +439,12 @@ function appState() {
     reconcileApplySelected: {},    // { [downloadId]: true } — which redundant rows to recategorise
     reconcileQbitInstanceId: '',   // which qBit client holds the downloads (set in the modal)
     reconcilePostCategory: '',     // category to move redundant downloads to (set in the modal)
+    // Extra download clients beyond the primary pair above. One Arr can
+    // feed from several qBittorrent clients and its queue mixes them, so
+    // a run pinned to one client silently skips the others' stuck
+    // downloads. Each entry is { qbitInstanceId, postCategory } — the
+    // category is per-client because names differ per client.
+    reconcileExtraTargets: [],
     reconcilePreCategory: '',      // info: the category stuck downloads currently sit in
     reconcileLastInstanceId: '',   // tracks which instance the qBit + categories were resolved for
     // Release Type Overview (Sonarr-only, read-only scan). Shows each
@@ -703,6 +720,7 @@ function appState() {
       { id: 'grabRename',       label: 'Rename torrent in qBittorrent' },
       { id: 'qbitSeTag',        label: 'Tag Episode/Season in qBittorrent (Sonarr)' },
       { id: 'qbitCategoryFix',  label: 'Fix qBittorrent category after import' },
+      { id: 'stuckReconcile',   label: 'Clear stuck downloads after import' },
     ],
     deleteAgentTarget: null,
     deleteAgentBusy: false,
@@ -1158,6 +1176,7 @@ function appState() {
       { id: 'grabrename', label: 'qBit Grab Rename' },
       { id: 'qbitse',     label: 'qBit S/E tag' },
       { id: 'qbitcategoryfix', label: 'qBit category fix' },
+      { id: 'stuckreconcile',  label: 'Stuck downloads' },
       { id: 'plexlabelsync', label: 'Plex label sync' },
       // Schedule tab is visible only when the rule fires on a cron
       // (not Manual run only). Hidden in quickfix mode entirely.
@@ -1225,7 +1244,7 @@ function appState() {
     // and schedule. Visibility (ruleEditorTabVisible) gates them off
     // for schedule rules entirely, and for webhook rules they only
     // surface when the matching fn flag is ticked on Basics.
-    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'missingepisodes', 'tbarefresh', 'plexsync', 'grabrename', 'qbitse', 'qbitcategoryfix', 'plexlabelsync', 'schedule', 'review'],
+    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'missingepisodes', 'tbarefresh', 'plexsync', 'grabrename', 'qbitse', 'qbitcategoryfix', 'stuckreconcile', 'plexlabelsync', 'schedule', 'review'],
 
     // instance UI state
     instStatus: {},

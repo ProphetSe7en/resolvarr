@@ -2,6 +2,17 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## Unreleased — Stuck downloads can run itself, across every download client
+
+### Added
+
+- **Stuck downloads is no longer manual-only.** A new webhook function, **Clear stuck downloads after import**, runs the same check the Library scan page does — automatically, after every import. That is the moment it matters: a download gets stuck precisely because a better release of the same thing imported first and left it with nothing to import into. Redundant downloads are moved to a category your own qBittorrent cleanup handles; anything that is not clearly redundant is left alone for you to look at. Nothing is ever deleted. The sweep runs in the background about a minute after the import so it never delays Sonarr/Radarr, and only looks at the movie or series the import was about. A whole season arriving at once is collapsed into a single check instead of one per episode. To sweep the entire queue, the Stuck downloads page and a `reconcile` schedule still do that.
+- **Stuck downloads now handles several download clients in one run.** Both the Library scan page and the new webhook function take a list of qBittorrent clients, each with its own target category. A single Sonarr/Radarr queue mixes downloads from every client attached to it, so a run pinned to one client was quietly leaving the other clients' stuck downloads behind. Each stuck download is now matched to the client that actually holds it, by torrent hash — renaming a client changes nothing. The result rows say which client and category each download was moved to.
+
+### Fixed
+
+- **Scheduled Stuck downloads runs are no longer rejected on save.** The scheduler already knew how to run the phase, but the schedule validator treated `reconcile` as an unknown mode, so a reconcile schedule could never be stored. It saves now, and takes the same per-download-client target list. (The schedule wizard does not offer it as a choice yet — it is reachable via the schedules API.)
+
 ## v0.6.76-dev — TBA refresh only targets files it can actually fix (2026-07-05)
 
 ### Fixed

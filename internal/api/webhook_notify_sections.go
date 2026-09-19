@@ -122,6 +122,7 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 	var grab *GrabRenameDetail
 	var qbitSe *QbitSeDetail
 	var qbitCat *QbitCategoryFixDetail
+	var stuckRec *StuckReconcileDetail
 	var fileDel *FileDeleteDetail
 	var plexSync *PlexSyncDetail
 
@@ -165,6 +166,10 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 		case core.WebhookFnQbitCategoryFix:
 			if d, ok := r.Detail.(QbitCategoryFixDetail); ok {
 				qbitCat = &d
+			}
+		case core.WebhookFnStuckReconcile:
+			if d, ok := r.Detail.(StuckReconcileDetail); ok {
+				stuckRec = &d
 			}
 		case core.WebhookFnPlexLabelSync:
 			if d, ok := r.Detail.(PlexSyncDetail); ok {
@@ -307,6 +312,7 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 		detail = appendGrabRenameSection(detail, grab)
 		detail = appendQbitSeSection(detail, qbitSe)
 		detail = appendQbitCategoryFixSection(detail, qbitCat)
+		detail = appendStuckReconcileSection(detail, stuckRec)
 	}
 
 	if len(detail) == 0 {
@@ -876,6 +882,56 @@ func appendQbitCategoryFixSection(fields []agents.PayloadField, d *QbitCategoryF
 		fields = append(fields, agents.PayloadField{
 			Name:   "Client",
 			Value:  qbit,
+			Inline: true,
+		})
+	}
+	return fields
+}
+
+// appendStuckReconcileSection renders the stuck-downloads sweep result.
+// Emits nothing when the sweep moved nothing — a rule firing on every
+// import would otherwise add a "0 moved" row to every notification,
+// which is exactly the noise the Changed contract exists to prevent.
+func appendStuckReconcileSection(fields []agents.PayloadField, d *StuckReconcileDetail) []agents.PayloadField {
+	if d == nil || d.Moved == 0 {
+		return fields
+	}
+	fields = append(fields, agents.PayloadField{
+		Name:   "Stuck downloads moved",
+		Value:  fmt.Sprintf("%d of %d stuck", d.Moved, d.Stuck),
+		Inline: true,
+	})
+	// One line per move: "Release — client → category". Capped upstream
+	// in collectStuckReconcileMoves.
+	if len(d.Moves) > 0 {
+		lines := make([]string, 0, len(d.Moves))
+		for _, m := range d.Moves {
+			title := strings.TrimSpace(m.Title)
+			if title == "" {
+				title = "(untitled release)"
+			}
+			client := strings.TrimSpace(m.QbitInstance)
+			if client != "" {
+				client = " — " + client
+			}
+			lines = append(lines, fmt.Sprintf("%s%s → %s", title, client, m.Category))
+		}
+		fields = append(fields, agents.PayloadField{
+			Name:  "Moved",
+			Value: strings.Join(lines, "\n"),
+		})
+	}
+	if d.NeedsAttention > 0 {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Left alone",
+			Value:  fmt.Sprintf("%d need attention", d.NeedsAttention),
+			Inline: true,
+		})
+	}
+	if d.Failed > 0 {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Failed",
+			Value:  fmt.Sprintf("%d", d.Failed),
 			Inline: true,
 		})
 	}

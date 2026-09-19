@@ -3554,8 +3554,17 @@
                             <template x-if="it.rejection"><div style="color:var(--text-muted-secondary);font-style:italic;margin-top:1px" x-text="it.rejection"></div></template>
                           </div>
                         </div>
-                        <template x-if="it.status === 'recategorised'"><span style="font-size:11px;color:var(--accent-green);white-space:nowrap">✓ recategorised</span></template>
-                        <template x-if="it.status === 'failed'"><span style="font-size:11px;color:var(--accent-red);white-space:nowrap" :title="it.error">failed</span></template>
+                        <template x-if="it.status === 'recategorised'">
+                          <span style="font-size:11px;color:var(--accent-green);text-align:right;max-width:200px">
+                            ✓ moved<template x-if="it.qbitCategory"><span> to <code x-text="it.qbitCategory"></code></span></template>
+                            <template x-if="it.qbitInstanceName"><span style="display:block;color:var(--text-muted-secondary)" x-text="it.qbitInstanceName"></span></template>
+                          </span>
+                        </template>
+                        <template x-if="it.status === 'failed'">
+                          <span style="font-size:11px;color:var(--accent-red);text-align:right;max-width:220px" :title="it.error">
+                            failed<template x-if="it.error"><span style="display:block;color:var(--text-muted-secondary);word-break:break-word" x-text="it.error"></span></template>
+                          </span>
+                        </template>
                       </div>
                     </template>
                   </div>
@@ -3591,8 +3600,17 @@
                             <template x-if="!it.rejection && it.statusMessage && it.statusMessage !== it.title"><div style="color:var(--text-muted-secondary);margin-top:1px" x-text="it.statusMessage"></div></template>
                           </div>
                         </div>
-                        <template x-if="it.status === 'recategorised'"><span style="font-size:11px;color:var(--accent-green);white-space:nowrap">✓ recategorised</span></template>
-                        <template x-if="it.status === 'failed'"><span style="font-size:11px;color:var(--accent-red);white-space:nowrap" :title="it.error">failed</span></template>
+                        <template x-if="it.status === 'recategorised'">
+                          <span style="font-size:11px;color:var(--accent-green);text-align:right;max-width:200px">
+                            ✓ moved<template x-if="it.qbitCategory"><span> to <code x-text="it.qbitCategory"></code></span></template>
+                            <template x-if="it.qbitInstanceName"><span style="display:block;color:var(--text-muted-secondary)" x-text="it.qbitInstanceName"></span></template>
+                          </span>
+                        </template>
+                        <template x-if="it.status === 'failed'">
+                          <span style="font-size:11px;color:var(--accent-red);text-align:right;max-width:220px" :title="it.error">
+                            failed<template x-if="it.error"><span style="display:block;color:var(--text-muted-secondary);word-break:break-word" x-text="it.error"></span></template>
+                          </span>
+                        </template>
                       </div>
                     </template>
                   </div>
@@ -3605,14 +3623,25 @@
               <template x-if="(reconcileResults.reconcile || []).length > 0">
                 <div>
                   <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:4px">
-                    <button class="btn btn-primary" @click="applyReconcile()" :disabled="reconcileApplying || reconcileSelectedCount() === 0 || !reconcilePostCategory.trim()">
-                      <span x-show="!reconcileApplying">Move <span x-text="reconcileSelectedCount()"></span> selected to <code x-text="reconcilePostCategory || '(set a category in Run)'"></code></span>
+                    <button class="btn btn-primary" @click="applyReconcile()" :disabled="reconcileApplying || reconcileSelectedCount() === 0 || !!reconcileTargetsError()">
+                      <span x-show="!reconcileApplying">
+                        Move <span x-text="reconcileSelectedCount()"></span> selected
+                        <template x-if="(reconcileTargetsPayload() || []).length <= 1"><span> to <code x-text="reconcilePostCategory || '(set a category in Run)'"></code></span></template>
+                        <template x-if="(reconcileTargetsPayload() || []).length > 1"><span> across <span x-text="reconcileTargetsPayload().length"></span> download clients</span></template>
+                      </span>
                       <span x-show="reconcileApplying">Applying…</span>
                     </button>
                   </div>
                   <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:6px">
                     <template x-if="reconcilePreCategory"><span>Stuck downloads sit in category <code x-text="reconcilePreCategory"></code>. </span></template>
-                    Moves the ticked downloads to their new qBittorrent category — your own cleanup on that category does the rest. Never deletes. Change the instance / target in <strong>Run reconcile</strong>.
+                    Moves the ticked downloads to their new qBittorrent category — your own cleanup on that category does the rest. Never deletes. Change the instance / download clients / targets in <strong>Run reconcile</strong>.
+                    <template x-if="(reconcileTargetsPayload() || []).length > 1">
+                      <span style="display:block;margin-top:3px">Each download is matched to the client that actually holds it:
+                        <template x-for="(t, i) in reconcileTargetsPayload()" :key="t.qbitInstanceId">
+                          <span><template x-if="i > 0"><span> &middot; </span></template><span x-text="qbitInstanceName(t.qbitInstanceId) || t.qbitInstanceId"></span> &rarr; <code x-text="t.postCategory"></code></span>
+                        </template>
+                      </span>
+                    </template>
                   </div>
                 </div>
               </template>
@@ -4935,7 +4964,8 @@
 
       <div class="form-group">
         <label class="label">qBittorrent instance</label>
-        <select class="input" x-model="reconcileQbitInstanceId">
+        <select class="input" x-model="reconcileQbitInstanceId"
+                @change="reconcilePostCategory = ''">
           <option value="">— pick —</option>
           <template x-for="qi in (qbitInstances || [])" :key="qi.id">
             <option :value="qi.id" x-text="qi.name"></option>
@@ -4951,9 +4981,40 @@
         <input type="text" class="input" x-model="reconcilePostCategory" placeholder="e.g. tv-hd">
         <div style="font-size:11px;color:var(--text-muted-secondary);margin-top:4px">
           <template x-if="reconcilePreCategory"><span>Stuck downloads sit in <code x-text="reconcilePreCategory"></code>. </span></template>
-          Pre-filled from this instance's qBittorrent post-import category; override if you want.
+          Must match a category that exists in qBittorrent. Pre-filled from this instance's qBittorrent post-import category; override if you want.
         </div>
       </div>
+
+      <!-- Extra download clients. This Arr's queue mixes downloads from
+           every client attached to it, so a run pinned to one client
+           leaves the others' stuck downloads behind. Each extra client
+           gets its own category because names differ per client. -->
+      <template x-if="(reconcileExtraTargets || []).length > 0">
+        <div class="form-group">
+          <label class="label">More download clients</label>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <template x-for="(t, idx) in reconcileExtraTargets" :key="idx">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <select class="input" @change="t.qbitInstanceId = $event.target.value; t.postCategory = ''" style="max-width:190px;flex:0 0 auto">
+                  <option value="" :selected="!t.qbitInstanceId">&mdash; pick &mdash;</option>
+                  <template x-for="qi in (qbitInstances || [])" :key="qi.id">
+                    <option :value="qi.id" :selected="qi.id === t.qbitInstanceId" x-text="qi.name"></option>
+                  </template>
+                </select>
+                <span style="font-size:12px;color:var(--text-secondary)">&rarr;</span>
+                <input type="text" class="input" x-model="t.postCategory" placeholder="category" style="max-width:150px;flex:0 0 auto">
+                <button class="btn btn-sm" @click="reconcileRemoveExtraTarget(idx)" style="font-size:11px">Remove</button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+      <template x-if="reconcileCanAddExtraTarget()">
+        <div style="margin:-6px 0 14px">
+          <button class="btn btn-sm" @click="reconcileAddExtraTarget()" style="font-size:11px">+ Add another download client</button>
+          <span style="font-size:11px;color:var(--text-muted-secondary);margin-left:8px">Sweeps every client at once; each stuck download is matched to the client that actually holds it.</span>
+        </div>
+      </template>
 
       <div class="form-group">
         <label class="label">Mode</label>
@@ -4976,7 +5037,7 @@
       <div class="modal-actions">
         <div style="flex:1"></div>
         <button class="btn" @click="closeReconcileWizard()" :disabled="reconcileWizard.busy">Cancel</button>
-        <button class="btn btn-primary" @click="runReconcileWizard()" :disabled="reconcileWizard.busy || !reconcileWizard.instanceId || (reconcileWizard.mode === 'apply' && (!reconcileQbitInstanceId || !reconcilePostCategory.trim()))">
+        <button class="btn btn-primary" @click="runReconcileWizard()" :disabled="reconcileWizard.busy || !reconcileWizard.instanceId || (reconcileWizard.mode === 'apply' && !!reconcileTargetsError())">
           <span x-show="!reconcileWizard.busy" x-text="reconcileWizard.mode === 'apply' ? 'Run + move redundant' : 'Run preview'"></span>
           <span x-show="reconcileWizard.busy">Running…</span>
         </button>
@@ -10243,6 +10304,119 @@
             </div>
             <div style="font-size:11px;color:var(--text-secondary);line-height:1.5;max-width:520px">
               The fix runs this many seconds after the import, in the background, so the webhook reply is instant and never delays Sonarr/Radarr (Connect notifications hold up the import until they get a reply). The delay also gives the Arr time to do its own category swap first, so most of the time the fix finds nothing left to do.
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===== Stuck downloads step =====
+           Inline per-rule config for WebhookFnStuckReconcile — the
+           automatic version of Library scan -> Stuck downloads. The
+           targets list is the reason this step exists as its own
+           editor: one Arr commonly feeds from several qBittorrent
+           clients and its queue mixes them, so each client needs its
+           own row + target category. -->
+      <template x-if="ruleEditor.open && editingRule && ruleEditorCurrentSection() === 'stuckreconcile'">
+        <div x-init="stuckReconcileSeedStep()">
+          <button class="help-toggle" :class="helpOpen.ruleStuckReconcile && 'is-open'" @click="helpOpen.ruleStuckReconcile = !helpOpen.ruleStuckReconcile" style="margin-bottom:12px">
+            <span class="help-icon">i</span>
+            <span x-text="helpOpen.ruleStuckReconcile ? 'Hide help' : 'How it works'"></span>
+          </button>
+          <div class="help-panel" x-show="helpOpen.ruleStuckReconcile" x-cloak>
+            <div class="help-section">
+              <h4>What does this fix?</h4>
+              <p>Sonarr/Radarr sometimes grabs two releases of the same thing seconds apart. The better one imports; the other one finishes downloading and then just sits in the queue forever, still on its pre-import category, because there is nothing left for it to import into. Over months that quietly fills your download client with dead torrents.</p>
+              <p>This is the same check the <strong>Library scan &rarr; Stuck downloads</strong> page does, run automatically after every import instead of when you remember to press the button.</p>
+            </div>
+            <div class="help-section">
+              <h4>What exactly does it do?</h4>
+              <p>For each finished-but-never-imported download it asks: does the episode or movie <em>already</em> have a file that scores as good or better? If yes, that download is redundant and gets moved to the category you pick below &mdash; where your own qBittorrent cleanup rule removes it. If no (nothing imported, or the stuck one is actually the better release), it is left completely alone for you to look at.</p>
+              <p><strong>Nothing is ever deleted.</strong> The only change made is the torrent&rsquo;s category.</p>
+            </div>
+            <div class="help-section">
+              <h4>Several download clients</h4>
+              <p>List every qBittorrent client this Sonarr/Radarr downloads through. Each gets its own target category, because category names differ per client. Every stuck download is matched to the client that actually holds it &mdash; matching is by torrent hash, so renaming a client changes nothing.</p>
+            </div>
+            <div class="help-section">
+              <h4>When does it run?</h4>
+              <p>On every <strong>On File Import</strong> and <strong>On File Upgrade</strong> event, in the background a minute later, so it never holds up Sonarr/Radarr (Connect notifications block the import until they get a reply). The delay also gives the Arr time to settle the losing download into its stuck state &mdash; sweeping instantly would find nothing.</p>
+            </div>
+          </div>
+
+          <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:12px;padding:10px 14px;background:var(--bg-page);border:1px solid var(--bg-muted);border-radius:8px">
+            After every import, look for downloads of the same <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'series' : 'movie'"></span> that finished but never imported, and move the redundant ones out of the way. Never deletes.
+          </div>
+
+          <template x-if="(qbitInstances || []).length === 0">
+            <div style="font-size:12px;color:var(--accent-orange);padding:8px 12px;background:var(--bg-page);border:1px dashed var(--accent-orange);border-radius:6px;margin-bottom:12px">
+              No qBittorrent instances configured yet. Add one on the Settings page before saving this rule.
+            </div>
+          </template>
+
+          <!-- Per-download-client rows -->
+          <div class="form-group">
+            <label style="font-size:13px;color:var(--text-primary);font-weight:500;display:block;margin-bottom:6px">Download clients <span style="color:var(--accent-red)">*</span></label>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <template x-for="(t, idx) in stuckReconcileTargets()" :key="idx">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <select class="input"
+                          :class="!t.qbitInstanceId && 'input-invalid'"
+                          @change="t.qbitInstanceId = $event.target.value; t.postCategory = ''"
+                          style="max-width:260px;flex:0 0 auto">
+                    <option value="" :selected="!t.qbitInstanceId">Select a qBittorrent client...</option>
+                    <template x-for="q in (qbitInstances || [])" :key="q.id">
+                      <option :value="q.id" :selected="q.id === t.qbitInstanceId" x-text="q.name"></option>
+                    </template>
+                  </select>
+                  <span style="font-size:12px;color:var(--text-secondary)">&rarr; move redundant to</span>
+                  <input type="text" class="input"
+                         :class="!(t.postCategory || '').trim() && 'input-invalid'"
+                         x-model="t.postCategory"
+                         placeholder="e.g. cleanup"
+                         style="max-width:220px;flex:0 0 auto">
+                  <button type="button" class="btn btn-sm"
+                          @click="stuckReconcileRemoveTarget(idx)"
+                          :disabled="stuckReconcileTargets().length <= 1"
+                          style="font-size:11px">Remove</button>
+                </div>
+              </template>
+            </div>
+            <div style="margin-top:8px">
+              <button type="button" class="btn btn-sm"
+                      @click="stuckReconcileAddTarget()"
+                      :disabled="stuckReconcileTargets().length >= (qbitInstances || []).length || stuckReconcileTargets().length >= 12"
+                      style="font-size:11px">+ Add download client</button>
+              <span style="font-size:11px;color:var(--text-secondary);margin-left:8px">One row per qBittorrent client this <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> downloads through.</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:6px;line-height:1.5;max-width:560px">
+              The category is where redundant downloads land so your own qBittorrent cleanup can remove them &mdash; resolvarr never deletes a torrent itself. Type it exactly as it appears in qBittorrent: a category that doesn't exist there is refused when the rule runs. It is saved with the rule, so you only enter it once. The first row starts from the download-client config in <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>.
+            </div>
+          </div>
+
+          <template x-if="stuckReconcileWarning()">
+            <div style="font-size:11px;color:var(--accent-orange);margin-top:6px;line-height:1.5">
+              &#9888; <span x-text="stuckReconcileWarning()"></span>
+            </div>
+          </template>
+
+          <!-- Scope is fixed, not a choice: an adapter only ever acts on
+               the item its event names. Sweeping the whole queue is the
+               Stuck downloads page's job, or a reconcile schedule's. -->
+          <div style="font-size:11px;color:var(--text-secondary);margin-top:14px;padding-top:12px;border-top:1px solid var(--border-subtle);line-height:1.5;max-width:560px">
+            Each fire checks only the <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'series' : 'movie'"></span> that was just imported &mdash; the losers of the race it won. A whole season arriving at once is collapsed into a single check rather than one per episode. To sweep the entire queue, use <strong>Run reconcile</strong> on the Stuck downloads page.
+          </div>
+
+          <!-- Background-defer delay -->
+          <div class="form-group" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border-subtle)">
+            <label class="label" style="font-size:13px;color:var(--text-primary);font-weight:500;margin-bottom:4px">Run in the background, this many seconds after import</label>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+              <input class="input" type="number" min="5" max="600" step="1"
+                     x-model.number="editingRule.stuckReconcile.deferSeconds"
+                     placeholder="60" style="width:120px;font-size:13px">
+              <span style="font-size:11px;color:var(--text-secondary)">Default: 60 &middot; Range: 5&ndash;600 seconds</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-secondary);line-height:1.5;max-width:560px">
+              Connect notifications hold up the import until they get a reply, so the sweep runs later in the background and the reply is instant. The wait also lets <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> finish processing the import and settle the losing download into its stuck state &mdash; check too early and there is nothing to find yet.
             </div>
           </div>
         </div>

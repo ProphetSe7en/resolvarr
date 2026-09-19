@@ -45,6 +45,21 @@ const (
 	WebhookFnGrabRename       WebhookFunction = "grabRename"       // Both Arrs — qBit torrent rename on Grab
 	WebhookFnQbitSeTag        WebhookFunction = "qbitSeTag"        // Sonarr only — qBit S/E tagging on Grab
 	WebhookFnQbitCategoryFix  WebhookFunction = "qbitCategoryFix"  // Both Arrs — reconcile pre→post-import category on qBit if Arr's update silently failed
+	// WebhookFnStuckReconcile is the event-driven twin of the Library
+	// scan's "Stuck downloads" action. An import landing is exactly the
+	// moment a LOSING release of the same thing becomes redundant (the
+	// better release won the race; the loser sits in the queue forever
+	// on the pre-import category). Fires on Download events, sweeps the
+	// Arr queue for finished-but-never-imported downloads, and moves
+	// the redundant ones to the target category on EVERY configured
+	// download client — the user's own cleanup on that category does
+	// the rest. Never deletes. Config on WebhookRule.StuckReconcile.
+	//
+	// Scope is always the movie / series the event names, per
+	// Architectural rule 2 in webhook_adapters.go. Sweeping the whole
+	// queue is the Library scan action's job (and a `reconcile`
+	// schedule's) — that is the deliberate batch model.
+	WebhookFnStuckReconcile WebhookFunction = "stuckReconcile" // Both Arrs
 	// WebhookFnPlexLabelSync propagates whitelist tag changes on the
 	// fired item out to Plex. Runs AFTER the Tag* functions on the
 	// same rule have finished mutating Arr tags so the engine sees
@@ -79,6 +94,7 @@ var allWebhookFunctions = []WebhookFunction{
 	WebhookFnGrabRename,
 	WebhookFnQbitSeTag,
 	WebhookFnQbitCategoryFix,
+	WebhookFnStuckReconcile,
 	WebhookFnPlexLabelSync,
 }
 
@@ -116,7 +132,7 @@ func WebhookFunctionAppliesTo(fn WebhookFunction, appType string) bool {
 		return appType == "radarr"
 	case WebhookFnQbitSeTag:
 		return appType == "sonarr"
-	case WebhookFnTagAudio, WebhookFnTagVideo, WebhookFnRecover, WebhookFnFileDeleteClean, WebhookFnGrabRename, WebhookFnQbitCategoryFix, WebhookFnPlexLabelSync:
+	case WebhookFnTagAudio, WebhookFnTagVideo, WebhookFnRecover, WebhookFnFileDeleteClean, WebhookFnGrabRename, WebhookFnQbitCategoryFix, WebhookFnStuckReconcile, WebhookFnPlexLabelSync:
 		return appType == "radarr" || appType == "sonarr"
 	}
 	return false
@@ -167,7 +183,8 @@ func EventsForFunction(fn WebhookFunction, appType string) []WebhookConnectEvent
 	}
 	switch fn {
 	case WebhookFnTagReleaseGroups, WebhookFnDiscover, WebhookFnTagAudio, WebhookFnTagVideo,
-		WebhookFnTagDvDetail, WebhookFnRecover, WebhookFnSyncToSecondary, WebhookFnQbitCategoryFix:
+		WebhookFnTagDvDetail, WebhookFnRecover, WebhookFnSyncToSecondary, WebhookFnQbitCategoryFix,
+		WebhookFnStuckReconcile:
 		return []WebhookConnectEvent{WebhookEventDownload}
 	case WebhookFnPlexLabelSync:
 		// Fires on Download (post-import — Tag* functions on the
@@ -638,6 +655,52 @@ type QbitCategoryFixRules struct {
 	DeferSeconds int `json:"deferSeconds,omitempty"`
 }
 
+// StuckReconcileTarget is one download client the stuck-downloads
+// sweep may act on: which qBittorrent instance holds the torrents and
+// which category redundant ones get moved to there.
+//
+// A rule carries a LIST of these so one import event can reconcile
+// every download client at once. Real setups split by content type
+// (a "movies" qBit and a "tv" qBit) or by network path (a VPN'd client
+// plus a direct one), and the Arr queue mixes downloads from all of
+// them — a single-client rule silently leaves the other client's stuck
+// torrents behind. Categories are per-target because each client has
+// its own category names.
+type StuckReconcileTarget struct {
+	// QbitInstanceID references Config.QbitInstances[].ID. Stable
+	// across name edits — same pairing model as
+	// GrabRenameCriteria.QbitInstanceID.
+	QbitInstanceID string `json:"qbitInstanceId"`
+
+	// PostCategory is the category redundant downloads are moved to on
+	// THIS client. The user's own qBit cleanup rule on that category
+	// does the actual removal — resolvarr never deletes a torrent.
+	PostCategory string `json:"postCategory"`
+}
+
+// StuckReconcileRules is the per-rule config for WebhookFnStuckReconcile
+// — the event-driven twin of the Library scan's "Stuck downloads"
+// action. Nil-safe in the adapter (a missing struct fails validation at
+// save-time, so a nil here means a hand-edited config and the adapter
+// reports it rather than guessing).
+type StuckReconcileRules struct {
+	// Targets is the set of download clients this rule reconciles.
+	// At least one is required by the validator. Each entry needs both
+	// a qBit instance and a category; duplicates by instance are
+	// rejected (the last one would silently win otherwise).
+	Targets []StuckReconcileTarget `json:"targets"`
+
+	// DeferSeconds runs the sweep this many seconds AFTER the import
+	// event, in a background goroutine, so the Connect webhook response
+	// returns immediately and never delays Sonarr/Radarr. Same reasoning
+	// as QbitCategoryFixRules.DeferSeconds, plus one of its own: the
+	// losing release's queue row only settles into importPending /
+	// importBlocked once the Arr has finished processing the winning
+	// import, so sweeping instantly would miss the very item the event
+	// made redundant. 0 = the default (60s); clamped to 600s.
+	DeferSeconds int `json:"deferSeconds,omitempty"`
+}
+
 // WebhookRule is one saved webhook workflow — InstanceID + Functions +
 // per-function snapshots + History. The wizard creates these via the
 // rule editor (parallel to the scheduler-rule editor); the dispatcher
@@ -716,6 +779,11 @@ type WebhookRule struct {
 	GrabRename      *GrabRenameCriteria   `json:"grabRename,omitempty"`
 	QbitSe          *QbitSeRules          `json:"qbitSe,omitempty"`
 	QbitCategoryFix *QbitCategoryFixRules `json:"qbitCategoryFix,omitempty"`
+
+	// StuckReconcile — per-rule config for WebhookFnStuckReconcile.
+	// Pointer so the JSON omits it when the function isn't enabled,
+	// same as the three above.
+	StuckReconcile *StuckReconcileRules `json:"stuckReconcile,omitempty"`
 
 	// PlexLabelSync — inline per-rule config for the WebhookFnPlexLabelSync
 	// function. Populated only when the function is enabled on this
@@ -1059,5 +1127,22 @@ func NormalizeWebhookRule(r *WebhookRule) {
 		r.QbitCategoryFix.QbitInstanceID = strings.TrimSpace(r.QbitCategoryFix.QbitInstanceID)
 		r.QbitCategoryFix.PreImportCategorySnapshot = strings.TrimSpace(r.QbitCategoryFix.PreImportCategorySnapshot)
 		r.QbitCategoryFix.PostImportCategorySnapshot = strings.TrimSpace(r.QbitCategoryFix.PostImportCategorySnapshot)
+	}
+	if r.StuckReconcile != nil {
+		// Trim each target, then drop the blank rows the wizard leaves
+		// behind when a user adds a target row and never fills it in.
+		// A fully-empty row is noise, not an error — dropping it here
+		// keeps the validator's "at least one target" message about
+		// the real problem.
+		kept := r.StuckReconcile.Targets[:0]
+		for _, t := range r.StuckReconcile.Targets {
+			t.QbitInstanceID = strings.TrimSpace(t.QbitInstanceID)
+			t.PostCategory = strings.TrimSpace(t.PostCategory)
+			if t.QbitInstanceID == "" && t.PostCategory == "" {
+				continue
+			}
+			kept = append(kept, t)
+		}
+		r.StuckReconcile.Targets = kept
 	}
 }

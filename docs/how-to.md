@@ -185,6 +185,26 @@ Everything stays on your Docker network, so nothing extra needs to be opened up.
 
 The **Recent activity** tab shows the Connect events as they arrive, with what each rule did. The separate **qBit webhook** tab shows torrents qBittorrent reported directly (cross-seed and manual adds).
 
+### Clearing stuck downloads automatically
+
+**What it does:** after every import, checks whether any download of the same movie or series finished but never imported, and moves the redundant ones to a category your own qBittorrent cleanup handles.
+
+**Why:** Sonarr/Radarr sometimes grab two releases of the same thing seconds apart. The better one imports and the other one sits in the queue forever on its pre-import category, because there is nothing left for it to import into. The **Library scan -> Stuck downloads** page has always found these; this runs the same check for you instead of waiting for you to press the button.
+
+**How to set it up:**
+
+1. Add (or edit) a webhook rule on the instance and tick **Clear stuck downloads after import**.
+2. On the **Stuck downloads** step, list every qBittorrent client this Sonarr/Radarr downloads through, and the category redundant downloads should move to on each one. Type it exactly as it appears in qBittorrent -- a category that doesn't exist there is refused when the rule runs. It is saved with the rule, so you only enter it once. The first row starts from the download-client config in Sonarr/Radarr.
+4. In Sonarr/Radarr -> Settings -> Connect, make sure **On File Import** and **On File Upgrade** are enabled on the connection.
+
+A download is only moved when the episode or movie already has a file scoring as good or better. Anything else -- nothing imported, or the stuck one is actually the better release -- is left alone for you to look at on the Stuck downloads page. **Nothing is ever deleted;** the only change made is the torrent's category, and your own qBittorrent cleanup rule on that category does the rest.
+
+Each fire checks only the movie or series that was just imported. A whole season arriving at once is collapsed into a single check rather than one per episode. To sweep the entire queue, use **Run reconcile** on the Stuck downloads page, or a `reconcile` schedule.
+
+The sweep runs in the background about a minute after the import (adjustable on the same step). That is deliberate: Connect notifications hold up the import until they get a reply, and Sonarr/Radarr needs a moment to settle the losing download into its stuck state before there is anything to find.
+
+**Several download clients at once:** each row gets its own category, because category names differ per client. Every stuck download is matched to the client that actually holds it by torrent hash, so renaming a client changes nothing and a download in client B is never sent to client A.
+
 ### One Sonarr/Radarr feeding several qBittorrent clients
 
 If a single Sonarr or Radarr sends downloads to more than one qBittorrent instance (for example you route items to different clients by tag), give each rule its own webhook URL so each one only ever sees its own grabs. That avoids every rule firing on every grab and reporting "not found" for the torrents that live in a different client.

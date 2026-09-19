@@ -53,6 +53,15 @@ type Server struct {
 	qbitProbeMu sync.Mutex
 	qbitProbes  map[string]chan struct{}
 
+	// stuckSweepPending is the set of stuck-downloads sweeps already
+	// scheduled but not yet started, keyed by rule + item. A season pack
+	// emits one Download event per episode, all naming the same series,
+	// so without this one grab would queue N identical sweeps of the
+	// same queue. Entries are freed as the sweep begins, so a later
+	// import for that item can queue a fresh one.
+	stuckSweepMu      sync.Mutex
+	stuckSweepPending map[string]bool
+
 	// WebhookLog is the per-instance Connect-event ring buffer. Set
 	// by main.go via AttachWebhookLog after server construction. Nil
 	// during early startup; webhook handlers no-op or return 503 in

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -44,6 +45,7 @@ type scheduleRequest struct {
 	PlexSync        *core.PlexLabelSyncConfig    `json:"plexSync,omitempty"`
 	TbaRefresh      *core.TbaRefreshConfig       `json:"tbaRefresh,omitempty"`
 	QbitSe          *core.QbitSeRules            `json:"qbitSe,omitempty"`
+	Reconcile       *core.ReconcileConfig        `json:"reconcile,omitempty"`
 	ReleaseGroupIDs []string                     `json:"releaseGroupIds,omitempty"`
 }
 
@@ -54,7 +56,7 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 		return newAPIError(400, "name is required")
 	}
 	if !core.ValidJobMode(req.Mode) {
-		return newAPIError(400, "mode must be tag, discover, recover, audiotags, videotags, dvdetail, or combined")
+		return newAPIError(400, "mode must be tag, discover, recover, audiotags, videotags, dvdetail, missingepisodes, plexsync, tbarefresh, qbitsetag, reconcile, or combined")
 	}
 	// Empty cron is a valid "manual run only" sentinel — the scheduler
 	// already skips empty-cron rules in Reload (see scheduler.go:155).
@@ -210,6 +212,79 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 		}
 		if e := validateQbitSeConfig(req.QbitSe, cfg); e != nil {
 			return e
+		}
+	}
+	// Reconcile snapshot — the stuck-downloads phase. Preview needs no
+	// download client at all (it only reports), so targets are required
+	// only when the schedule is set to apply. Same multi-client shape
+	// the webhook rule uses.
+	if req.Reconcile != nil {
+		applyMode := strings.EqualFold(strings.TrimSpace(req.Options.RunMode), "apply")
+		if e := validateReconcileConfig(req.Reconcile, cfg, applyMode); e != nil {
+			return e
+		}
+	}
+	if req.Mode == core.JobModeReconcile && strings.EqualFold(strings.TrimSpace(req.Options.RunMode), "apply") && req.Reconcile == nil {
+		return newAPIError(400, "reconcile in apply mode needs at least one download client + target category")
+	}
+	return nil
+}
+
+// validateReconcileConfig checks a reconcile snapshot: every target
+// names a real qBittorrent instance exactly once and carries a category
+// qBit will accept. requireTargets gates the "at least one" rule so a
+// preview-only schedule doesn't have to nominate a client it never
+// touches.
+//
+// Shared by the schedule CRUD path; the webhook rule validator enforces
+// the same contract inline because it always requires targets (a
+// webhook rule has no preview mode).
+func validateReconcileConfig(rc *core.ReconcileConfig, cfg core.Config, requireTargets bool) *apiError {
+	targets := append([]core.StuckReconcileTarget(nil), rc.Targets...)
+	// Fold the legacy single-client pair in so a schedule saved before
+	// Targets existed still validates (and still counts toward the
+	// at-least-one rule).
+	if legacy := strings.TrimSpace(rc.QbitInstanceID); legacy != "" {
+		dup := false
+		for _, t := range targets {
+			if strings.TrimSpace(t.QbitInstanceID) == legacy {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			targets = append(targets, core.StuckReconcileTarget{
+				QbitInstanceID: legacy,
+				PostCategory:   rc.PostCategory,
+			})
+		}
+	}
+	if requireTargets && len(targets) == 0 {
+		return newAPIError(400, "reconcile in apply mode needs at least one download client + target category")
+	}
+	if len(targets) > maxStuckReconcileTargets {
+		return newAPIError(400, fmt.Sprintf("reconcile supports at most %d download clients", maxStuckReconcileTargets))
+	}
+	seen := map[string]bool{}
+	for i := range rc.Targets {
+		t := &rc.Targets[i]
+		t.QbitInstanceID = strings.TrimSpace(t.QbitInstanceID)
+		t.PostCategory = strings.TrimSpace(t.PostCategory)
+		if t.QbitInstanceID == "" {
+			return newAPIError(400, "reconcile.targets[].qbitInstanceId is required")
+		}
+		if !qbitInstanceExists(cfg, t.QbitInstanceID) {
+			return newAPIError(400, "reconcile.targets[].qbitInstanceId not found")
+		}
+		if seen[t.QbitInstanceID] {
+			return newAPIError(400, "reconcile lists the same download client twice — one target category per client")
+		}
+		seen[t.QbitInstanceID] = true
+		if requireTargets && t.PostCategory == "" {
+			return newAPIError(400, "reconcile.targets[].postCategory is required (where redundant downloads get moved)")
+		}
+		if t.PostCategory != "" && !reQbitCategoryName.MatchString(t.PostCategory) {
+			return newAPIError(400, "reconcile.targets[].postCategory contains forbidden characters (control chars or backslash)")
 		}
 	}
 	return nil
@@ -368,6 +443,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		PlexSync:        req.PlexSync,
 		TbaRefresh:      req.TbaRefresh,
 		QbitSe:          req.QbitSe,
+		Reconcile:       req.Reconcile,
 		ReleaseGroupIDs: req.ReleaseGroupIDs,
 	}
 	if err := s.App.Config.Update(func(c *core.Config) {
@@ -438,6 +514,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.QbitSe != nil {
 				c.Schedules[i].QbitSe = req.QbitSe
+			}
+			if req.Reconcile != nil {
+				c.Schedules[i].Reconcile = req.Reconcile
 			}
 			if req.ReleaseGroupIDs != nil {
 				c.Schedules[i].ReleaseGroupIDs = req.ReleaseGroupIDs

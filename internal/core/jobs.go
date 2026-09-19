@@ -33,8 +33,18 @@ const (
 // act against). The run mode comes from JobOptions.RunMode like the
 // other phases.
 type ReconcileConfig struct {
+	// QbitInstanceID / PostCategory are the single-download-client
+	// shorthand kept for schedules saved before Targets existed. When
+	// Targets is populated these are ignored unless they name a client
+	// Targets doesn't cover.
 	QbitInstanceID string `json:"qbitInstanceId,omitempty"`
 	PostCategory   string `json:"postCategory,omitempty"`
+
+	// Targets is the multi-download-client form: one (qBit instance,
+	// category) pair per client. An Arr's queue mixes downloads from
+	// every client attached to it, so a schedule pinned to one client
+	// silently leaves the others' stuck downloads behind.
+	Targets []StuckReconcileTarget `json:"targets,omitempty"`
 }
 
 // ValidJobMode returns true when m is one of the accepted values.
@@ -43,7 +53,8 @@ func ValidJobMode(m JobMode) bool {
 	switch m {
 	case JobModeTag, JobModeDiscover, JobModeRecover,
 		JobModeAudioTags, JobModeVideoTags, JobModeDvDetail,
-		JobModeMissingEpisodes, JobModePlexSync, JobModeTbaRefresh, JobModeQbitSeTag, JobModeCombined:
+		JobModeMissingEpisodes, JobModePlexSync, JobModeTbaRefresh, JobModeQbitSeTag,
+		JobModeReconcile, JobModeCombined:
 		return true
 	}
 	return false

@@ -248,6 +248,32 @@ type QbitCategoryFixDetail struct {
 	SkipReason string
 }
 
+// StuckReconcileDetail is the typed payload for
+// WebhookFnStuckReconcile results — the counts the sweep produced plus
+// the individual moves, so the embed can say what actually happened
+// rather than just "ran".
+type StuckReconcileDetail struct {
+	// Scope is the movie / series title the sweep was narrowed to.
+	Scope string
+	// Stuck / Moved / NeedsAttention / Failed mirror the reconcile
+	// bucket totals.
+	Stuck          int
+	Moved          int
+	NeedsAttention int
+	Failed         int
+	// Moves lists the downloads that actually changed category, capped
+	// at stuckReconcileMaxMovesInNotification entries.
+	Moves []StuckReconcileMove
+}
+
+// StuckReconcileMove is one download the sweep moved out of the way:
+// which release, on which download client, into which category.
+type StuckReconcileMove struct {
+	Title        string
+	QbitInstance string
+	Category     string
+}
+
 // SyncDetail is the typed payload for WebhookFnSyncToSecondary
 // results. Carries the secondary instance's display name so
 // composeFields can fold it into the TagDetail's Mirrored +
@@ -318,6 +344,7 @@ var titleDisplayOrder = map[core.WebhookFunction]int{
 	core.WebhookFnGrabRename:      50, // qBit-side
 	core.WebhookFnQbitSeTag:       60,
 	core.WebhookFnQbitCategoryFix: 70,
+	core.WebhookFnStuckReconcile:  75, // qBit-side, and downstream of the import that made the loser redundant
 	// Plex label sync surfaces AFTER all the Arr-side tagging functions
 	// (it's downstream of them) but BEFORE the qBit-side functions —
 	// it's the "and the tags propagated to Plex too" half of an
@@ -473,6 +500,8 @@ func titleLabelForFunctionAndEvent(fn core.WebhookFunction, event core.WebhookCo
 		return "Episode tagged"
 	case core.WebhookFnQbitCategoryFix:
 		return "Category fixed"
+	case core.WebhookFnStuckReconcile:
+		return "Stuck downloads cleared"
 	case core.WebhookFnPlexLabelSync:
 		return "Synced to Plex"
 	case core.WebhookFnSyncToSecondary:

@@ -1361,6 +1361,13 @@ func (s *ConfigStore) Get() Config {
 			if j.ReleaseGroupIDs != nil {
 				out.Schedules[i].ReleaseGroupIDs = append([]string(nil), j.ReleaseGroupIDs...)
 			}
+			// Reconcile carries the per-download-client Targets slice —
+			// same aliasing class as everything above.
+			if j.Reconcile != nil {
+				rc := *j.Reconcile
+				rc.Targets = append([]StuckReconcileTarget(nil), j.Reconcile.Targets...)
+				out.Schedules[i].Reconcile = &rc
+			}
 		}
 	}
 	// WebhookRules — same deep-copy pattern as Schedules. Each rule
@@ -1423,6 +1430,11 @@ func (s *ConfigStore) Get() Config {
 			if r.QbitCategoryFix != nil {
 				qc := *r.QbitCategoryFix
 				out.WebhookRules[i].QbitCategoryFix = &qc
+			}
+			if r.StuckReconcile != nil {
+				sr := *r.StuckReconcile
+				sr.Targets = append([]StuckReconcileTarget(nil), r.StuckReconcile.Targets...)
+				out.WebhookRules[i].StuckReconcile = &sr
 			}
 			// Per-rule webhook config (Token + Secret) — was previously
 			// not deep-copied. Without this clone, masking handlers that

@@ -82,9 +82,29 @@ type scanRunRequest struct {
 	// + grab times. Apply changes the qBit category of selected redundant
 	// downloads to ReconcilePostCategory. The user picks the qBit instance
 	// + target category per run (no hidden global state).
-	ReconcileQbitInstanceID string   `json:"reconcileQbitInstanceId,omitempty"` // apply-only: which qBit client holds the downloads
-	ReconcilePostCategory   string   `json:"reconcilePostCategory,omitempty"`   // apply-only: category to set on redundant downloads
+	ReconcileQbitInstanceID string   `json:"reconcileQbitInstanceId,omitempty"` // apply-only: which qBit client holds the downloads (single-client shorthand for ReconcileTargets)
+	ReconcilePostCategory   string   `json:"reconcilePostCategory,omitempty"`   // apply-only: category to set on redundant downloads (pairs with ReconcileQbitInstanceID)
 	ReconcileApplyItems     []string `json:"reconcileApplyItems,omitempty"`     // apply-only: downloadIds (hashes) the user selected to act on
+
+	// ReconcileTargets is the multi-download-client form of the two
+	// fields above: one (qBit instance, category) pair per client. The
+	// Arr queue mixes downloads from every client attached to it, so a
+	// run configured with a single client silently leaves the other
+	// clients' stuck torrents behind. Apply resolves each stuck hash to
+	// the client that actually holds it and uses that client's category.
+	//
+	// The legacy single pair is folded in as one more target when
+	// present, so existing callers (and saved schedules) keep working.
+	ReconcileTargets []scanReconcileTarget `json:"reconcileTargets,omitempty"`
+
+	// ReconcileOnlyMovieID / ReconcileOnlySeriesID narrow the sweep to
+	// stuck downloads for one movie / series. Used by the webhook
+	// adapter, which fires on an import event and by default only wants
+	// to clear the losers of THAT race rather than sweeping the whole
+	// queue on every import. 0 = no narrowing (the Library scan page
+	// always sends 0).
+	ReconcileOnlyMovieID  int `json:"reconcileOnlyMovieId,omitempty"`
+	ReconcileOnlySeriesID int `json:"reconcileOnlySeriesId,omitempty"`
 
 	// Release-type-recover Tier 2 (optional). When set, the recover preview
 	// confirms each candidate against the chosen qBittorrent instance by
@@ -509,6 +529,21 @@ type scanReconcileItem struct {
 	StuckGrabDate    string `json:"stuckGrabDate,omitempty"`
 	ImportedGrabDate string `json:"importedGrabDate,omitempty"`
 	Error            string `json:"error,omitempty"` // apply-only: category-change error
+	// QbitInstanceName / QbitCategory record WHICH download client the
+	// apply actually acted on and what category it moved the download
+	// to. With several clients configured the user can't infer either
+	// from the run config, so the row carries it.
+	QbitInstanceName string `json:"qbitInstanceName,omitempty"`
+	QbitCategory     string `json:"qbitCategory,omitempty"`
+}
+
+// scanReconcileTarget is one download client a reconcile apply may act
+// on. Wire-twin of core.StuckReconcileTarget — kept as its own type so
+// the scan request stays a pure API shape and doesn't leak the saved-
+// rule model into the HTTP surface.
+type scanReconcileTarget struct {
+	QbitInstanceID string `json:"qbitInstanceId"`
+	PostCategory   string `json:"postCategory"`
 }
 
 // scanCleanupCandidate is one tag label flagged for cleanup. Returned for

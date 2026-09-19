@@ -9,7 +9,6 @@ import (
 	"resolvarr/internal/arr"
 	"resolvarr/internal/core"
 	"resolvarr/internal/core/engine"
-	"resolvarr/internal/qbit"
 )
 
 // scan_reconcile.go — reconcile-stuck-downloads action.
@@ -98,40 +97,37 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 		}
 	}
 
-	// Resolve the qBit client once for apply. The user picks the qBit
-	// instance + target category per run (no hidden global state).
-	var qclient *qbit.Client
+	// Resolve the download clients once for apply. The user picks one or
+	// more (qBit instance, target category) pairs per run — no hidden
+	// global state. Several clients are supported because one Arr's
+	// queue mixes downloads from every client attached to it.
+	var qclients *reconcileClients
 	if isApply {
-		if strings.TrimSpace(req.ReconcilePostCategory) == "" {
-			return nil, newAPIError(400, "reconcilePostCategory is required to apply")
+		targets := reconcileTargetsFromRequest(req)
+		if len(targets) == 0 {
+			return nil, newAPIError(400, "reconcileTargets (or reconcileQbitInstanceId + reconcilePostCategory) is required to apply")
 		}
-		qinst := findQbitInstanceByID(cfg, req.ReconcileQbitInstanceID)
-		if qinst == nil {
-			return nil, newAPIError(400, "reconcileQbitInstanceId not found in config")
+		rcs, rerr := newReconcileClients(cfg, targets)
+		if rerr != nil {
+			return nil, rerr
 		}
-		qc, qerr := qbit.New(qbit.Config{
-			URL:          qinst.URL,
-			Username:     qinst.Username,
-			Password:     qinst.Password,
-			TrustedCerts: qinst.TrustedCerts,
-		})
-		if qerr != nil {
-			return nil, newAPIError(502, "qbit client init: "+qerr.Error())
-		}
-		qclient = qc
+		qclients = rcs
 	}
 
 	// Per-target caches (a queue can hold many items for the same
 	// series/movie — fetch each target's data + history once).
-	var radarrItems map[int]arr.Item
+	var radarrItems map[int]arr.Item           // bulk library map — un-narrowed runs only
+	radarrOne := map[int]arr.Item{}            // per-id cache — narrowed runs
 	seriesEpFileID := map[int]map[int]int{}    // seriesId -> episodeId -> episodeFileId
 	seriesEpFileScore := map[int]map[int]int{} // seriesId -> episodeFileId -> cfScore
 	seriesHistory := map[int][]arr.HistoryRecord{}
 	movieHistory := map[int][]arr.HistoryRecord{}
 	manualImport := map[string][]arr.ManualImportItem{} // downloadId -> per-file import evaluation
 	// One category change per downloadId — a season pack is N queue rows
-	// sharing one hash.
-	categoryDone := map[string]bool{}
+	// sharing one hash. Value is the row detail of the change so the
+	// follow-up rows report the same client + category rather than a
+	// bare "recategorised" with no context.
+	categoryDone := map[string]reconcileClient{}
 
 	for _, q := range queue {
 		// Stuck = the download finished but Arr hasn't imported it.
@@ -139,6 +135,15 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 			continue
 		}
 		if q.TrackedDownloadState != "importPending" && q.TrackedDownloadState != "importBlocked" {
+			continue
+		}
+		// Optional narrowing to one movie / series. The webhook adapter
+		// fires per import event and by default only wants the losers of
+		// THAT race; the Library scan page never narrows.
+		if req.ReconcileOnlyMovieID > 0 && q.MovieID != req.ReconcileOnlyMovieID {
+			continue
+		}
+		if req.ReconcileOnlySeriesID > 0 && q.SeriesID != req.ReconcileOnlySeriesID {
 			continue
 		}
 		resp.Totals.ReconcileStuck++
@@ -159,17 +164,42 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 		switch appType {
 		case "radarr":
 			row.MovieID = q.MovieID
-			if radarrItems == nil {
-				items, lerr := client.ListItems(ctx, "radarr")
-				if lerr != nil {
-					return nil, newAPIError(502, "arr list movies: "+lerr.Error())
+			// Narrowed runs (the webhook adapter) fetch just the one
+			// movie. Reading the whole library here would break
+			// Architectural rule 2 in webhook_adapters.go — a 24-episode
+			// season pack would turn into 24 full-library reads, the
+			// exact scaling trap that rule exists to prevent.
+			//
+			// Un-narrowed runs (Library scan page, reconcile schedules)
+			// keep the single bulk read: that is the deliberate batch
+			// model, and one list beats N per-movie fetches there.
+			var (
+				it    arr.Item
+				found bool
+			)
+			if req.ReconcileOnlyMovieID > 0 {
+				if cached, hit := radarrOne[q.MovieID]; hit {
+					it, found = cached, true
+				} else if fetched, ferr := client.GetItem(ctx, "radarr", q.MovieID); ferr == nil {
+					radarrOne[q.MovieID] = fetched
+					it, found = fetched, true
 				}
-				radarrItems = make(map[int]arr.Item, len(items))
-				for _, it := range items {
-					radarrItems[it.ID] = it
+				// A movie that vanished between the queue read and now
+				// just loses its label; the row still gets classified.
+			} else {
+				if radarrItems == nil {
+					items, lerr := client.ListItems(ctx, "radarr")
+					if lerr != nil {
+						return nil, newAPIError(502, "arr list movies: "+lerr.Error())
+					}
+					radarrItems = make(map[int]arr.Item, len(items))
+					for _, x := range items {
+						radarrItems[x.ID] = x
+					}
 				}
+				it, found = radarrItems[q.MovieID]
 			}
-			if it, ok := radarrItems[q.MovieID]; ok {
+			if found {
 				row.TargetLabel = it.Title
 				if it.MovieFile != nil {
 					row.HasFile = true
@@ -285,15 +315,28 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 			shouldAct = applySel[row.DownloadID]
 		}
 		if isApply && shouldAct {
-			if categoryDone[row.DownloadID] {
+			if done, already := categoryDone[row.DownloadID]; already {
 				row.Status = "recategorised"
-			} else if err := qclient.SetTorrentCategory(ctx, row.DownloadID, req.ReconcilePostCategory); err != nil {
+				row.QbitInstanceName = done.name
+				row.QbitCategory = done.category
+			} else if target, ok := qclients.clientFor(ctx, row.DownloadID); !ok {
+				// Nobody owns this hash. Most often the user already
+				// removed the torrent by hand, or the download lives in
+				// a client they didn't tick for this run — either way,
+				// say so instead of failing against an arbitrary client.
+				row.Status = "failed"
+				row.Error = "not found in any selected download client (" + strings.Join(qclients.names(), ", ") + ")"
+				resp.Totals.ReconcileFailed++
+			} else if err := target.client.SetTorrentCategory(ctx, row.DownloadID, target.category); err != nil {
 				row.Status = "failed"
 				row.Error = err.Error()
+				row.QbitInstanceName = target.name
 				resp.Totals.ReconcileFailed++
 			} else {
-				categoryDone[row.DownloadID] = true
+				categoryDone[row.DownloadID] = target
 				row.Status = "recategorised"
+				row.QbitInstanceName = target.name
+				row.QbitCategory = target.category
 				resp.Totals.ReconcileRecategorised++
 			}
 		}
