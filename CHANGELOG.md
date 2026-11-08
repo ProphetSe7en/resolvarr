@@ -2,6 +2,12 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## v0.6.77-dev — Security maintenance (2026-11-08)
+
+### Changed
+
+- **Built on current, supported versions.** resolvarr now builds with Go 1.27 and runs on Alpine 3.24. Alpine 3.21, used until now, reached end of life on 2026-11-01. The `golang.org/x/crypto` library is updated to v0.58.0. No behavior changes.
+
 ## v0.6.76-dev — TBA refresh only targets files it can actually fix (2026-07-05)
 
 ### Fixed

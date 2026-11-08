@@ -5,7 +5,9 @@ name: Dependabot auto-merge
 # only the trust-classes we've decided are safe to auto-merge.
 #
 # Policy (see commit message + repo CHANGELOG for rationale):
-#   - github-actions: patch + minor  → auto-merge if CI passes
+#   - github-actions                 → manual review (an action runs with
+#                                      the workflow's token, so a compromised
+#                                      release must not merge itself)
 #   - docker (base images): patch    → auto-merge if CI passes
 #   - gomod (Go modules): patch      → auto-merge if CI passes
 #   - everything else                → manual review required
@@ -22,33 +24,24 @@ name: Dependabot auto-merge
 on: pull_request
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     # Only run on PRs Dependabot opened — not on regular contributor
     # PRs which always require human review per /push flow.
-    if: github.actor == 'dependabot[bot]'
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
       - name: Fetch Dependabot metadata
         id: meta
         # SHA-pinned per repo-wide GitHub-Actions hardening rule.
         # When dependabot/fetch-metadata bumps, dependabot itself
-        # opens a PR to bump this pin (which we'll then auto-merge
-        # if patch/minor per the policy below).
+        # opens a PR to bump this pin, reviewed by hand.
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
-
-      - name: Auto-merge github-actions patch + minor
-        if: |
-          steps.meta.outputs.package-ecosystem == 'github_actions' &&
-          (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
-           steps.meta.outputs.update-type == 'version-update:semver-minor')
-        run: gh pr merge --auto --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Auto-merge docker patch
         if: |
