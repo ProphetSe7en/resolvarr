@@ -1,6 +1,6 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
-ARG VERSION=0.6.76-dev
+ARG VERSION=0.6.77-dev
 
 RUN apk add --no-cache git
 
@@ -46,11 +46,18 @@ RUN set -o pipefail && \
     ldd /usr/bin/ffmpeg | awk '/=>/ {print $3} /^[[:space:]]*\// {print $1}' \
         | grep '^/' | sort -u \
         | xargs -I{} cp -L {} /staging/usr/lib/ && \
-    # dovi_tool — pick arch by uname for amd64 / arm64 multi-arch support
+    # dovi_tool — pick arch by uname for amd64 / arm64 multi-arch support.
+    # The checksums are the upstream release's published .sha256 files, so
+    # a tampered or truncated download fails the build. Update both when
+    # DOVI_VERSION changes.
     if [ "$(uname -m)" = "x86_64" ]; then DOVI_ARCH="x86_64-unknown-linux-musl"; \
-    else DOVI_ARCH="aarch64-unknown-linux-musl"; fi && \
-    wget -qO- "https://github.com/quietvoid/dovi_tool/releases/download/${DOVI_VERSION}/dovi_tool-${DOVI_VERSION}-${DOVI_ARCH}.tar.gz" \
-        | tar -xz -C /staging/usr/bin/ && \
+        DOVI_SHA256="c200a08daefce49bb7de59a6daf852539cfc73c9de183f3ca6597fdc4de7ef80"; \
+    else DOVI_ARCH="aarch64-unknown-linux-musl"; \
+        DOVI_SHA256="c15fe4367f0024b7b256711c2501e2b11f236d9e68f9b87c9feba6915ee8baf3"; fi && \
+    wget -qO /tmp/dovi.tar.gz "https://github.com/quietvoid/dovi_tool/releases/download/${DOVI_VERSION}/dovi_tool-${DOVI_VERSION}-${DOVI_ARCH}.tar.gz" && \
+    echo "${DOVI_SHA256}  /tmp/dovi.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/dovi.tar.gz -C /staging/usr/bin/ && \
+    rm /tmp/dovi.tar.gz && \
     chmod +x /staging/usr/bin/dovi_tool && \
     # Smoke-test the staged binaries. If the linker can't resolve all
     # libs the build fails here, not silently at runtime. No pipes so
@@ -59,9 +66,21 @@ RUN set -o pipefail && \
     /staging/usr/bin/dovi_tool --version >/dev/null && \
     LD_LIBRARY_PATH=/staging/usr/lib /staging/usr/bin/ffmpeg -version >/dev/null
 
-FROM ghcr.io/prophetse7en/container-base:alpine-3.21
+FROM alpine:3.24
 
-ARG VERSION=0.6.76-dev
+# Runtime toolkit:
+#   tini            - PID 1 signal handling and zombie reaping
+#   ca-certificates - HTTPS to Radarr, Sonarr and webhooks
+#   su-exec         - drop to PUID/PGID in the entrypoint
+#   tzdata          - honours the TZ env var in log timestamps
+RUN apk add --no-cache tini ca-certificates su-exec tzdata && \
+    mkdir -p /config && \
+    chown 99:100 /config
+
+ENV TZ=UTC
+ENTRYPOINT ["/sbin/tini", "--"]
+
+ARG VERSION=0.6.77-dev
 LABEL org.opencontainers.image.version=${VERSION} \
       org.opencontainers.image.title="resolvarr" \
       org.opencontainers.image.description="Helper container for Radarr and Sonarr — release-group tagging, recovery, multi-instance sync, and scheduled scans" \
