@@ -13,6 +13,12 @@
 
 - **Scheduled Stuck downloads runs are no longer rejected on save.** The scheduler already knew how to run the phase, but the schedule validator treated `reconcile` as an unknown mode, so a reconcile schedule could never be stored. It saves now, and takes the same per-download-client target list. (The schedule wizard does not offer it as a choice yet — it is reachable via the schedules API.)
 
+## v0.6.77-dev — Security maintenance (2026-11-08)
+
+### Changed
+
+- **Built on current, supported versions.** resolvarr now builds with Go 1.27 and runs on Alpine 3.24. Alpine 3.21, used until now, reached end of life on 2026-11-01. The `golang.org/x/crypto` library is updated to v0.58.0. No behavior changes.
+
 ## v0.6.76-dev — TBA refresh only targets files it can actually fix (2026-07-05)
 
 ### Fixed
