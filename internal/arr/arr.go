@@ -1006,13 +1006,17 @@ type QueueItem struct {
 	} `json:"statusMessages,omitempty"`
 }
 
+// QueuePageSize is the single page ListQueue reads. A queue that
+// fills it may have more rows than were returned.
+const QueuePageSize = 1000
+
 // ListQueue fetches the Arr download queue (GET /api/v3/queue). The
 // include* params are accepted by whichever Arr applies (Sonarr:
 // series/episode; Radarr: movie) and ignored by the other. pageSize is
 // generous (1000) — a homelab queue is a handful of items; bounded so a
 // compromised endpoint can't stream forever.
 func (c *Client) ListQueue(ctx context.Context) ([]QueueItem, error) {
-	path := "/api/v3/queue?pageSize=1000&includeSeries=true&includeEpisode=true&includeMovie=true"
+	path := fmt.Sprintf("/api/v3/queue?pageSize=%d&includeSeries=true&includeEpisode=true&includeMovie=true", QueuePageSize)
 	resp, err := c.do(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err

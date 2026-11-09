@@ -82,9 +82,19 @@ type scanRunRequest struct {
 	// + grab times. Apply changes the qBit category of selected redundant
 	// downloads to ReconcilePostCategory. The user picks the qBit instance
 	// + target category per run (no hidden global state).
-	ReconcileQbitInstanceID string   `json:"reconcileQbitInstanceId,omitempty"` // apply-only: which qBit client holds the downloads
-	ReconcilePostCategory   string   `json:"reconcilePostCategory,omitempty"`   // apply-only: category to set on redundant downloads
+	ReconcileQbitInstanceID string   `json:"reconcileQbitInstanceId,omitempty"` // apply-only: legacy single-client form of ReconcileTargets
+	ReconcilePostCategory   string   `json:"reconcilePostCategory,omitempty"`   // apply-only: pairs with ReconcileQbitInstanceID
 	ReconcileApplyItems     []string `json:"reconcileApplyItems,omitempty"`     // apply-only: downloadIds (hashes) the user selected to act on
+
+	// ReconcileTargets: one (qBit client, category) pair per client.
+	// Each stuck hash goes to the client that holds it. The legacy pair
+	// above is merged in when it names another client.
+	ReconcileTargets []scanReconcileTarget `json:"reconcileTargets,omitempty"`
+
+	// ReconcileOnlyMovieID / ReconcileOnlySeriesID narrow the sweep to
+	// one item (webhook). 0 = whole queue.
+	ReconcileOnlyMovieID  int `json:"reconcileOnlyMovieId,omitempty"`
+	ReconcileOnlySeriesID int `json:"reconcileOnlySeriesId,omitempty"`
 
 	// Release-type-recover Tier 2 (optional). When set, the recover preview
 	// confirms each candidate against the chosen qBittorrent instance by
@@ -509,6 +519,17 @@ type scanReconcileItem struct {
 	StuckGrabDate    string `json:"stuckGrabDate,omitempty"`
 	ImportedGrabDate string `json:"importedGrabDate,omitempty"`
 	Error            string `json:"error,omitempty"` // apply-only: category-change error
+	// Apply only: the client and category the download was moved to.
+	QbitInstanceName string `json:"qbitInstanceName,omitempty"`
+	QbitCategory     string `json:"qbitCategory,omitempty"`
+	// AlreadyInCategory: it was already there; nothing changed.
+	AlreadyInCategory bool `json:"alreadyInCategory,omitempty"`
+}
+
+// scanReconcileTarget is the API form of core.StuckReconcileTarget.
+type scanReconcileTarget struct {
+	QbitInstanceID string `json:"qbitInstanceId"`
+	PostCategory   string `json:"postCategory"`
 }
 
 // scanCleanupCandidate is one tag label flagged for cleanup. Returned for

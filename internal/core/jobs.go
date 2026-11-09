@@ -33,8 +33,12 @@ const (
 // act against). The run mode comes from JobOptions.RunMode like the
 // other phases.
 type ReconcileConfig struct {
+	// QbitInstanceID / PostCategory: legacy single-client form.
 	QbitInstanceID string `json:"qbitInstanceId,omitempty"`
 	PostCategory   string `json:"postCategory,omitempty"`
+
+	// Targets: one (qBit client, category) pair per client.
+	Targets []StuckReconcileTarget `json:"targets,omitempty"`
 }
 
 // ValidJobMode returns true when m is one of the accepted values.
@@ -43,7 +47,8 @@ func ValidJobMode(m JobMode) bool {
 	switch m {
 	case JobModeTag, JobModeDiscover, JobModeRecover,
 		JobModeAudioTags, JobModeVideoTags, JobModeDvDetail,
-		JobModeMissingEpisodes, JobModePlexSync, JobModeTbaRefresh, JobModeQbitSeTag, JobModeCombined:
+		JobModeMissingEpisodes, JobModePlexSync, JobModeTbaRefresh, JobModeQbitSeTag,
+		JobModeReconcile, JobModeCombined:
 		return true
 	}
 	return false

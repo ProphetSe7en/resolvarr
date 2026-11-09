@@ -185,6 +185,28 @@ Everything stays on your Docker network, so nothing extra needs to be opened up.
 
 The **Recent activity** tab shows the Connect events as they arrive, with what each rule did. The separate **qBit webhook** tab shows torrents qBittorrent reported directly (cross-seed and manual adds).
 
+### Clearing stuck downloads automatically
+
+**What it does:** after each import, checks the same movie or series for downloads that finished but never imported, and moves the redundant ones to a category your own qBittorrent cleanup handles. It is the **Library scan -> Stuck downloads** check, run for you.
+
+**How to set it up:**
+
+1. On a webhook rule for the instance, tick **Clear stuck downloads after import**.
+2. On the **Stuck downloads** step, add a row per qBittorrent client this Sonarr/Radarr uses, with the category redundant downloads should go to. Type it exactly as in qBittorrent. The placeholder suggests Sonarr/Radarr's post-import category, but nothing is filled in for you.
+3. In Sonarr/Radarr -> Settings -> Connect, enable **On File Import** and **On File Upgrade**.
+
+**What gets moved:** a download is moved only when the episode or movie already has a file scoring as good or better. It is left alone when:
+
+- it is a season pack that is still the only copy of an episode;
+- a score couldn't be read;
+- the same torrent is in two clients.
+
+Everything left alone shows on the Stuck downloads page. **Nothing is ever deleted;** only the category changes.
+
+**When it runs:** in the background about a minute after the import (adjustable). Imports of the same item arriving meanwhile share one check, which waits for the last of them. A download still downloading at that point is picked up by the next import, a manual run, or a `reconcile` schedule.
+
+**Notifications:** you are told when something moved or failed; quiet otherwise. This needs **Notify on fire** on the rule, and an enabled agent under **Settings -> Notifications** with **File import from Sonarr/Radarr** ticked and this action included under **Which actions show in the embed** (an empty list means all actions).
+
 ### One Sonarr/Radarr feeding several qBittorrent clients
 
 If a single Sonarr or Radarr sends downloads to more than one qBittorrent instance (for example you route items to different clients by tag), give each rule its own webhook URL so each one only ever sees its own grabs. That avoids every rule firing on every grab and reporting "not found" for the torrents that live in a different client.

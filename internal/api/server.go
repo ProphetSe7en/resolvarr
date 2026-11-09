@@ -53,6 +53,13 @@ type Server struct {
 	qbitProbeMu sync.Mutex
 	qbitProbes  map[string]chan struct{}
 
+	// Pending stuck-downloads sweeps by rule+item, with their due time
+	// (see webhook_stuck_reconcile.go), and the slots capping how many
+	// run at once (created lazily).
+	stuckSweepMu      sync.Mutex
+	stuckSweepPending map[string]time.Time
+	stuckSweepSlots   chan struct{}
+
 	// WebhookLog is the per-instance Connect-event ring buffer. Set
 	// by main.go via AttachWebhookLog after server construction. Nil
 	// during early startup; webhook handlers no-op or return 503 in

@@ -133,7 +133,7 @@ function appState() {
       // Wizard-step help panels — same toggle pattern as the Library
       // scan fanes. Each wizard step renders its own collapsible
       // "How it works" panel so the inline form copy can stay short.
-      ruleBasics: false, ruleRG: false, ruleFilters: false, ruleAudio: false, ruleVideo: false, ruleDvDetail: false, ruleMissingEpisodes: false, ruleGrabRename: false, ruleQbitSe: false, ruleQbitCategoryFix: false, rulePlexLabelSync: false, ruleSchedule: false },
+      ruleBasics: false, ruleRG: false, ruleFilters: false, ruleAudio: false, ruleVideo: false, ruleDvDetail: false, ruleMissingEpisodes: false, ruleGrabRename: false, ruleQbitSe: false, ruleQbitCategoryFix: false, ruleStuckReconcile: false, rulePlexLabelSync: false, ruleSchedule: false },
 
     // Single source of truth for short function descriptions. Used by:
     // - Rule editor Basics step (schedule + webhook modes) to render
@@ -283,6 +283,17 @@ function appState() {
         webhookOnly: true,
         requiresQbit: true,
       },
+      stuckReconcile: {
+        id: 'stuckReconcile',
+        optionFlag: 'fnStuckReconcile',
+        label: 'Clear stuck downloads after import',
+        summary: 'The automatic version of the Stuck downloads page: after each import, downloads of the same movie/series that finished but never imported are moved to a cleanup category when the file on disk is as good or better. Others are left alone. Never deletes. Works across several download clients.',
+        summaryWebhook: 'On import: move redundant stuck downloads of that movie/series to a cleanup category, on each download client you list. Never deletes.',
+        triggers: ['On File Import', 'On File Upgrade'],
+        appliesTo: 'both',
+        webhookOnly: true,
+        requiresQbit: true,
+      },
       qbitCategoryFix: {
         id: 'qbitCategoryFix',
         optionFlag: 'fnQbitCategoryFix',
@@ -428,6 +439,10 @@ function appState() {
     reconcileApplySelected: {},    // { [downloadId]: true } — which redundant rows to recategorise
     reconcileQbitInstanceId: '',   // which qBit client holds the downloads (set in the modal)
     reconcilePostCategory: '',     // category to move redundant downloads to (set in the modal)
+    // Extra { qbitInstanceId, postCategory } rows beyond the pair above.
+    reconcileExtraTargets: [],
+    // Arr's post-import category, shown as a placeholder only.
+    stuckReconcileCategoryHint: '',
     reconcilePreCategory: '',      // info: the category stuck downloads currently sit in
     reconcileLastInstanceId: '',   // tracks which instance the qBit + categories were resolved for
     // Release Type Overview (Sonarr-only, read-only scan). Shows each
@@ -703,6 +718,7 @@ function appState() {
       { id: 'grabRename',       label: 'Rename torrent in qBittorrent' },
       { id: 'qbitSeTag',        label: 'Tag Episode/Season in qBittorrent (Sonarr)' },
       { id: 'qbitCategoryFix',  label: 'Fix qBittorrent category after import' },
+      { id: 'stuckReconcile',   label: 'Clear stuck downloads after import' },
     ],
     deleteAgentTarget: null,
     deleteAgentBusy: false,
@@ -1158,6 +1174,7 @@ function appState() {
       { id: 'grabrename', label: 'qBit Grab Rename' },
       { id: 'qbitse',     label: 'qBit S/E tag' },
       { id: 'qbitcategoryfix', label: 'qBit category fix' },
+      { id: 'stuckreconcile',  label: 'Stuck downloads' },
       { id: 'plexlabelsync', label: 'Plex label sync' },
       // Schedule tab is visible only when the rule fires on a cron
       // (not Manual run only). Hidden in quickfix mode entirely.
@@ -1225,7 +1242,7 @@ function appState() {
     // and schedule. Visibility (ruleEditorTabVisible) gates them off
     // for schedule rules entirely, and for webhook rules they only
     // surface when the matching fn flag is ticked on Basics.
-    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'missingepisodes', 'tbarefresh', 'plexsync', 'grabrename', 'qbitse', 'qbitcategoryfix', 'plexlabelsync', 'schedule', 'review'],
+    ruleEditorSteps: ['basics', 'filters', 'rg', 'audio', 'video', 'dvdetail', 'missingepisodes', 'tbarefresh', 'plexsync', 'grabrename', 'qbitse', 'qbitcategoryfix', 'stuckreconcile', 'plexlabelsync', 'schedule', 'review'],
 
     // instance UI state
     instStatus: {},

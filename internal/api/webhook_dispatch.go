@@ -81,6 +81,8 @@ var canonicalFunctionOrder = []core.WebhookFunction{
 	// putting it at the tail keeps the chain easy to reason about
 	// ("everything else happens first; then we reconcile qBit").
 	core.WebhookFnQbitCategoryFix,
+	// Stuck downloads last: it reads the queue the import just changed.
+	core.WebhookFnStuckReconcile,
 }
 
 // functionResult is one (rule × function) outcome. Aggregated into the
@@ -323,6 +325,22 @@ func (s *Server) executeWebhookRule(
 			})
 			continue
 		}
+		// Deferred too: the losing download must first settle into its
+		// stuck state.
+		if fn == core.WebhookFnStuckReconcile {
+			queued := s.scheduleDeferredStuckReconcile(rule, inst, env, body)
+			summary := "already scheduled for this item by an earlier event in the same batch — one sweep covers them all"
+			if queued {
+				secs := int(stuckReconcileDeferDelay(rule) / time.Second)
+				summary = fmt.Sprintf("scheduled, sweeps this item's stuck downloads in the background ~%ds after import so it does not delay Sonarr/Radarr", secs)
+			}
+			results = append(results, functionResult{
+				Function: core.WebhookFnStuckReconcile,
+				OK:       true,
+				Summary:  summary,
+			})
+			continue
+		}
 		// Fetch tag-details on first auto-tag function we see.
 		// Cached per-instance keyed by inst.ID — different webhook
 		// rules on the same Arr share one lookup. Errors are stored
@@ -515,6 +533,9 @@ func (s *Server) dispatchWebhookFunction(
 		// qBit (category swap). Doesn't read or write Arr tags — no
 		// requireTagDetails gate.
 		return s.dispatchQbitCategoryFix(ctx, rule, cfg, env, body)
+	case core.WebhookFnStuckReconcile:
+		// Normally deferred by executeWebhookRule; no tag details needed.
+		return s.dispatchStuckReconcile(ctx, rule, cfg, env, body)
 	case core.WebhookFnPlexLabelSync:
 		// Plex label sync reads the Arr item's current tag set
 		// (post-Tag-functions on this same rule) and propagates

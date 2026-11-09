@@ -3320,6 +3320,8 @@ function app() {
       if (id !== this.reconcileLastInstanceId) {
         this.reconcilePostCategory = '';
         this.reconcilePreCategory = '';
+        // Extra clients belong to the previous Arr's run; clear them.
+        this.reconcileExtraTargets = [];
         // Prefer the qBit instance locked to this Arr; else fall through
         // to the single-instance auto-pick below.
         this.reconcileQbitInstanceId = this.defaultQbitForArr(id) || '';
@@ -3351,8 +3353,8 @@ function app() {
       if (!id) { this.reconcileWizard.error = 'Pick an instance'; return; }
       const mode = this.reconcileWizard.mode;
       if (mode === 'apply') {
-        if (!this.reconcileQbitInstanceId) { this.reconcileWizard.error = 'Pick the qBittorrent instance'; return; }
-        if (!this.reconcilePostCategory.trim()) { this.reconcileWizard.error = 'Enter the target category'; return; }
+        const terr = this.reconcileTargetsError();
+        if (terr) { this.reconcileWizard.error = terr; return; }
       }
       this.reconcileWizard.busy = true;
       this.reconcileWizard.error = '';
@@ -3362,6 +3364,8 @@ function app() {
         if (mode === 'apply') {
           body.reconcileQbitInstanceId = this.reconcileQbitInstanceId;
           body.reconcilePostCategory = this.reconcilePostCategory.trim();
+          // All configured clients: one queue mixes downloads from each.
+          body.reconcileTargets = this.reconcileTargetsPayload();
           // empty reconcileApplyItems → backend acts on ALL redundant
         }
         const resp = await this.apiFetch('/api/scan/run', {
@@ -3379,12 +3383,8 @@ function app() {
         this.reconcileInstanceId = id;
         if (this.reconcileResults.reconcilePreCategory) this.reconcilePreCategory = this.reconcileResults.reconcilePreCategory;
         if (!this.reconcilePostCategory.trim() && this.reconcileResults.reconcilePostCategory) this.reconcilePostCategory = this.reconcileResults.reconcilePostCategory;
-        // Default-select redundant rows for the result panel's per-row Apply.
-        const sel = {};
-        for (const it of (this.reconcileResults.reconcile || [])) {
-          if (it.status === 'redundant') sel[it.downloadId] = true;
-        }
-        this.reconcileApplySelected = sel;
+        // Default-select redundant downloads for the result panel's per-row Apply.
+        this.reconcileApplySelected = this.reconcileDefaultSelection(this.reconcileResults.reconcile);
         if (mode === 'apply') {
           const n = (this.reconcileResults.totals && this.reconcileResults.totals.reconcileRecategorised) || 0;
           this.showToast('Recategorised ' + n + ' download' + (n === 1 ? '' : 's'), 'success');
@@ -3395,6 +3395,82 @@ function app() {
       } finally {
         this.reconcileWizard.busy = false;
       }
+    },
+
+    // ---- Run reconcile modal: extra download clients (rows 2..N) ----
+
+    reconcileAddExtraTarget() {
+      if (!Array.isArray(this.reconcileExtraTargets)) this.reconcileExtraTargets = [];
+      const used = new Set([this.reconcileQbitInstanceId, ...this.reconcileExtraTargets.map(t => t.qbitInstanceId)].filter(Boolean));
+      const free = (this.qbitInstances || []).find(q => !used.has(q.id));
+      // One row per client; no free client, no new row.
+      if (!free) return;
+      this.reconcileExtraTargets.push({ qbitInstanceId: free.id, postCategory: '' });
+    },
+
+    reconcileRemoveExtraTarget(idx) {
+      if (!Array.isArray(this.reconcileExtraTargets)) return;
+      this.reconcileExtraTargets.splice(idx, 1);
+    },
+
+    // At most one row per qBit instance (and 12).
+    reconcileCanAddExtraTarget() {
+      const rows = 1 + (this.reconcileExtraTargets || []).length;
+      return rows < (this.qbitInstances || []).length && rows < 12;
+    },
+
+    // reconcileTargets payload: the main pair plus filled-in extra rows.
+    reconcileTargetsPayload() {
+      const out = [];
+      if (this.reconcileQbitInstanceId && this.reconcilePostCategory.trim()) {
+        out.push({ qbitInstanceId: this.reconcileQbitInstanceId, postCategory: this.reconcilePostCategory.trim() });
+      }
+      for (const t of (this.reconcileExtraTargets || [])) {
+        const id = (t.qbitInstanceId || '').trim();
+        const cat = (t.postCategory || '').trim();
+        if (id && cat) out.push({ qbitInstanceId: id, postCategory: cat });
+      }
+      return out;
+    },
+
+    // Shared by Run-apply and Apply selected; '' when valid.
+    reconcileTargetsError() {
+      if (!this.reconcileQbitInstanceId) return 'Pick the qBittorrent instance';
+      if (!this.reconcilePostCategory.trim()) return 'Enter the target category';
+      const seen = new Set([this.reconcileQbitInstanceId]);
+      for (const t of (this.reconcileExtraTargets || [])) {
+        const id = (t.qbitInstanceId || '').trim();
+        const cat = (t.postCategory || '').trim();
+        if (!id && !cat) continue;
+        if (!id) return 'Pick a download client for every extra row (or remove it)';
+        if (!cat) return 'Enter a target category for every extra download client';
+        if (seen.has(id)) return 'The same download client is listed twice — one target category per client';
+        seen.add(id);
+      }
+      return '';
+    },
+
+    // Display name for a qBit instance id.
+    qbitInstanceName(id) {
+      const q = (this.qbitInstances || []).find(x => x.id === id);
+      return q ? q.name : '';
+    },
+
+    // Pre-tick downloads whose rows are all redundant: a pack that is
+    // still the only copy of an episode stays unticked (same rule as the
+    // backend's automatic path). The user can still tick it.
+    reconcileDefaultSelection(rows) {
+      const allRedundant = {};
+      for (const it of (rows || [])) {
+        if (!it.downloadId) continue;
+        const ok = it.status === 'redundant';
+        allRedundant[it.downloadId] = (allRedundant[it.downloadId] ?? true) && ok;
+      }
+      const sel = {};
+      for (const [id, ok] of Object.entries(allRedundant)) {
+        if (ok) sel[id] = true;
+      }
+      return sel;
     },
 
     reconcileRedundantRows() {
@@ -3411,8 +3487,8 @@ function app() {
 
     async applyReconcile() {
       if (!this.reconcileResults) return;
-      if (!this.reconcileQbitInstanceId) { this.showToast('Re-run the scan and pick a qBittorrent instance', 'error'); return; }
-      if (!this.reconcilePostCategory.trim()) { this.showToast('Re-run the scan and set a target category', 'error'); return; }
+      const terr = this.reconcileTargetsError();
+      if (terr) { this.showToast(terr + ' — set it in Run reconcile', 'error'); return; }
       const ids = Object.keys(this.reconcileApplySelected).filter(k => !!this.reconcileApplySelected[k]);
       if (ids.length === 0) { this.showToast('Select at least one redundant download', 'error'); return; }
       this.reconcileApplying = true;
@@ -3427,6 +3503,7 @@ function app() {
             mode: 'apply',
             reconcileQbitInstanceId: this.reconcileQbitInstanceId,
             reconcilePostCategory: this.reconcilePostCategory.trim(),
+            reconcileTargets: this.reconcileTargetsPayload(),
             reconcileApplyItems: ids,
           }),
         });
@@ -3440,11 +3517,7 @@ function app() {
         this.reconcileResults = await resp.json();
         const n = (this.reconcileResults.totals && this.reconcileResults.totals.reconcileRecategorised) || 0;
         this.showToast('Recategorised ' + n + ' download' + (n === 1 ? '' : 's'), 'success');
-        const sel = {};
-        for (const it of (this.reconcileResults.reconcile || [])) {
-          if (it.status === 'redundant') sel[it.downloadId] = true;
-        }
-        this.reconcileApplySelected = sel;
+        this.reconcileApplySelected = this.reconcileDefaultSelection(this.reconcileResults.reconcile);
       } catch (e) {
         this.reconcileError = e.message || 'Reconcile apply failed';
         this.showToast(this.reconcileError, 'error');
@@ -10676,7 +10749,8 @@ function app() {
       // 'combined' + combinedModes=['tag']. Save-time persists the
       // new shape; the chain runner / scheduler-runner already accept
       // both shapes via has() → r.mode === m || combinedModes.includes(m).
-      if (copy.mode && copy.mode !== 'combined') {
+      // reconcile stays a standalone mode (not a combined phase).
+      if (copy.mode && copy.mode !== 'combined' && copy.mode !== 'reconcile') {
         const legacyMode = copy.mode;
         copy.mode = 'combined';
         copy.options.combinedModes = copy.options.combinedModes || [];
@@ -12012,6 +12086,7 @@ function app() {
       // each gated to Sonarr, so ruleAffectsQbitSe implies Sonarr here.
       if (tabId === 'qbitse')     return this.ruleAffectsQbitSe();
       if (tabId === 'qbitcategoryfix') return isWebhook && this.ruleAffectsQbitCategoryFix();
+      if (tabId === 'stuckreconcile')  return isWebhook && this.ruleAffectsStuckReconcile();
       if (tabId === 'plexlabelsync') return isWebhook && this.ruleAffectsPlexLabelSync();
       // Plex sync — dedicated step for schedule + QFA rules (combined
       // phase). Distinct from the webhook-only 'plexlabelsync' step:
@@ -12050,7 +12125,7 @@ function app() {
       if (o.fnTagReleaseGroups || o.fnDiscover || o.fnTagAudio || o.fnTagVideo
           || o.fnTagDvDetail || o.fnRecover || o.fnSyncToSecondary
           || o.fnGrabRename || o.fnQbitSeTag || o.fnQbitCategoryFix
-          || o.fnPlexLabelSync) {
+          || o.fnStuckReconcile || o.fnPlexLabelSync) {
         return true;
       }
       // Per-bucket strip-on-delete also counts as a rule action — a
@@ -12117,6 +12192,7 @@ function app() {
           fnGrabRename:       false,
           fnQbitSeTag:        false,
           fnQbitCategoryFix:  false,
+          fnStuckReconcile:   false,
           fnPlexLabelSync:    false,
           // Per-action shared options the schedule editor seeds —
           // mirrored here so the per-step UIs (RG / Filters / Audio /
@@ -12246,6 +12322,7 @@ function app() {
         fnGrabRename:       false,
         fnQbitSeTag:        false,
         fnQbitCategoryFix:  false,
+        fnStuckReconcile:   false,
         fnPlexLabelSync:    false,
         // Per-action shared options.
         tagSource: '',
@@ -12276,6 +12353,7 @@ function app() {
       copy.options.fnGrabRename       = fnSet.has('grabRename');
       copy.options.fnQbitSeTag        = fnSet.has('qbitSeTag');
       copy.options.fnQbitCategoryFix  = fnSet.has('qbitCategoryFix');
+      copy.options.fnStuckReconcile   = fnSet.has('stuckReconcile');
       copy.options.fnPlexLabelSync    = fnSet.has('plexLabelSync');
       // Hoist top-level rule fields that the wizard binds via
       // options.*. The save flow re-emits these as top-level keys
@@ -12366,6 +12444,11 @@ function app() {
           preImportCategorySnapshot: '',
           postImportCategorySnapshot: '',
         },
+        // Stuck downloads: one target row per qBit client; starts with a blank row.
+        stuckReconcile: {
+          targets: [{ qbitInstanceId: '', postCategory: '' }],
+          deferSeconds: 60,
+        },
         // Plex label sync — inline per-rule config. Same field shape
         // as standalone PlexLabelRule's Plex-side bits (instance +
         // libraries + labels + display + targetTypes). Seeded empty;
@@ -12443,6 +12526,10 @@ function app() {
     ruleAffectsQbitCategoryFix() {
       const o = (this.editingRule && this.editingRule.options) || {};
       return !!o.fnQbitCategoryFix;
+    },
+    ruleAffectsStuckReconcile() {
+      const o = (this.editingRule && this.editingRule.options) || {};
+      return !!o.fnStuckReconcile;
     },
     ruleAffectsPlexLabelSync() {
       const o = (this.editingRule && this.editingRule.options) || {};
@@ -12636,6 +12723,96 @@ function app() {
       return '';
     },
 
+    // ---- Stuck downloads wizard step (editingRule.stuckReconcile.targets) ----
+
+    stuckReconcileTargets() {
+      const sr = this.editingRule && this.editingRule.stuckReconcile;
+      if (!sr) return [];
+      if (!Array.isArray(sr.targets)) sr.targets = [];
+      return sr.targets;
+    },
+
+    stuckReconcileAddTarget() {
+      const sr = this.editingRule && this.editingRule.stuckReconcile;
+      if (!sr) return;
+      if (!Array.isArray(sr.targets)) sr.targets = [];
+      if (sr.targets.length >= 12) return; // mirrors backend maxStuckReconcileTargets
+      // One row per client: nothing to add once every client is used.
+      const next = this.stuckReconcileNextUnusedQbit();
+      if (!next) return;
+      sr.targets.push({ qbitInstanceId: next, postCategory: '' });
+    },
+
+    stuckReconcileRemoveTarget(idx) {
+      const sr = this.editingRule && this.editingRule.stuckReconcile;
+      if (!sr || !Array.isArray(sr.targets)) return;
+      sr.targets.splice(idx, 1);
+      // Keep one blank row so the form never looks optional.
+      if (sr.targets.length === 0) {
+        sr.targets.push({ qbitInstanceId: '', postCategory: '' });
+      }
+    },
+
+    // First qBit instance no row uses yet.
+    stuckReconcileNextUnusedQbit() {
+      const used = new Set(this.stuckReconcileTargets().map(t => t.qbitInstanceId).filter(Boolean));
+      const free = (this.qbitInstances || []).find(q => !used.has(q.id));
+      return free ? free.id : '';
+    },
+
+    // Pre-selects the first row's client (the Arr's default or the only
+    // one) and loads the category hint.
+    async stuckReconcileSeedStep() {
+      const r = this.editingRule;
+      const sr = r && r.stuckReconcile;
+      if (!sr) return;
+      if (!Array.isArray(sr.targets) || sr.targets.length === 0) {
+        sr.targets = [{ qbitInstanceId: '', postCategory: '' }];
+      }
+      const first = sr.targets[0];
+      if (!first.qbitInstanceId) {
+        first.qbitInstanceId = this.defaultQbitForArr(r.instanceId)
+          || ((this.qbitInstances || []).length === 1 ? this.qbitInstances[0].id : '');
+      }
+      // The Arr's post-import category is only a placeholder hint: it
+      // belongs to one of the Arr's clients and we can't tell which.
+      this.stuckReconcileCategoryHint = '';
+      if (!r.instanceId) return;
+      try {
+        const res = await this.apiFetch('/api/instances/' + encodeURIComponent(r.instanceId) + '/qbit-categories');
+        if (!res.ok) return;
+        const d = await res.json();
+        if (this.editingRule !== r) return; // left the editor meanwhile
+        this.stuckReconcileCategoryHint = (d.postImport || '').trim();
+      } catch (e) { /* best-effort hint */ }
+    },
+
+    // Inline warning for the step; non-empty also blocks Next.
+    stuckReconcileWarning() {
+      const sr = this.editingRule && this.editingRule.stuckReconcile;
+      if (!sr) return '';
+      if ((this.qbitInstances || []).length === 0) {
+        return 'Add a qBittorrent instance under Settings first — this action moves downloads inside qBittorrent.';
+      }
+      const rows = (sr.targets || []).filter(t => (t.qbitInstanceId || '').trim() || (t.postCategory || '').trim());
+      if (rows.length === 0) return 'Pick at least one download client and the category redundant downloads should move to.';
+      const seen = new Set();
+      for (let i = 0; i < rows.length; i++) {
+        const t = rows[i];
+        if (!(t.qbitInstanceId || '').trim()) return 'Row ' + (i + 1) + ': pick a download client.';
+        if (seen.has(t.qbitInstanceId)) return 'The same download client is listed twice — one target category per client.';
+        seen.add(t.qbitInstanceId);
+        if (!(t.postCategory || '').trim()) return 'Row ' + (i + 1) + ': enter the category redundant downloads should move to.';
+      }
+      // Same range the backend enforces. Empty = default (60).
+      const d = sr.deferSeconds;
+      if (d !== '' && d != null && d !== 0) {
+        const n = Number(d);
+        if (!Number.isInteger(n) || n < 5 || n > 600) return 'Delay must be between 5 and 600 seconds (or empty for the default 60).';
+      }
+      return '';
+    },
+
     // True when none of the three classifier rules (Episode / Season /
     // Unmatched) is enabled — backend would reject save with "must
     // enable at least one of episodeEnabled / seasonEnabled /
@@ -12768,6 +12945,8 @@ function app() {
         grabrename:      'qBit Grab Rename',
         qbitse:          'qBit S/E tag',
         qbitcategoryfix: 'qBit category fix',
+        stuckreconcile:  'Stuck downloads',
+        plexlabelsync:   'Sync to Plex',
         schedule:        'Schedule',
         review:          'Review',
       };
@@ -12899,6 +13078,11 @@ function app() {
       // the inline warning stay in sync.
       if (step === 'qbitcategoryfix' && this.ruleAffectsQbitCategoryFix()) {
         const w = this.qbitCategoryFixWarning();
+        if (w) return w;
+      }
+      // Stuck downloads: same checks as the backend.
+      if (step === 'stuckreconcile' && this.ruleAffectsStuckReconcile()) {
+        const w = this.stuckReconcileWarning();
         if (w) return w;
       }
       // Plex label sync — backend rejects on missing Plex instance,
@@ -13218,6 +13402,8 @@ function app() {
       if (this.ruleAffectsPlexSync() && r.plexSync) body.plexSync = JSON.parse(JSON.stringify(r.plexSync));
       // TBA refresh — Sonarr-only file-rename phase, config in Review.
       if (this.ruleAffectsTbaRefresh() && r.tbaRefresh) body.tbaRefresh = JSON.parse(JSON.stringify(r.tbaRefresh));
+      // No wizard step for reconcile yet: send the saved snapshot back.
+      if (r.mode === 'reconcile' && r.reconcile) body.reconcile = JSON.parse(JSON.stringify(r.reconcile));
       this.ruleEditor.busy = true;
       try {
         const url = r.id ? `/api/schedules/${r.id}` : '/api/schedules';
@@ -13276,6 +13462,7 @@ function app() {
       if (o.fnGrabRename)       fnList.push('grabRename');
       if (o.fnQbitSeTag)        fnList.push('qbitSeTag');
       if (o.fnQbitCategoryFix)  fnList.push('qbitCategoryFix');
+      if (o.fnStuckReconcile)   fnList.push('stuckReconcile');
       if (o.fnPlexLabelSync)    fnList.push('plexLabelSync');
       const body = {
         name: r.name.trim(),
@@ -13346,6 +13533,14 @@ function app() {
       if (o.fnQbitCategoryFix && r.qbitCategoryFix) {
         body.qbitCategoryFix = JSON.parse(JSON.stringify(r.qbitCategoryFix));
       }
+      if (o.fnStuckReconcile && r.stuckReconcile) {
+        const sr = JSON.parse(JSON.stringify(r.stuckReconcile));
+        // Drop blank rows.
+        sr.targets = (sr.targets || []).filter(t => (t.qbitInstanceId || '').trim() || (t.postCategory || '').trim());
+        // A cleared number input is ''; send 0 (= default) instead.
+        sr.deferSeconds = Number.isFinite(Number(sr.deferSeconds)) && sr.deferSeconds !== '' ? Math.trunc(Number(sr.deferSeconds)) : 0;
+        body.stuckReconcile = sr;
+      }
       if (o.fnPlexLabelSync && r.plexLabelSync) {
         // Drop empty labelDisplay map for clean JSON over the wire —
         // backend tolerates either shape but tidy is better.
@@ -13401,8 +13596,12 @@ function app() {
     // toggled on in Sonarr/Radarr. Derived from the enabled rules'
     // functions + per-bucket strip-on-delete opt-ins:
     //   tagReleaseGroups / discover / tagAudio / tagVideo / tagDvDetail
-    //     / recover / syncToSecondary  → On Import + On Upgrade
+    //     / recover / syncToSecondary / qbitCategoryFix / stuckReconcile
+    //     / plexLabelSync  → On Import + On Upgrade
     //     (Sonarr: On Download — download/import + upgrade)
+    //   plexLabelSync  → also On Movie/Episode File Delete (+ the
+    //     ForUpgrade variant) so Plex labels drop when the file
+    //     backing them is removed
     //   tagReleaseGroups (Radarr only)  → also On Movie File Delete +
     //     OnMovieFileDeleteForUpgrade (auto-strip Tag-RG flow)
     //   any audio/video/DV bucket with stripOnFileDelete=true → matching
@@ -13413,8 +13612,10 @@ function app() {
     // hunting for a checkbox that doesn't exist.
     webhookEventsForFunctions(fnSet, isSonarr, opts = {}) {
       const events = new Set();
+      // Keep in sync with core.EventsForFunction (Download events).
       const importLike = ['tagReleaseGroups', 'discover', 'tagAudio', 'tagVideo',
-                          'tagDvDetail', 'recover', 'syncToSecondary'];
+                          'tagDvDetail', 'recover', 'syncToSecondary', 'qbitCategoryFix',
+                          'stuckReconcile', 'plexLabelSync'];
       if (importLike.some(f => fnSet.has(f))) {
         events.add('On File Import');
         events.add('On File Upgrade');
@@ -13429,6 +13630,10 @@ function app() {
       // file-delete events. Mirror of the server's
       // FiresPerBucketStripOnDelete + ConnectEventsNeeded extension.
       if (opts.bucketStripOnDelete) {
+        events.add(isSonarr ? 'On Episode File Delete' : 'On Movie File Delete');
+      }
+      // Plex label sync also runs on file-delete events.
+      if (fnSet.has('plexLabelSync')) {
         events.add(isSonarr ? 'On Episode File Delete' : 'On Movie File Delete');
       }
       if (fnSet.has('grabRename') || fnSet.has('qbitSeTag')) {
@@ -13480,6 +13685,9 @@ function app() {
       if (o.fnSyncToSecondary)  fnSet.add('syncToSecondary');
       if (o.fnGrabRename)       fnSet.add('grabRename');
       if (o.fnQbitSeTag)        fnSet.add('qbitSeTag');
+      if (o.fnQbitCategoryFix)  fnSet.add('qbitCategoryFix');
+      if (o.fnStuckReconcile)   fnSet.add('stuckReconcile');
+      if (o.fnPlexLabelSync)    fnSet.add('plexLabelSync');
       const inst = (this.instances || []).find(i => i.id === r.instanceId);
       const isSonarr = inst ? inst.type === 'sonarr' : false;
       return this.webhookEventsForFunctions(fnSet, isSonarr, {
@@ -13552,6 +13760,8 @@ function app() {
         if (rule.grabRename)      body.grabRename = rule.grabRename;
         if (rule.qbitSe)          body.qbitSe = rule.qbitSe;
         if (rule.qbitCategoryFix) body.qbitCategoryFix = rule.qbitCategoryFix;
+        // Required while the function is on.
+        if (rule.stuckReconcile)  body.stuckReconcile = rule.stuckReconcile;
         if (rule.plexLabelSync)   body.plexLabelSync = rule.plexLabelSync;
         const r = await this.apiFetch('/api/webhook-rules/' + rule.id, {
           method: 'PUT',
@@ -13717,6 +13927,7 @@ function app() {
         grabRename: 'Grab Rename',
         qbitSeTag: 'qBit S/E tag',
         qbitCategoryFix: 'qBit Category Fix',
+        stuckReconcile: 'Stuck downloads',
         fileDeleteClean: 'File-delete strip',
         autoStripTagRgOnDelete: 'Auto-strip on delete',
       };
@@ -15340,6 +15551,7 @@ function app() {
           videoTags: sj.videoTags,
           dvDetail: sj.dvDetail,
           releaseGroupIds: sj.releaseGroupIds,
+          reconcile: sj.reconcile,
         };
         const r = await this.apiFetch(`/api/schedules/${sj.id}`, {
           method: 'PUT',

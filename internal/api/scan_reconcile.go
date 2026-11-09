@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -9,7 +10,6 @@ import (
 	"resolvarr/internal/arr"
 	"resolvarr/internal/core"
 	"resolvarr/internal/core/engine"
-	"resolvarr/internal/qbit"
 )
 
 // scan_reconcile.go — reconcile-stuck-downloads action.
@@ -98,40 +98,37 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 		}
 	}
 
-	// Resolve the qBit client once for apply. The user picks the qBit
-	// instance + target category per run (no hidden global state).
-	var qclient *qbit.Client
+	// The download clients to act on, with a target category each.
+	var qclients *reconcileClients
 	if isApply {
-		if strings.TrimSpace(req.ReconcilePostCategory) == "" {
-			return nil, newAPIError(400, "reconcilePostCategory is required to apply")
+		targets := reconcileTargetsFromRequest(req)
+		if len(targets) == 0 {
+			return nil, newAPIError(400, "reconcileTargets (or reconcileQbitInstanceId + reconcilePostCategory) is required to apply")
 		}
-		qinst := findQbitInstanceByID(cfg, req.ReconcileQbitInstanceID)
-		if qinst == nil {
-			return nil, newAPIError(400, "reconcileQbitInstanceId not found in config")
+		rcs, rerr := newReconcileClients(cfg, targets)
+		if rerr != nil {
+			return nil, rerr
 		}
-		qc, qerr := qbit.New(qbit.Config{
-			URL:          qinst.URL,
-			Username:     qinst.Username,
-			Password:     qinst.Password,
-			TrustedCerts: qinst.TrustedCerts,
-		})
-		if qerr != nil {
-			return nil, newAPIError(502, "qbit client init: "+qerr.Error())
-		}
-		qclient = qc
+		qclients = rcs
 	}
 
 	// Per-target caches (a queue can hold many items for the same
 	// series/movie — fetch each target's data + history once).
-	var radarrItems map[int]arr.Item
+	var radarrItems map[int]arr.Item           // bulk library map — un-narrowed runs only
+	radarrOne := map[int]arr.Item{}            // per-id cache — narrowed runs
 	seriesEpFileID := map[int]map[int]int{}    // seriesId -> episodeId -> episodeFileId
 	seriesEpFileScore := map[int]map[int]int{} // seriesId -> episodeFileId -> cfScore
 	seriesHistory := map[int][]arr.HistoryRecord{}
 	movieHistory := map[int][]arr.HistoryRecord{}
 	manualImport := map[string][]arr.ManualImportItem{} // downloadId -> per-file import evaluation
-	// One category change per downloadId — a season pack is N queue rows
-	// sharing one hash.
-	categoryDone := map[string]bool{}
+	// Pass 1 classifies every row, pass 2 applies: verdicts are per
+	// episode but a move is per torrent, so all rows of a pack must be
+	// known before moving it.
+	var rows []scanReconcileItem
+	var verdicts []engine.StuckVerdict
+	// existingScoreUnknown[i]: the on-disk file's score couldn't be read
+	// and counted as 0.
+	var existingScoreUnknown []bool
 
 	for _, q := range queue {
 		// Stuck = the download finished but Arr hasn't imported it.
@@ -139,6 +136,13 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 			continue
 		}
 		if q.TrackedDownloadState != "importPending" && q.TrackedDownloadState != "importBlocked" {
+			continue
+		}
+		// The webhook narrows the sweep to the imported movie/series.
+		if req.ReconcileOnlyMovieID > 0 && q.MovieID != req.ReconcileOnlyMovieID {
+			continue
+		}
+		if req.ReconcileOnlySeriesID > 0 && q.SeriesID != req.ReconcileOnlySeriesID {
 			continue
 		}
 		resp.Totals.ReconcileStuck++
@@ -156,20 +160,41 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 
 		var targets []engine.StuckTarget
 
+		scoreUnknown := false
 		switch appType {
 		case "radarr":
 			row.MovieID = q.MovieID
-			if radarrItems == nil {
-				items, lerr := client.ListItems(ctx, "radarr")
-				if lerr != nil {
-					return nil, newAPIError(502, "arr list movies: "+lerr.Error())
+			// Narrowed runs fetch only that movie (adapter rule 2); full
+			// runs read the library once.
+			var (
+				it    arr.Item
+				found bool
+			)
+			if req.ReconcileOnlyMovieID > 0 {
+				if cached, hit := radarrOne[q.MovieID]; hit {
+					it, found = cached, true
+				} else if fetched, ferr := client.GetItem(ctx, "radarr", q.MovieID); ferr == nil {
+					radarrOne[q.MovieID] = fetched
+					it, found = fetched, true
+				} else if !errors.Is(ferr, arr.ErrItemNotFound) {
+					return nil, newAPIError(502, "arr get movie: "+ferr.Error())
 				}
-				radarrItems = make(map[int]arr.Item, len(items))
-				for _, it := range items {
-					radarrItems[it.ID] = it
+				// A movie deleted meanwhile has no file to compare
+				// against, so its row needs attention.
+			} else {
+				if radarrItems == nil {
+					items, lerr := client.ListItems(ctx, "radarr")
+					if lerr != nil {
+						return nil, newAPIError(502, "arr list movies: "+lerr.Error())
+					}
+					radarrItems = make(map[int]arr.Item, len(items))
+					for _, x := range items {
+						radarrItems[x.ID] = x
+					}
 				}
+				it, found = radarrItems[q.MovieID]
 			}
-			if it, ok := radarrItems[q.MovieID]; ok {
+			if found {
 				row.TargetLabel = it.Title
 				if it.MovieFile != nil {
 					row.HasFile = true
@@ -179,6 +204,8 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 					// the Sonarr path reads it inline).
 					if mfs, mferr := client.MovieFilesForMovie(ctx, q.MovieID); mferr == nil && len(mfs) > 0 {
 						row.ImportedScore = mfs[0].CustomFormatScore
+					} else {
+						scoreUnknown = true
 					}
 				}
 				targets = append(targets, engine.StuckTarget{HasFile: row.HasFile, ImportedScore: row.ImportedScore})
@@ -212,7 +239,9 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 			}
 			if fileID := seriesEpFileID[q.SeriesID][q.EpisodeID]; fileID > 0 {
 				row.HasFile = true
-				row.ImportedScore = seriesEpFileScore[q.SeriesID][fileID]
+				score, known := seriesEpFileScore[q.SeriesID][fileID]
+				row.ImportedScore = score
+				scoreUnknown = !known
 			}
 			targets = append(targets, engine.StuckTarget{HasFile: row.HasFile, ImportedScore: row.ImportedScore})
 			if _, done := seriesHistory[q.SeriesID]; !done {
@@ -276,32 +305,89 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 			resp.Totals.ReconcileNeedsAttention++
 		}
 
-		// Apply: an explicit per-row selection acts on that row whatever
-		// its verdict (the user's call — they can move a needs-attention
-		// one too). "Apply all" from the modal (no selection) stays
-		// conservative: redundant only.
-		shouldAct := verdict == engine.StuckRedundant
+		rows = append(rows, row)
+		verdicts = append(verdicts, verdict)
+		existingScoreUnknown = append(existingScoreUnknown, scoreUnknown)
+	}
+
+	// Downloads the automatic paths (no selection: "Run + move
+	// redundant", webhook, schedules) must not move. A torrent is moved
+	// as a whole, so one row is enough to block it:
+	//   - a row that isn't redundant: a pack can still be the only copy
+	//     of an episode;
+	//   - a row judged on an unknown score (no import evaluation, or the
+	//     on-disk file's score unread), which can make a better release
+	//     look redundant.
+	// A full queue page may be cut off mid-pack, so it blocks everything.
+	// An explicit selection is the user's call and always applies.
+	queueMayBeTruncated := len(queue) >= arr.QueuePageSize
+	noAutoMove := map[string]bool{}
+	for i := range rows {
+		if verdicts[i] != engine.StuckRedundant || !rows[i].ImportScoreKnown || existingScoreUnknown[i] {
+			noAutoMove[rows[i].DownloadID] = true
+		}
+	}
+
+	// One category change per download; later rows of the same pack copy
+	// its outcome.
+	categoryDone := map[string]categoryOutcome{}
+
+	for i := range rows {
+		row := &rows[i]
+		shouldAct := !queueMayBeTruncated && !noAutoMove[row.DownloadID]
 		if len(applySel) > 0 {
 			shouldAct = applySel[row.DownloadID]
 		}
-		if isApply && shouldAct {
-			if categoryDone[row.DownloadID] {
-				row.Status = "recategorised"
-			} else if err := qclient.SetTorrentCategory(ctx, row.DownloadID, req.ReconcilePostCategory); err != nil {
-				row.Status = "failed"
-				row.Error = err.Error()
-				resp.Totals.ReconcileFailed++
-			} else {
-				categoryDone[row.DownloadID] = true
-				row.Status = "recategorised"
-				resp.Totals.ReconcileRecategorised++
-			}
+		if !isApply || !shouldAct {
+			continue
 		}
-
-		resp.Reconcile = append(resp.Reconcile, row)
+		out, done := categoryDone[row.DownloadID]
+		if !done {
+			out = applyStuckCategory(ctx, qclients, row.DownloadID, &resp.Totals)
+			categoryDone[row.DownloadID] = out
+		}
+		row.Status = out.status
+		row.QbitInstanceName = out.name
+		row.QbitCategory = out.category
+		row.Error = out.err
+		row.AlreadyInCategory = out.already
 	}
 
+	resp.Reconcile = rows
 	return resp, nil
+}
+
+// categoryOutcome is the result of one download's category change.
+type categoryOutcome struct {
+	status   string // "recategorised" or "failed"
+	name     string // download client
+	category string
+	err      string
+	already  bool // was already in the target category; nothing changed
+}
+
+// applyStuckCategory moves one download to its client's target category
+// and counts the result in totals.
+func applyStuckCategory(ctx context.Context, clients *reconcileClients, hash string, totals *scanTotals) categoryOutcome {
+	target, currentCat, found, err := clients.clientFor(ctx, hash)
+	switch {
+	case err != nil:
+		totals.ReconcileFailed++
+		return categoryOutcome{status: "failed", err: err.Error()}
+	case !found:
+		// Usually removed by hand, or in a client this run doesn't list.
+		totals.ReconcileFailed++
+		return categoryOutcome{status: "failed", err: "not found in any selected download client (" + strings.Join(clients.names(), ", ") + ")"}
+	case currentCat == target.category:
+		// Moved by an earlier run, not cleaned up yet: not a new move.
+		return categoryOutcome{status: "recategorised", name: target.name, category: target.category, already: true}
+	}
+	if err := target.client.SetTorrentCategory(ctx, hash, target.category); err != nil {
+		totals.ReconcileFailed++
+		return categoryOutcome{status: "failed", name: target.name, err: err.Error()}
+	}
+	totals.ReconcileRecategorised++
+	return categoryOutcome{status: "recategorised", name: target.name, category: target.category}
 }
 
 // reconcileGrabDates returns (stuckGrabDate, importedGrabDate) as RFC3339

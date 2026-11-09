@@ -122,6 +122,7 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 	var grab *GrabRenameDetail
 	var qbitSe *QbitSeDetail
 	var qbitCat *QbitCategoryFixDetail
+	var stuckRec *StuckReconcileDetail
 	var fileDel *FileDeleteDetail
 	var plexSync *PlexSyncDetail
 
@@ -165,6 +166,10 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 		case core.WebhookFnQbitCategoryFix:
 			if d, ok := r.Detail.(QbitCategoryFixDetail); ok {
 				qbitCat = &d
+			}
+		case core.WebhookFnStuckReconcile:
+			if d, ok := r.Detail.(StuckReconcileDetail); ok {
+				stuckRec = &d
 			}
 		case core.WebhookFnPlexLabelSync:
 			if d, ok := r.Detail.(PlexSyncDetail); ok {
@@ -307,6 +312,7 @@ func composeFields(event core.WebhookConnectEvent, results []functionResult, all
 		detail = appendGrabRenameSection(detail, grab)
 		detail = appendQbitSeSection(detail, qbitSe)
 		detail = appendQbitCategoryFixSection(detail, qbitCat)
+		detail = appendStuckReconcileSection(detail, stuckRec)
 	}
 
 	if len(detail) == 0 {
@@ -370,6 +376,38 @@ func appendTaggedInSection(fields []agents.PayloadField, primary, mirroredSecond
 // appendTagSection renders the release-group / filter-only tag
 // outcome. Shown on Download events; on delete events the Tag-RG
 // strip is folded into the File-Delete section (see
+// joinLinesWithinField joins lines, dropping trailing ones behind an
+// "…and N more" marker to stay under Discord's 1024-char field limit.
+func joinLinesWithinField(lines []string) string {
+	const maxField = 1000 // same headroom as truncateField
+	const markerRoom = 24 // room kept for "\n…and N more"
+	var b strings.Builder
+	for i, l := range lines {
+		sep := ""
+		if b.Len() > 0 {
+			sep = "\n"
+		}
+		limit := maxField
+		if i < len(lines)-1 {
+			limit = maxField - markerRoom
+		}
+		if b.Len()+len(sep)+len(l) > limit {
+			if b.Len() == 0 {
+				// One title alone is too long: cut it, keep the count.
+				b.WriteString(truncateRune(l, maxField-markerRoom))
+				i++
+			}
+			if rest := len(lines) - i; rest > 0 {
+				fmt.Fprintf(&b, "\n…and %d more", rest)
+			}
+			return b.String()
+		}
+		b.WriteString(sep)
+		b.WriteString(l)
+	}
+	return b.String()
+}
+
 // appendFileDeleteSection).
 //
 //	Quality tag  FLUX
@@ -877,6 +915,65 @@ func appendQbitCategoryFixSection(fields []agents.PayloadField, d *QbitCategoryF
 			Name:   "Client",
 			Value:  qbit,
 			Inline: true,
+		})
+	}
+	return fields
+}
+
+// appendStuckReconcileSection renders the sweep result. Nothing when
+// nothing moved or failed, so routine imports stay quiet.
+func appendStuckReconcileSection(fields []agents.PayloadField, d *StuckReconcileDetail) []agents.PayloadField {
+	if d == nil {
+		return fields
+	}
+	if e := strings.TrimSpace(d.SweepError); e != "" {
+		return append(fields, agents.PayloadField{
+			Name:  "Stuck downloads sweep failed",
+			Value: truncateField(e),
+		})
+	}
+	if d.Moved == 0 && d.Failed == 0 {
+		return fields
+	}
+	fields = append(fields, agents.PayloadField{
+		Name:   "Stuck downloads moved",
+		Value:  fmt.Sprintf("%d of %d stuck", d.Moved, d.Stuck),
+		Inline: true,
+	})
+	// One line per move: "Release — client → category".
+	if len(d.Moves) > 0 {
+		lines := make([]string, 0, len(d.Moves))
+		for _, m := range d.Moves {
+			title := strings.TrimSpace(m.Title)
+			if title == "" {
+				title = "(untitled release)"
+			}
+			client := strings.TrimSpace(m.QbitInstance)
+			if client != "" {
+				client = " — " + client
+			}
+			lines = append(lines, fmt.Sprintf("%s%s → %s", title, client, m.Category))
+		}
+		fields = append(fields, agents.PayloadField{
+			Name:  "Moved",
+			Value: joinLinesWithinField(lines),
+		})
+	}
+	if d.NeedsAttention > 0 {
+		fields = append(fields, agents.PayloadField{
+			Name:   "Left alone",
+			Value:  fmt.Sprintf("%d need attention", d.NeedsAttention),
+			Inline: true,
+		})
+	}
+	if d.Failed > 0 {
+		value := fmt.Sprintf("%d", d.Failed)
+		if r := strings.TrimSpace(d.FailReason); r != "" {
+			value += " — " + r
+		}
+		fields = append(fields, agents.PayloadField{
+			Name:  "Failed",
+			Value: truncateField(value),
 		})
 	}
 	return fields

@@ -2,10 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,6 +46,7 @@ type scheduleRequest struct {
 	PlexSync        *core.PlexLabelSyncConfig    `json:"plexSync,omitempty"`
 	TbaRefresh      *core.TbaRefreshConfig       `json:"tbaRefresh,omitempty"`
 	QbitSe          *core.QbitSeRules            `json:"qbitSe,omitempty"`
+	Reconcile       *core.ReconcileConfig        `json:"reconcile,omitempty"`
 	ReleaseGroupIDs []string                     `json:"releaseGroupIds,omitempty"`
 }
 
@@ -54,7 +57,7 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 		return newAPIError(400, "name is required")
 	}
 	if !core.ValidJobMode(req.Mode) {
-		return newAPIError(400, "mode must be tag, discover, recover, audiotags, videotags, dvdetail, or combined")
+		return newAPIError(400, "mode must be tag, discover, recover, audiotags, videotags, dvdetail, missingepisodes, plexsync, tbarefresh, qbitsetag, reconcile, or combined")
 	}
 	// Empty cron is a valid "manual run only" sentinel — the scheduler
 	// already skips empty-cron rules in Reload (see scheduler.go:155).
@@ -84,7 +87,8 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 		return newAPIError(400, "options.combinedModes is only meaningful when mode = combined")
 	}
 	for _, m := range req.Options.CombinedModes {
-		if !core.ValidJobMode(m) || m == core.JobModeCombined {
+		// reconcile is a standalone mode; the combined runner has no such phase.
+		if !core.ValidJobMode(m) || m == core.JobModeCombined || m == core.JobModeReconcile {
 			return newAPIError(400, "options.combinedModes entries must be one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes")
 		}
 	}
@@ -212,7 +216,72 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 			return e
 		}
 	}
+	if req.Reconcile != nil {
+		applyMode := strings.EqualFold(strings.TrimSpace(req.Options.RunMode), "apply")
+		if e := validateReconcileConfig(req.Reconcile, cfg, applyMode); e != nil {
+			return e
+		}
+	}
+	if req.Mode == core.JobModeReconcile && strings.EqualFold(strings.TrimSpace(req.Options.RunMode), "apply") && req.Reconcile == nil {
+		return newAPIError(400, "reconcile in apply mode needs at least one download client + target category")
+	}
 	return nil
+}
+
+// validateReconcileConfig checks a schedule's reconcile snapshot,
+// including the legacy single-client pair (merged in as the run does).
+// Targets are only required when the schedule applies.
+func validateReconcileConfig(rc *core.ReconcileConfig, cfg core.Config, requireTargets bool) *apiError {
+	rc.QbitInstanceID = strings.TrimSpace(rc.QbitInstanceID)
+	rc.PostCategory = strings.TrimSpace(rc.PostCategory)
+	targets := append([]core.StuckReconcileTarget(nil), rc.Targets...)
+	if rc.QbitInstanceID != "" && !slices.ContainsFunc(rc.Targets, func(t core.StuckReconcileTarget) bool {
+		return strings.TrimSpace(t.QbitInstanceID) == rc.QbitInstanceID
+	}) {
+		targets = append(targets, core.StuckReconcileTarget{QbitInstanceID: rc.QbitInstanceID, PostCategory: rc.PostCategory})
+	}
+	if e := validateReconcileTargets("reconcile", targets, cfg, requireTargets); e != nil {
+		return e
+	}
+	for i := range rc.Targets {
+		trimReconcileTarget(&rc.Targets[i])
+	}
+	return nil
+}
+
+// validateReconcileTargets is shared by schedules and webhook rules:
+// each target names an existing qBit client, once, with a valid
+// category (required when requireTargets). field prefixes the errors.
+func validateReconcileTargets(field string, targets []core.StuckReconcileTarget, cfg core.Config, requireTargets bool) *apiError {
+	if requireTargets && len(targets) == 0 {
+		return newAPIError(400, field+" needs at least one download client + target category")
+	}
+	if len(targets) > maxStuckReconcileTargets {
+		return newAPIError(400, fmt.Sprintf("%s supports at most %d download clients", field, maxStuckReconcileTargets))
+	}
+	seen := map[string]bool{}
+	for _, t := range targets {
+		trimReconcileTarget(&t)
+		switch {
+		case t.QbitInstanceID == "":
+			return newAPIError(400, field+".targets[].qbitInstanceId is required")
+		case !qbitInstanceExists(cfg, t.QbitInstanceID):
+			return newAPIError(400, field+".targets[].qbitInstanceId not found")
+		case seen[t.QbitInstanceID]:
+			return newAPIError(400, field+" lists the same download client twice — one target category per client")
+		case requireTargets && t.PostCategory == "":
+			return newAPIError(400, field+".targets[].postCategory is required (where redundant downloads get moved)")
+		case t.PostCategory != "" && !reQbitCategoryName.MatchString(t.PostCategory):
+			return newAPIError(400, field+".targets[].postCategory contains forbidden characters (control chars or backslash)")
+		}
+		seen[t.QbitInstanceID] = true
+	}
+	return nil
+}
+
+func trimReconcileTarget(t *core.StuckReconcileTarget) {
+	t.QbitInstanceID = strings.TrimSpace(t.QbitInstanceID)
+	t.PostCategory = strings.TrimSpace(t.PostCategory)
 }
 
 // handleListSchedules — GET /api/schedules.
@@ -368,6 +437,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		PlexSync:        req.PlexSync,
 		TbaRefresh:      req.TbaRefresh,
 		QbitSe:          req.QbitSe,
+		Reconcile:       req.Reconcile,
 		ReleaseGroupIDs: req.ReleaseGroupIDs,
 	}
 	if err := s.App.Config.Update(func(c *core.Config) {
@@ -392,6 +462,18 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.App.Config.Get()
+	// A PUT without a reconcile snapshot keeps the saved one (below), so
+	// validate that — the schedule card's pause/resume omits it.
+	if req.Reconcile == nil {
+		for i := range cfg.Schedules {
+			if cfg.Schedules[i].ID == id && cfg.Schedules[i].Reconcile != nil {
+				saved := *cfg.Schedules[i].Reconcile
+				saved.Targets = append([]core.StuckReconcileTarget(nil), saved.Targets...)
+				req.Reconcile = &saved
+				break
+			}
+		}
+	}
 	if apiErr := req.validate(cfg); apiErr != nil {
 		writeAPIError(w, apiErr)
 		return
@@ -438,6 +520,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			}
 			if req.QbitSe != nil {
 				c.Schedules[i].QbitSe = req.QbitSe
+			}
+			if req.Reconcile != nil {
+				c.Schedules[i].Reconcile = req.Reconcile
 			}
 			if req.ReleaseGroupIDs != nil {
 				c.Schedules[i].ReleaseGroupIDs = req.ReleaseGroupIDs

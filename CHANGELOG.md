@@ -2,6 +2,31 @@
 
 > ⚠️ **`:dev` is a moving target.** Between dev builds, some changes are not always backwards-compatible with previous versions — your existing rules get auto-converted on first start, but the shape and the controls in the wizard can change. If you're running `:dev`, plan for the occasional adjustment. The first stable `:latest` will be locked down with normal upgrade discipline.
 
+## Unreleased — Stuck downloads can run itself, across every download client
+
+### Added
+
+- **Clear stuck downloads after import (new webhook function).** Runs the Stuck downloads check automatically after each import, for that movie or series only. A download that finished but never imported is moved to your cleanup category when the file already on disk scores as good or better; anything else is left for you. Nothing is deleted. It runs in the background about a minute after the import, so Sonarr/Radarr aren't held up. It is off until you tick it on a webhook rule, list your qBittorrent client(s) with a category each, and enable On File Import / On File Upgrade in Sonarr/Radarr — see [Clearing stuck downloads automatically](docs/how-to.md#clearing-stuck-downloads-automatically).
+- **Several download clients per run.** The Library scan page and the webhook take a list of qBittorrent clients, each with its own category. Each download is matched to the client that holds it by torrent hash, and the results say which client and category it went to.
+
+### Changed
+
+- **Automatic moves are more careful.** Without a selection (webhook, schedule, **Run + move redundant**), a download is not moved when:
+  - it is a season pack that is still the only copy of an episode;
+  - a score it was judged on couldn't be read;
+  - the queue filled its 1,000-row page and may be cut off;
+  - the same torrent is in more than one download client.
+
+  Downloads you tick yourself are still moved, and the page no longer pre-ticks partly-needed packs.
+- **Moves are checked against qBittorrent first.** A torrent you already removed is reported as not found instead of moved, and one already in the target category shows as **already in** and isn't counted or notified again.
+- **Clearer notifications.** Counts are per download, not per episode row. Failed moves and failed sweeps are reported with the reason, and long move lists are shortened to fit Discord.
+- **The category is suggested, not filled in.** Sonarr/Radarr's post-import category shows as a placeholder, since it may belong to a different client.
+
+### Fixed
+
+- **Reconcile schedules can be saved.** The schedule validator rejected the `reconcile` mode. It now saves (via the schedules API; the wizard doesn't offer it yet), keeps its clients and categories on pause/resume and edit, and can't be added as a step of a combined schedule.
+- **Rules with this function can be paused and resumed.**
+
 ## v0.6.77-dev — Security maintenance (2026-11-08)
 
 ### Changed

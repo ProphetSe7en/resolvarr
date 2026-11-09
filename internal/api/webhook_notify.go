@@ -248,6 +248,27 @@ type QbitCategoryFixDetail struct {
 	SkipReason string
 }
 
+// StuckReconcileDetail is the result payload of WebhookFnStuckReconcile.
+type StuckReconcileDetail struct {
+	Scope string // movie / series title
+	// Counts are per download (torrent), not per queue row.
+	Stuck          int
+	Moved          int
+	AlreadyMoved   int // already in the target category; nothing changed
+	NeedsAttention int
+	Failed         int
+	FailReason     string               // first failed download's error
+	SweepError     string               // set when the whole sweep failed
+	Moves          []StuckReconcileMove // capped at stuckReconcileMaxMovesInNotification
+}
+
+// StuckReconcileMove is one moved download.
+type StuckReconcileMove struct {
+	Title        string
+	QbitInstance string
+	Category     string
+}
+
 // SyncDetail is the typed payload for WebhookFnSyncToSecondary
 // results. Carries the secondary instance's display name so
 // composeFields can fold it into the TagDetail's Mirrored +
@@ -318,6 +339,7 @@ var titleDisplayOrder = map[core.WebhookFunction]int{
 	core.WebhookFnGrabRename:      50, // qBit-side
 	core.WebhookFnQbitSeTag:       60,
 	core.WebhookFnQbitCategoryFix: 70,
+	core.WebhookFnStuckReconcile:  75, // qBit-side, and downstream of the import that made the loser redundant
 	// Plex label sync surfaces AFTER all the Arr-side tagging functions
 	// (it's downstream of them) but BEFORE the qBit-side functions —
 	// it's the "and the tags propagated to Plex too" half of an
@@ -380,6 +402,12 @@ func composeTitle(event core.WebhookConnectEvent, results []functionResult, item
 			continue
 		}
 		label := titleLabelForFunctionAndEvent(r.Function, event)
+		if r.Function == core.WebhookFnStuckReconcile {
+			// A run where nothing moved but something failed is a failure.
+			if d, ok := r.Detail.(StuckReconcileDetail); ok && d.Moved == 0 && (d.Failed > 0 || d.SweepError != "") {
+				label = "Stuck downloads: move failed"
+			}
+		}
 		if label == "" || seen[label] {
 			continue
 		}
@@ -473,6 +501,8 @@ func titleLabelForFunctionAndEvent(fn core.WebhookFunction, event core.WebhookCo
 		return "Episode tagged"
 	case core.WebhookFnQbitCategoryFix:
 		return "Category fixed"
+	case core.WebhookFnStuckReconcile:
+		return "Stuck downloads cleared"
 	case core.WebhookFnPlexLabelSync:
 		return "Synced to Plex"
 	case core.WebhookFnSyncToSecondary:

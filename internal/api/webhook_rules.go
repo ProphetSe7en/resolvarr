@@ -15,6 +15,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -50,6 +51,10 @@ const (
 	webhookRuleCustomRegexMaxLen   = 500       // RE2 compiles these in microseconds; cap deters DoS-by-config-edit
 	webhookRuleTokenEntryMaxLen    = 80        // per-entry length on token allow-lists
 	webhookRuleRequestBodyMaxBytes = 64 * 1024 // POST/PUT body cap — matches schedules.go posture; honest payloads are <5 KB
+	// Stuck downloads limits: clients per rule, and the delay range.
+	maxStuckReconcileTargets      = 12
+	maxStuckReconcileDeferSeconds = 600
+	minStuckReconcileDeferSeconds = 5
 )
 
 // webhookRuleRequest is the POST/PUT body. Mirrors core.WebhookRule with
@@ -81,6 +86,7 @@ type webhookRuleRequest struct {
 	GrabRename      *core.GrabRenameCriteria   `json:"grabRename,omitempty"`
 	QbitSe          *core.QbitSeRules          `json:"qbitSe,omitempty"`
 	QbitCategoryFix *core.QbitCategoryFixRules `json:"qbitCategoryFix,omitempty"`
+	StuckReconcile  *core.StuckReconcileRules  `json:"stuckReconcile,omitempty"`
 	PlexLabelSync   *core.PlexLabelSyncConfig  `json:"plexLabelSync,omitempty"`
 	// NotifyOnFire — master per-rule kill-switch. Which agents receive
 	// the notification + which functions each renders is per-agent
@@ -226,6 +232,29 @@ func (req *webhookRuleRequest) validate(cfg core.Config) *apiError {
 		// stored.
 		req.QbitCategoryFix.PreImportCategorySnapshot = preCat
 		req.QbitCategoryFix.PostImportCategorySnapshot = postCat
+	}
+	if seen[core.WebhookFnStuckReconcile] {
+		if req.StuckReconcile == nil {
+			return newAPIError(400, "stuckReconcile config required when the stuckReconcile function is enabled")
+		}
+		for i := range req.StuckReconcile.Targets {
+			trimReconcileTarget(&req.StuckReconcile.Targets[i])
+		}
+		if e := validateReconcileTargets("stuckReconcile", req.StuckReconcile.Targets, cfg, true); e != nil {
+			return e
+		}
+		if req.StuckReconcile.DeferSeconds < 0 {
+			return newAPIError(400, "stuckReconcile.deferSeconds cannot be negative")
+		}
+		if req.StuckReconcile.DeferSeconds > 0 && req.StuckReconcile.DeferSeconds < minStuckReconcileDeferSeconds {
+			return newAPIError(400, fmt.Sprintf("stuckReconcile.deferSeconds must be 0 (default) or at least %d", minStuckReconcileDeferSeconds))
+		}
+		if req.StuckReconcile.DeferSeconds > maxStuckReconcileDeferSeconds {
+			return newAPIError(400, fmt.Sprintf("stuckReconcile.deferSeconds cannot exceed %d", maxStuckReconcileDeferSeconds))
+		}
+	}
+	if !seen[core.WebhookFnStuckReconcile] {
+		req.StuckReconcile = nil
 	}
 	// Plex label sync — required inline config + Plex-side validation.
 	// Same pattern as the other function-config blocks above. Per-Plex-
@@ -500,6 +529,9 @@ func (req *webhookRuleRequest) applyTo(rule *core.WebhookRule, isUpdate bool) {
 	if !isUpdate || req.QbitCategoryFix != nil {
 		rule.QbitCategoryFix = req.QbitCategoryFix
 	}
+	// Always assigned: validate() clears it when the function is off, so
+	// turning the function off doesn't leave stale targets on disk.
+	rule.StuckReconcile = req.StuckReconcile
 	if !isUpdate || req.PlexLabelSync != nil {
 		rule.PlexLabelSync = req.PlexLabelSync
 	}
