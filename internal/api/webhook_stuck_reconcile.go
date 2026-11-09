@@ -267,17 +267,10 @@ func (s *Server) dispatchStuckReconcile(
 		return functionResult{Function: fn, OK: false, Summary: "stuck-downloads sweep", Err: apiErr}
 	}
 
-	t := resp.Totals
-	detail := StuckReconcileDetail{
-		Scope:          scopeLabel,
-		Stuck:          t.ReconcileStuck,
-		Moved:          t.ReconcileRecategorised,
-		NeedsAttention: t.ReconcileNeedsAttention,
-		Failed:         t.ReconcileFailed,
-		Moves:          collectStuckReconcileMoves(resp),
-	}
+	detail := summariseStuckReconcile(resp)
+	detail.Scope = scopeLabel
 
-	if t.ReconcileStuck == 0 {
+	if detail.Stuck == 0 {
 		return functionResult{
 			Function: fn, OK: true,
 			Summary: fmt.Sprintf("nothing stuck (%s)", scopeLabel),
@@ -285,55 +278,113 @@ func (s *Server) dispatchStuckReconcile(
 		}
 	}
 
-	parts := []string{fmt.Sprintf("%d stuck", t.ReconcileStuck)}
-	if t.ReconcileRecategorised > 0 {
-		parts = append(parts, fmt.Sprintf("%d moved", t.ReconcileRecategorised))
+	parts := []string{fmt.Sprintf("%d stuck", detail.Stuck)}
+	if detail.Moved > 0 {
+		parts = append(parts, fmt.Sprintf("%d moved", detail.Moved))
 	}
-	if t.ReconcileNeedsAttention > 0 {
-		parts = append(parts, fmt.Sprintf("%d need attention", t.ReconcileNeedsAttention))
+	if detail.AlreadyMoved > 0 {
+		parts = append(parts, fmt.Sprintf("%d already moved", detail.AlreadyMoved))
 	}
-	if t.ReconcileFailed > 0 {
-		parts = append(parts, fmt.Sprintf("%d failed", t.ReconcileFailed))
+	if detail.NeedsAttention > 0 {
+		parts = append(parts, fmt.Sprintf("%d need attention", detail.NeedsAttention))
+	}
+	if detail.Failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed: %s", detail.Failed, detail.FailReason))
 	}
 	return functionResult{
 		Function: fn,
 		// A failed row is a per-item problem, not a failed run — the
 		// sweep itself worked and the row carries the reason. Same
 		// convention the scheduler's reconcile phase uses.
-		OK:      true,
-		Changed: t.ReconcileRecategorised > 0,
+		OK: true,
+		// Changed drives the notification. A failure counts: a move
+		// that keeps failing (category missing in qBit, torrent in a
+		// client the rule doesn't list) would otherwise fail silently
+		// on every import forever.
+		Changed: detail.Moved > 0 || detail.Failed > 0,
 		Summary: fmt.Sprintf("%s (%s)", strings.Join(parts, "; "), scopeLabel),
 		Detail:  detail,
 	}
 }
 
-// collectStuckReconcileMoves flattens the per-row results into one line
-// per download that actually moved, deduped by hash (a Sonarr season
-// pack is N queue rows sharing one torrent).
-func collectStuckReconcileMoves(resp *scanResponse) []StuckReconcileMove {
+// summariseStuckReconcile counts the sweep's outcome per DOWNLOAD rather
+// than per queue row. The reconcile totals count rows, and a Sonarr
+// season pack is one row per episode sharing a single torrent, so mixing
+// the two would read as "1 of 24 stuck moved" for one torrent that was
+// moved. Moves lists the downloads that actually changed category,
+// capped at stuckReconcileMaxMovesInNotification.
+func summariseStuckReconcile(resp *scanResponse) StuckReconcileDetail {
+	var d StuckReconcileDetail
 	if resp == nil {
-		return nil
+		return d
 	}
-	seen := map[string]bool{}
-	var out []StuckReconcileMove
+	// Per-download outcome, strongest first: a pack with one
+	// needs-attention row is a needs-attention download.
+	const (
+		outRedundant = iota
+		outNeedsAttention
+		outAlreadyMoved
+		outMoved
+		outFailed
+	)
+	outcome := map[string]int{}
+	var order []string
 	for _, row := range resp.Reconcile {
-		if row.Status != "recategorised" || row.QbitCategory == "" {
-			continue
+		key := row.DownloadID
+		if key == "" {
+			key = "row:" + row.Title
 		}
-		if seen[row.DownloadID] {
-			continue
+		o := outRedundant
+		switch {
+		case row.Status == "failed":
+			o = outFailed
+			if d.FailReason == "" {
+				d.FailReason = row.Error
+			}
+		case row.Status == "recategorised" && row.AlreadyInCategory:
+			o = outAlreadyMoved
+		case row.Status == "recategorised":
+			o = outMoved
+		case row.Status != "redundant":
+			o = outNeedsAttention
 		}
-		seen[row.DownloadID] = true
-		out = append(out, StuckReconcileMove{
-			Title:        row.Title,
-			QbitInstance: row.QbitInstanceName,
-			Category:     row.QbitCategory,
-		})
-		if len(out) >= stuckReconcileMaxMovesInNotification {
-			break
+		prev, seen := outcome[key]
+		if !seen {
+			order = append(order, key)
+		}
+		if !seen || o > prev {
+			outcome[key] = o
 		}
 	}
-	return out
+	d.Stuck = len(order)
+	movedTitle := map[string]StuckReconcileMove{}
+	for _, row := range resp.Reconcile {
+		if row.Status == "recategorised" && !row.AlreadyInCategory && row.QbitCategory != "" {
+			if _, ok := movedTitle[row.DownloadID]; !ok {
+				movedTitle[row.DownloadID] = StuckReconcileMove{
+					Title:        row.Title,
+					QbitInstance: row.QbitInstanceName,
+					Category:     row.QbitCategory,
+				}
+			}
+		}
+	}
+	for _, key := range order {
+		switch outcome[key] {
+		case outMoved:
+			d.Moved++
+			if m, ok := movedTitle[key]; ok && len(d.Moves) < stuckReconcileMaxMovesInNotification {
+				d.Moves = append(d.Moves, m)
+			}
+		case outAlreadyMoved:
+			d.AlreadyMoved++
+		case outFailed:
+			d.Failed++
+		case outNeedsAttention:
+			d.NeedsAttention++
+		}
+	}
+	return d
 }
 
 // stuckReconcileMaxMovesInNotification bounds how many individual moves

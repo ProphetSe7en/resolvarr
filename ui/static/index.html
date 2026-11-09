@@ -3556,7 +3556,7 @@
                         </div>
                         <template x-if="it.status === 'recategorised'">
                           <span style="font-size:11px;color:var(--accent-green);text-align:right;max-width:200px">
-                            ✓ moved<template x-if="it.qbitCategory"><span> to <code x-text="it.qbitCategory"></code></span></template>
+                            <span x-text="it.alreadyInCategory ? '✓ already in' : '✓ moved to'"></span><template x-if="it.qbitCategory"><span> <code x-text="it.qbitCategory"></code></span></template>
                             <template x-if="it.qbitInstanceName"><span style="display:block;color:var(--text-muted-secondary)" x-text="it.qbitInstanceName"></span></template>
                           </span>
                         </template>
@@ -3602,7 +3602,7 @@
                         </div>
                         <template x-if="it.status === 'recategorised'">
                           <span style="font-size:11px;color:var(--accent-green);text-align:right;max-width:200px">
-                            ✓ moved<template x-if="it.qbitCategory"><span> to <code x-text="it.qbitCategory"></code></span></template>
+                            <span x-text="it.alreadyInCategory ? '✓ already in' : '✓ moved to'"></span><template x-if="it.qbitCategory"><span> <code x-text="it.qbitCategory"></code></span></template>
                             <template x-if="it.qbitInstanceName"><span style="display:block;color:var(--text-muted-secondary)" x-text="it.qbitInstanceName"></span></template>
                           </span>
                         </template>

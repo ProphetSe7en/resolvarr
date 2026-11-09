@@ -86,7 +86,10 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 		return newAPIError(400, "options.combinedModes is only meaningful when mode = combined")
 	}
 	for _, m := range req.Options.CombinedModes {
-		if !core.ValidJobMode(m) || m == core.JobModeCombined {
+		// Reconcile is a valid schedule mode but not a combined phase —
+		// runCombinedSchedule has no reconcile step, so accepting it here
+		// would save a chain that silently skips it.
+		if !core.ValidJobMode(m) || m == core.JobModeCombined || m == core.JobModeReconcile {
 			return newAPIError(400, "options.combinedModes entries must be one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes")
 		}
 	}
@@ -240,21 +243,30 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 // the same contract inline because it always requires targets (a
 // webhook rule has no preview mode).
 func validateReconcileConfig(rc *core.ReconcileConfig, cfg core.Config, requireTargets bool) *apiError {
+	// Normalise in place so what gets stored is what was validated.
+	rc.QbitInstanceID = strings.TrimSpace(rc.QbitInstanceID)
+	rc.PostCategory = strings.TrimSpace(rc.PostCategory)
+	for i := range rc.Targets {
+		rc.Targets[i].QbitInstanceID = strings.TrimSpace(rc.Targets[i].QbitInstanceID)
+		rc.Targets[i].PostCategory = strings.TrimSpace(rc.Targets[i].PostCategory)
+	}
+	// Validate the list the run will actually use: Targets plus the
+	// legacy single-client pair when it names a client Targets doesn't
+	// cover (the same fold reconcileTargetsFromRequest does at run
+	// time). Validating only Targets would let a legacy pair pointing
+	// at a deleted client, or with no category, through to fail later.
 	targets := append([]core.StuckReconcileTarget(nil), rc.Targets...)
-	// Fold the legacy single-client pair in so a schedule saved before
-	// Targets existed still validates (and still counts toward the
-	// at-least-one rule).
-	if legacy := strings.TrimSpace(rc.QbitInstanceID); legacy != "" {
+	if rc.QbitInstanceID != "" {
 		dup := false
 		for _, t := range targets {
-			if strings.TrimSpace(t.QbitInstanceID) == legacy {
+			if t.QbitInstanceID == rc.QbitInstanceID {
 				dup = true
 				break
 			}
 		}
 		if !dup {
 			targets = append(targets, core.StuckReconcileTarget{
-				QbitInstanceID: legacy,
+				QbitInstanceID: rc.QbitInstanceID,
 				PostCategory:   rc.PostCategory,
 			})
 		}
@@ -266,10 +278,7 @@ func validateReconcileConfig(rc *core.ReconcileConfig, cfg core.Config, requireT
 		return newAPIError(400, fmt.Sprintf("reconcile supports at most %d download clients", maxStuckReconcileTargets))
 	}
 	seen := map[string]bool{}
-	for i := range rc.Targets {
-		t := &rc.Targets[i]
-		t.QbitInstanceID = strings.TrimSpace(t.QbitInstanceID)
-		t.PostCategory = strings.TrimSpace(t.PostCategory)
+	for _, t := range targets {
 		if t.QbitInstanceID == "" {
 			return newAPIError(400, "reconcile.targets[].qbitInstanceId is required")
 		}

@@ -3386,12 +3386,8 @@ function app() {
         this.reconcileInstanceId = id;
         if (this.reconcileResults.reconcilePreCategory) this.reconcilePreCategory = this.reconcileResults.reconcilePreCategory;
         if (!this.reconcilePostCategory.trim() && this.reconcileResults.reconcilePostCategory) this.reconcilePostCategory = this.reconcileResults.reconcilePostCategory;
-        // Default-select redundant rows for the result panel's per-row Apply.
-        const sel = {};
-        for (const it of (this.reconcileResults.reconcile || [])) {
-          if (it.status === 'redundant') sel[it.downloadId] = true;
-        }
-        this.reconcileApplySelected = sel;
+        // Default-select redundant downloads for the result panel's per-row Apply.
+        this.reconcileApplySelected = this.reconcileDefaultSelection(this.reconcileResults.reconcile);
         if (mode === 'apply') {
           const n = (this.reconcileResults.totals && this.reconcileResults.totals.reconcileRecategorised) || 0;
           this.showToast('Recategorised ' + n + ' download' + (n === 1 ? '' : 's'), 'success');
@@ -3472,6 +3468,26 @@ function app() {
       return q ? q.name : '';
     },
 
+    // Which downloads start ticked after a run: those whose rows are ALL
+    // redundant. A season pack is one row per episode sharing a torrent,
+    // and a pack that is redundant for one episode can still be the only
+    // copy of another — pre-ticking it would make "Move selected" hand
+    // that episode to the cleanup. Same rule the backend's own
+    // move-all-redundant path follows; the user can still tick it.
+    reconcileDefaultSelection(rows) {
+      const allRedundant = {};
+      for (const it of (rows || [])) {
+        if (!it.downloadId) continue;
+        const ok = it.status === 'redundant';
+        allRedundant[it.downloadId] = (allRedundant[it.downloadId] ?? true) && ok;
+      }
+      const sel = {};
+      for (const [id, ok] of Object.entries(allRedundant)) {
+        if (ok) sel[id] = true;
+      }
+      return sel;
+    },
+
     reconcileRedundantRows() {
       if (!this.reconcileResults) return [];
       return (this.reconcileResults.reconcile || []).filter(it => it.status === 'redundant' || it.status === 'recategorised');
@@ -3516,11 +3532,7 @@ function app() {
         this.reconcileResults = await resp.json();
         const n = (this.reconcileResults.totals && this.reconcileResults.totals.reconcileRecategorised) || 0;
         this.showToast('Recategorised ' + n + ' download' + (n === 1 ? '' : 's'), 'success');
-        const sel = {};
-        for (const it of (this.reconcileResults.reconcile || [])) {
-          if (it.status === 'redundant') sel[it.downloadId] = true;
-        }
-        this.reconcileApplySelected = sel;
+        this.reconcileApplySelected = this.reconcileDefaultSelection(this.reconcileResults.reconcile);
       } catch (e) {
         this.reconcileError = e.message || 'Reconcile apply failed';
         this.showToast(this.reconcileError, 'error');
@@ -12828,6 +12840,12 @@ function app() {
         seen.add(t.qbitInstanceId);
         if (!(t.postCategory || '').trim()) return 'Row ' + (i + 1) + ': enter the category redundant downloads should move to.';
       }
+      // Same range the backend enforces. Empty = default (60).
+      const d = sr.deferSeconds;
+      if (d !== '' && d != null && d !== 0) {
+        const n = Number(d);
+        if (!Number.isInteger(n) || n < 5 || n > 600) return 'Delay must be between 5 and 600 seconds (or empty for the default 60).';
+      }
       return '';
     },
 
@@ -13556,6 +13574,10 @@ function app() {
         // Drop the blank row the editor keeps around for "add another"
         // so the backend's at-least-one check talks about real targets.
         sr.targets = (sr.targets || []).filter(t => (t.qbitInstanceId || '').trim() || (t.postCategory || '').trim());
+        // A cleared number input binds as '' — sent as-is the backend
+        // can't decode it into an int and the whole save fails. Empty
+        // means "use the default", which the backend spells 0.
+        sr.deferSeconds = Number.isFinite(Number(sr.deferSeconds)) && sr.deferSeconds !== '' ? Math.trunc(Number(sr.deferSeconds)) : 0;
         body.stuckReconcile = sr;
       }
       if (o.fnPlexLabelSync && r.plexLabelSync) {
@@ -13783,6 +13805,10 @@ function app() {
         if (rule.grabRename)      body.grabRename = rule.grabRename;
         if (rule.qbitSe)          body.qbitSe = rule.qbitSe;
         if (rule.qbitCategoryFix) body.qbitCategoryFix = rule.qbitCategoryFix;
+        // Required whenever the function is on — the backend rejects the
+        // PUT without it, and unlike the snapshots above it is replaced
+        // (not preserved) when missing from the body.
+        if (rule.stuckReconcile)  body.stuckReconcile = rule.stuckReconcile;
         if (rule.plexLabelSync)   body.plexLabelSync = rule.plexLabelSync;
         const r = await this.apiFetch('/api/webhook-rules/' + rule.id, {
           method: 'PUT',
@@ -13948,6 +13974,7 @@ function app() {
         grabRename: 'Grab Rename',
         qbitSeTag: 'qBit S/E tag',
         qbitCategoryFix: 'qBit Category Fix',
+        stuckReconcile: 'Stuck downloads',
         fileDeleteClean: 'File-delete strip',
         autoStripTagRgOnDelete: 'Auto-strip on delete',
       };

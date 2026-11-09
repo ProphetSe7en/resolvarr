@@ -195,9 +195,11 @@ The **Recent activity** tab shows the Connect events as they arrive, with what e
 
 1. Add (or edit) a webhook rule on the instance and tick **Clear stuck downloads after import**.
 2. On the **Stuck downloads** step, list every qBittorrent client this Sonarr/Radarr downloads through, and the category redundant downloads should move to on each one. Type it exactly as it appears in qBittorrent -- a category that doesn't exist there is refused when the rule runs. It is saved with the rule, so you only enter it once. The first row starts from the download-client config in Sonarr/Radarr.
-4. In Sonarr/Radarr -> Settings -> Connect, make sure **On File Import** and **On File Upgrade** are enabled on the connection.
+3. In Sonarr/Radarr -> Settings -> Connect, make sure **On File Import** and **On File Upgrade** are enabled on the connection.
 
-A download is only moved when the episode or movie already has a file scoring as good or better. Anything else -- nothing imported, or the stuck one is actually the better release -- is left alone for you to look at on the Stuck downloads page. **Nothing is ever deleted;** the only change made is the torrent's category, and your own qBittorrent cleanup rule on that category does the rest.
+A download is only moved when the episode or movie already has a file scoring as good or better. Anything else -- nothing imported, or the stuck one is actually the better release -- is left alone for you to look at on the Stuck downloads page. A season pack is only moved when that is true for **every** episode in it: if the pack is still the only copy of even one episode, the whole torrent is left alone, because your cleanup would otherwise delete that episode along with the rest. A download already sitting in the target category (moved earlier, not yet cleaned up) is not counted or notified again. **Nothing is ever deleted;** the only change made is the torrent's category, and your own qBittorrent cleanup rule on that category does the rest.
+
+You get a notification when something was moved, or when a move failed (for example the category doesn't exist in qBittorrent, or the torrent is in a client the rule doesn't list). A sweep that found nothing to do stays quiet.
 
 Each fire checks only the movie or series that was just imported. A whole season arriving at once is collapsed into a single check rather than one per episode. To sweep the entire queue, use **Run reconcile** on the Stuck downloads page, or a `reconcile` schedule.
 

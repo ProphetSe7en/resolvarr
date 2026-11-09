@@ -255,12 +255,18 @@ type QbitCategoryFixDetail struct {
 type StuckReconcileDetail struct {
 	// Scope is the movie / series title the sweep was narrowed to.
 	Scope string
-	// Stuck / Moved / NeedsAttention / Failed mirror the reconcile
-	// bucket totals.
+	// Stuck / Moved / AlreadyMoved / NeedsAttention / Failed count
+	// DOWNLOADS (torrents), not queue rows — a season pack is one row
+	// per episode sharing a single torrent. A download whose rows split
+	// across verdicts counts once, under its most significant outcome.
 	Stuck          int
 	Moved          int
+	AlreadyMoved   int // already in the target category from an earlier run — nothing changed
 	NeedsAttention int
 	Failed         int
+	// FailReason is the first failed download's error, so a repeating
+	// failure says what to fix rather than just how many.
+	FailReason string
 	// Moves lists the downloads that actually changed category, capped
 	// at stuckReconcileMaxMovesInNotification entries.
 	Moves []StuckReconcileMove

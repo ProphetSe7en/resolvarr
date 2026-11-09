@@ -889,11 +889,13 @@ func appendQbitCategoryFixSection(fields []agents.PayloadField, d *QbitCategoryF
 }
 
 // appendStuckReconcileSection renders the stuck-downloads sweep result.
-// Emits nothing when the sweep moved nothing — a rule firing on every
-// import would otherwise add a "0 moved" row to every notification,
-// which is exactly the noise the Changed contract exists to prevent.
+// Emits nothing when the sweep neither moved nor failed to move
+// anything — a rule firing on every import would otherwise add a
+// "0 moved" row to every notification, which is exactly the noise the
+// Changed contract exists to prevent. A failure does render: a move
+// that keeps failing must not stay invisible.
 func appendStuckReconcileSection(fields []agents.PayloadField, d *StuckReconcileDetail) []agents.PayloadField {
-	if d == nil || d.Moved == 0 {
+	if d == nil || (d.Moved == 0 && d.Failed == 0) {
 		return fields
 	}
 	fields = append(fields, agents.PayloadField{
@@ -929,10 +931,13 @@ func appendStuckReconcileSection(fields []agents.PayloadField, d *StuckReconcile
 		})
 	}
 	if d.Failed > 0 {
+		value := fmt.Sprintf("%d", d.Failed)
+		if r := strings.TrimSpace(d.FailReason); r != "" {
+			value += " — " + r
+		}
 		fields = append(fields, agents.PayloadField{
-			Name:   "Failed",
-			Value:  fmt.Sprintf("%d", d.Failed),
-			Inline: true,
+			Name:  "Failed",
+			Value: value,
 		})
 	}
 	return fields

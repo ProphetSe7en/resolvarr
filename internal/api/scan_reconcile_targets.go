@@ -16,10 +16,10 @@ package api
 // client NAME to a resolvarr instance name: names drift, hashes don't.
 //
 // Cost: one GetTorrent per (hash, client) until a hit, memoised per run
-// so a season pack's N queue rows sharing one hash probe once. With a
-// single configured client the probe is skipped entirely — there is
-// nothing to disambiguate, and skipping keeps the single-client path
-// byte-identical to its pre-fan-out behaviour.
+// so a season pack's N queue rows sharing one hash probe once. The probe
+// also runs with a single configured client: it is what tells a torrent
+// the user already removed (qBit accepts setCategory for unknown hashes
+// silently) and one an earlier run already moved apart from a real move.
 
 import (
 	"context"
@@ -41,10 +41,17 @@ type reconcileClient struct {
 // may act on, plus the per-run hash→client memo.
 type reconcileClients struct {
 	entries []reconcileClient
-	// resolved memoises hash → index into entries. -1 records "probed
+	// resolved memoises hash → owning client. idx -1 records "probed
 	// every client, nobody has it" so a season pack doesn't re-probe
 	// once per episode row.
-	resolved map[string]int
+	resolved map[string]resolvedHash
+}
+
+// resolvedHash is one memoised lookup: which entry holds the torrent
+// (-1 = none) and the category it was in when asked.
+type resolvedHash struct {
+	idx      int
+	category string
 }
 
 // reconcileTargetsFromRequest folds the request's two target shapes into
@@ -86,7 +93,7 @@ func newReconcileClients(cfg core.Config, targets []scanReconcileTarget) (*recon
 	if len(targets) == 0 {
 		return nil, newAPIError(400, "pick at least one qBittorrent client + target category to apply")
 	}
-	rc := &reconcileClients{resolved: map[string]int{}}
+	rc := &reconcileClients{resolved: map[string]resolvedHash{}}
 	for _, t := range targets {
 		if t.PostCategory == "" {
 			return nil, newAPIError(400, "a target category is required for every qBittorrent client")
@@ -113,50 +120,53 @@ func newReconcileClients(cfg core.Config, targets []scanReconcileTarget) (*recon
 	return rc, nil
 }
 
-// clientFor returns the download client holding hash. With exactly one
-// configured client it returns that client without probing (nothing to
-// disambiguate, and the SetCategory call below surfaces a genuinely
-// missing hash as its own error). With several, it asks each in turn
-// and memoises the answer.
+// clientFor returns the download client holding hash, plus the
+// torrent's current category there. Every configured client is asked in
+// turn — including when there is only one: qBittorrent answers 200 to a
+// setCategory for a hash it doesn't have, so skipping the lookup would
+// report a torrent the user already removed as "moved", and the current
+// category is what lets the caller skip a torrent an earlier run already
+// moved. The answer is memoised per run, so a season pack's N rows
+// sharing one hash cost one lookup.
 //
-// found=false means "no configured client has this hash" — the caller
-// reports it on the row rather than guessing a client.
-func (rc *reconcileClients) clientFor(ctx context.Context, hash string) (entry reconcileClient, found bool) {
-	if len(rc.entries) == 1 {
-		return rc.entries[0], true
-	}
+// found=false means "no configured client has this hash". probeErr is
+// non-nil when at least one client could not be asked, in which case a
+// not-found answer is incomplete and the caller should say so rather
+// than report the torrent as gone.
+func (rc *reconcileClients) clientFor(ctx context.Context, hash string) (entry reconcileClient, currentCategory string, found bool, probeErr error) {
 	key := strings.ToLower(strings.TrimSpace(hash))
 	if key == "" {
-		return reconcileClient{}, false
+		return reconcileClient{}, "", false, nil
 	}
-	if idx, ok := rc.resolved[key]; ok {
-		if idx < 0 {
-			return reconcileClient{}, false
+	if r, ok := rc.resolved[key]; ok {
+		if r.idx < 0 {
+			return reconcileClient{}, "", false, nil
 		}
-		return rc.entries[idx], true
+		return rc.entries[r.idx], r.category, true, nil
 	}
-	probeFailed := false
 	for i := range rc.entries {
-		_, ok, err := rc.entries[i].client.GetTorrent(ctx, hash)
+		t, ok, err := rc.entries[i].client.GetTorrent(ctx, hash)
 		if err != nil {
 			// Client down / auth expired. Treat as "not here" for this
 			// pass but remember that the answer is incomplete.
-			probeFailed = true
+			if probeErr == nil {
+				probeErr = fmt.Errorf("%s: %w", rc.entries[i].name, err)
+			}
 			continue
 		}
 		if ok {
-			rc.resolved[key] = i
-			return rc.entries[i], true
+			rc.resolved[key] = resolvedHash{idx: i, category: t.Category}
+			return rc.entries[i], t.Category, true, nil
 		}
 	}
 	// Only memoise a negative answer when every client actually
 	// answered. Caching "nobody has it" off the back of a transient
 	// blip on one client would mis-route every later row sharing this
 	// hash, and on a season pack that is every episode.
-	if !probeFailed {
-		rc.resolved[key] = -1
+	if probeErr == nil {
+		rc.resolved[key] = resolvedHash{idx: -1}
 	}
-	return reconcileClient{}, false
+	return reconcileClient{}, "", false, probeErr
 }
 
 // names returns the configured client display names, for summaries.

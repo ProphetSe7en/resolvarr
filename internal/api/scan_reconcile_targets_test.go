@@ -164,7 +164,7 @@ func TestReconcileClients_RoutesHashToOwningClient(t *testing.T) {
 	ctx := context.Background()
 
 	// hashA lives in the movies client and must get THAT client's category.
-	gotA, okA := rc.clientFor(ctx, hashA)
+	gotA, _, okA, _ := rc.clientFor(ctx, hashA)
 	if !okA {
 		t.Fatal("hashA: no client claimed it")
 	}
@@ -175,7 +175,7 @@ func TestReconcileClients_RoutesHashToOwningClient(t *testing.T) {
 	// hashB lives in the tv client — the regression this whole file
 	// exists for: before the fan-out it would have been sent to client
 	// #1 and silently done nothing.
-	gotB, okB := rc.clientFor(ctx, hashB)
+	gotB, _, okB, _ := rc.clientFor(ctx, hashB)
 	if !okB {
 		t.Fatal("hashB: no client claimed it")
 	}
@@ -184,7 +184,7 @@ func TestReconcileClients_RoutesHashToOwningClient(t *testing.T) {
 	}
 
 	// A hash nobody owns is reported as unmatched rather than guessed at.
-	if _, ok := rc.clientFor(ctx, "cccccccccccccccccccccccccccccccccccccccc"); ok {
+	if _, _, ok, _ := rc.clientFor(ctx, "cccccccccccccccccccccccccccccccccccccccc"); ok {
 		t.Error("unknown hash was claimed by a client")
 	}
 }
@@ -210,7 +210,7 @@ func TestReconcileClients_MemoisesLookupPerHash(t *testing.T) {
 	// A Sonarr season pack is N queue rows sharing one hash; the probe
 	// must happen once, not once per episode row.
 	for i := 0; i < 5; i++ {
-		if _, ok := rc.clientFor(ctx, hashA); !ok {
+		if _, _, ok, _ := rc.clientFor(ctx, hashA); !ok {
 			t.Fatalf("lookup %d: hashA unclaimed", i)
 		}
 	}
@@ -219,8 +219,9 @@ func TestReconcileClients_MemoisesLookupPerHash(t *testing.T) {
 	}
 }
 
-func TestReconcileClients_SingleClientSkipsProbe(t *testing.T) {
-	qa := newQbitFanoutFake(t)
+func TestReconcileClients_SingleClientStillChecksTheHash(t *testing.T) {
+	const hashA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	qa := newQbitFanoutFake(t, hashA)
 
 	cfg := core.Config{QbitInstances: []core.QbitInstance{
 		{ID: "q1", Name: "movies", URL: qa.srv.URL},
@@ -231,15 +232,38 @@ func TestReconcileClients_SingleClientSkipsProbe(t *testing.T) {
 	if apiErr != nil {
 		t.Fatalf("newReconcileClients: %v", apiErr.Message)
 	}
-	// With one client there is nothing to disambiguate, so the single-
-	// client path must stay exactly as cheap as it was before the
-	// fan-out landed: zero extra round-trips.
-	got, ok := rc.clientFor(context.Background(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	if !ok || got.name != "movies" {
-		t.Fatalf("single-client lookup = (%+v, %v), want the only client", got, ok)
+	ctx := context.Background()
+	// qBittorrent answers 200 to setCategory for a hash it doesn't
+	// have, so with one client the lookup is still what tells a torrent
+	// the user already removed apart from a real move.
+	got, cat, ok, err := rc.clientFor(ctx, hashA)
+	if !ok || err != nil || got.name != "movies" {
+		t.Fatalf("lookup = (%+v, %v, %v), want the only client", got, ok, err)
 	}
-	if n := atomic.LoadInt32(&qa.infoCalls); n != 0 {
-		t.Errorf("single-client path made %d probe calls, want 0", n)
+	if cat != "pre" {
+		t.Errorf("current category = %q, want the torrent's own (pre)", cat)
+	}
+	if _, _, ok, _ := rc.clientFor(ctx, "cccccccccccccccccccccccccccccccccccccccc"); ok {
+		t.Error("hash the only client doesn't have was reported as found")
+	}
+}
+
+func TestReconcileClients_UnreachableClientIsNotReportedAsGone(t *testing.T) {
+	cfg := core.Config{QbitInstances: []core.QbitInstance{
+		{ID: "q1", Name: "movies", URL: "http://127.0.0.1:1"},
+	}}
+	rc, apiErr := newReconcileClients(cfg, []scanReconcileTarget{
+		{QbitInstanceID: "q1", PostCategory: "movies-done"},
+	})
+	if apiErr != nil {
+		t.Fatalf("newReconcileClients: %v", apiErr.Message)
+	}
+	_, _, ok, err := rc.clientFor(context.Background(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if ok || err == nil {
+		t.Fatalf("lookup against a dead client = (found %v, err %v), want not found WITH an error", ok, err)
+	}
+	if _, cached := rc.resolved["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]; cached {
+		t.Error("an incomplete negative answer was memoised")
 	}
 }
 

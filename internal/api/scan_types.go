@@ -535,6 +535,10 @@ type scanReconcileItem struct {
 	// from the run config, so the row carries it.
 	QbitInstanceName string `json:"qbitInstanceName,omitempty"`
 	QbitCategory     string `json:"qbitCategory,omitempty"`
+	// AlreadyInCategory is set on apply when the torrent was already in
+	// the target category (moved by an earlier run, not yet removed by
+	// the user's cleanup), so nothing was changed this time.
+	AlreadyInCategory bool `json:"alreadyInCategory,omitempty"`
 }
 
 // scanReconcileTarget is one download client a reconcile apply may act

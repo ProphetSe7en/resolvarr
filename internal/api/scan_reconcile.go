@@ -123,11 +123,13 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 	seriesHistory := map[int][]arr.HistoryRecord{}
 	movieHistory := map[int][]arr.HistoryRecord{}
 	manualImport := map[string][]arr.ManualImportItem{} // downloadId -> per-file import evaluation
-	// One category change per downloadId — a season pack is N queue rows
-	// sharing one hash. Value is the row detail of the change so the
-	// follow-up rows report the same client + category rather than a
-	// bare "recategorised" with no context.
-	categoryDone := map[string]reconcileClient{}
+	// Pass 1 classifies every stuck row; pass 2 (below) applies. The
+	// split exists because a Sonarr season pack is N queue rows sharing
+	// one torrent, and the verdict is per EPISODE while the category
+	// change is per TORRENT — the apply needs every row of a pack in hand
+	// before it can decide whether moving that torrent is safe.
+	var rows []scanReconcileItem
+	var verdicts []engine.StuckVerdict
 
 	for _, q := range queue {
 		// Stuck = the download finished but Arr hasn't imported it.
@@ -306,44 +308,100 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 			resp.Totals.ReconcileNeedsAttention++
 		}
 
+		rows = append(rows, row)
+		verdicts = append(verdicts, verdict)
+	}
+
+	// packHasNonRedundant marks every downloadId with at least one row
+	// that is NOT redundant. A season pack can be redundant for one
+	// episode (a better file is already on disk) and still be the only
+	// copy of another; moving the torrent to the cleanup category on the
+	// first redundant row would let the user's cleanup delete the episode
+	// that still needs importing. The conservative "act on all redundant"
+	// path therefore only moves a pack when every one of its rows is
+	// redundant. An explicit per-download selection is the user's call
+	// and is honoured as-is.
+	packHasNonRedundant := map[string]bool{}
+	for i := range rows {
+		if verdicts[i] != engine.StuckRedundant {
+			packHasNonRedundant[rows[i].DownloadID] = true
+		}
+	}
+
+	// One category change per downloadId — a season pack is N queue rows
+	// sharing one hash. Value is the outcome of the change so the
+	// follow-up rows report the same client + category (or the same
+	// failure) rather than a bare status with no context.
+	type categoryOutcome struct {
+		status   string
+		name     string
+		category string
+		err      string
+		already  bool
+	}
+	categoryDone := map[string]categoryOutcome{}
+
+	for i := range rows {
+		row := &rows[i]
 		// Apply: an explicit per-row selection acts on that row whatever
 		// its verdict (the user's call — they can move a needs-attention
-		// one too). "Apply all" from the modal (no selection) stays
-		// conservative: redundant only.
-		shouldAct := verdict == engine.StuckRedundant
+		// one too). "Apply all" from the modal (no selection) and the
+		// webhook / schedule paths stay conservative: redundant only, and
+		// never a pack that still holds a non-redundant episode.
+		shouldAct := verdicts[i] == engine.StuckRedundant && !packHasNonRedundant[row.DownloadID]
 		if len(applySel) > 0 {
 			shouldAct = applySel[row.DownloadID]
 		}
-		if isApply && shouldAct {
-			if done, already := categoryDone[row.DownloadID]; already {
-				row.Status = "recategorised"
-				row.QbitInstanceName = done.name
-				row.QbitCategory = done.category
-			} else if target, ok := qclients.clientFor(ctx, row.DownloadID); !ok {
-				// Nobody owns this hash. Most often the user already
-				// removed the torrent by hand, or the download lives in
-				// a client they didn't tick for this run — either way,
-				// say so instead of failing against an arbitrary client.
-				row.Status = "failed"
-				row.Error = "not found in any selected download client (" + strings.Join(qclients.names(), ", ") + ")"
-				resp.Totals.ReconcileFailed++
-			} else if err := target.client.SetTorrentCategory(ctx, row.DownloadID, target.category); err != nil {
-				row.Status = "failed"
-				row.Error = err.Error()
-				row.QbitInstanceName = target.name
+		if !isApply || !shouldAct {
+			continue
+		}
+		if done, already := categoryDone[row.DownloadID]; already {
+			row.Status = done.status
+			row.QbitInstanceName = done.name
+			row.QbitCategory = done.category
+			row.Error = done.err
+			row.AlreadyInCategory = done.already
+			continue
+		}
+		var out categoryOutcome
+		target, currentCat, found, probeErr := qclients.clientFor(ctx, row.DownloadID)
+		switch {
+		case !found && probeErr != nil:
+			// A client didn't answer, so "nobody has it" isn't known —
+			// say that rather than claiming the torrent is gone.
+			out = categoryOutcome{status: "failed", err: "could not check the download clients: " + probeErr.Error()}
+			resp.Totals.ReconcileFailed++
+		case !found:
+			// Nobody owns this hash. Most often the user already removed
+			// the torrent by hand, or the download lives in a client they
+			// didn't list for this run — either way, say so instead of
+			// failing against an arbitrary client.
+			out = categoryOutcome{status: "failed", err: "not found in any selected download client (" + strings.Join(qclients.names(), ", ") + ")"}
+			resp.Totals.ReconcileFailed++
+		case currentCat == target.category:
+			// Already moved by an earlier run whose cleanup hasn't removed
+			// it yet. Re-setting it would be a no-op that still counts as
+			// "moved" — and on the webhook path that means a fresh
+			// notification on every import of this series.
+			out = categoryOutcome{status: "recategorised", name: target.name, category: target.category, already: true}
+		default:
+			if err := target.client.SetTorrentCategory(ctx, row.DownloadID, target.category); err != nil {
+				out = categoryOutcome{status: "failed", name: target.name, err: err.Error()}
 				resp.Totals.ReconcileFailed++
 			} else {
-				categoryDone[row.DownloadID] = target
-				row.Status = "recategorised"
-				row.QbitInstanceName = target.name
-				row.QbitCategory = target.category
+				out = categoryOutcome{status: "recategorised", name: target.name, category: target.category}
 				resp.Totals.ReconcileRecategorised++
 			}
 		}
-
-		resp.Reconcile = append(resp.Reconcile, row)
+		categoryDone[row.DownloadID] = out
+		row.Status = out.status
+		row.QbitInstanceName = out.name
+		row.QbitCategory = out.category
+		row.Error = out.err
+		row.AlreadyInCategory = out.already
 	}
 
+	resp.Reconcile = rows
 	return resp, nil
 }
 
