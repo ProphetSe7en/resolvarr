@@ -4985,10 +4985,7 @@
         </div>
       </div>
 
-      <!-- Extra download clients. This Arr's queue mixes downloads from
-           every client attached to it, so a run pinned to one client
-           leaves the others' stuck downloads behind. Each extra client
-           gets its own category because names differ per client. -->
+      <!-- Extra download clients, each with its own category. -->
       <template x-if="(reconcileExtraTargets || []).length > 0">
         <div class="form-group">
           <label class="label">More download clients</label>
@@ -10309,13 +10306,7 @@
         </div>
       </template>
 
-      <!-- ===== Stuck downloads step =====
-           Inline per-rule config for WebhookFnStuckReconcile — the
-           automatic version of Library scan -> Stuck downloads. The
-           targets list is the reason this step exists as its own
-           editor: one Arr commonly feeds from several qBittorrent
-           clients and its queue mixes them, so each client needs its
-           own row + target category. -->
+      <!-- ===== Stuck downloads step (WebhookFnStuckReconcile) ===== -->
       <template x-if="ruleEditor.open && editingRule && ruleEditorCurrentSection() === 'stuckreconcile'">
         <div x-init="stuckReconcileSeedStep()">
           <button class="help-toggle" :class="helpOpen.ruleStuckReconcile && 'is-open'" @click="helpOpen.ruleStuckReconcile = !helpOpen.ruleStuckReconcile" style="margin-bottom:12px">
@@ -10324,22 +10315,16 @@
           </button>
           <div class="help-panel" x-show="helpOpen.ruleStuckReconcile" x-cloak>
             <div class="help-section">
-              <h4>What does this fix?</h4>
-              <p>Sonarr/Radarr sometimes grabs two releases of the same thing seconds apart. The better one imports; the other one finishes downloading and then just sits in the queue forever, still on its pre-import category, because there is nothing left for it to import into. Over months that quietly fills your download client with dead torrents.</p>
-              <p>This is the same check the <strong>Library scan &rarr; Stuck downloads</strong> page does, run automatically after every import instead of when you remember to press the button.</p>
-            </div>
-            <div class="help-section">
-              <h4>What exactly does it do?</h4>
-              <p>For each finished-but-never-imported download it asks: does the episode or movie <em>already</em> have a file that scores as good or better? If yes, that download is redundant and gets moved to the category you pick below &mdash; where your own qBittorrent cleanup rule removes it. If no (nothing imported, or the stuck one is actually the better release), it is left completely alone for you to look at.</p>
-              <p><strong>Nothing is ever deleted.</strong> The only change made is the torrent&rsquo;s category.</p>
+              <h4>What it does</h4>
+              <p>When two releases of the same thing are grabbed, the better one imports and the other sits in the queue forever. After each import this checks that movie or series: a finished, never-imported download is moved to your cleanup category only if the file already on disk scores as good or better. Anything else is left for you on <strong>Library scan &rarr; Stuck downloads</strong>. <strong>Nothing is ever deleted</strong>; only the category changes.</p>
             </div>
             <div class="help-section">
               <h4>Several download clients</h4>
-              <p>List every qBittorrent client this Sonarr/Radarr downloads through. Each gets its own target category, because category names differ per client. Every stuck download is matched to the client that actually holds it &mdash; matching is by torrent hash, so renaming a client changes nothing.</p>
+              <p>Add a row per qBittorrent client this <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> uses, each with its own category. Downloads are matched to clients by torrent hash.</p>
             </div>
             <div class="help-section">
-              <h4>When does it run?</h4>
-              <p>On every <strong>On File Import</strong> and <strong>On File Upgrade</strong> event, in the background a minute later, so it never holds up Sonarr/Radarr (Connect notifications block the import until they get a reply). The delay also gives the Arr time to settle the losing download into its stuck state &mdash; sweeping instantly would find nothing.</p>
+              <h4>When it runs</h4>
+              <p>On <strong>On File Import</strong> / <strong>On File Upgrade</strong>, in the background after the delay below.</p>
             </div>
           </div>
 
@@ -10391,7 +10376,7 @@
               <span style="font-size:11px;color:var(--text-secondary);margin-left:8px">One row per qBittorrent client this <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> downloads through.</span>
             </div>
             <div style="font-size:11px;color:var(--text-secondary);margin-top:6px;line-height:1.5;max-width:560px">
-              The category is where redundant downloads land so your own qBittorrent cleanup can remove them &mdash; resolvarr never deletes a torrent itself. Type it exactly as it appears in qBittorrent: a category that doesn't exist there is refused when the rule runs. It is saved with the rule, so you only enter it once. The empty field suggests the post-import category from <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>'s download-client config, but nothing is filled in for you: that category belongs to one of its download clients, and resolvarr can't tell which.
+              Type each category exactly as it is in qBittorrent; your own cleanup on it removes the downloads. The placeholder shows <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>'s post-import category as a hint.
             </div>
           </div>
 
@@ -10401,11 +10386,9 @@
             </div>
           </template>
 
-          <!-- Scope is fixed, not a choice: an adapter only ever acts on
-               the item its event names. Sweeping the whole queue is the
-               Stuck downloads page's job, or a reconcile schedule's. -->
+          
           <div style="font-size:11px;color:var(--text-secondary);margin-top:14px;padding-top:12px;border-top:1px solid var(--border-subtle);line-height:1.5;max-width:560px">
-            Each fire checks only the <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'series' : 'movie'"></span> that was just imported &mdash; the losers of the race it won. A whole season arriving at once is collapsed into a single check rather than one per episode. To sweep the entire queue, use <strong>Run reconcile</strong> on the Stuck downloads page.
+            Only the <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'series' : 'movie'"></span> that was just imported is checked. For the whole queue, use <strong>Run reconcile</strong> on the Stuck downloads page.
           </div>
 
           <!-- Background-defer delay -->
@@ -10418,7 +10401,7 @@
               <span style="font-size:11px;color:var(--text-secondary)">Default: 60 &middot; Range: 5&ndash;600 seconds</span>
             </div>
             <div style="font-size:11px;color:var(--text-secondary);line-height:1.5;max-width:560px">
-              Connect notifications hold up the import until they get a reply, so the sweep runs later in the background and the reply is instant. The wait also lets <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> finish processing the import and settle the losing download into its stuck state &mdash; check too early and there is nothing to find yet.
+              Gives <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> time to settle the losing download, and keeps the webhook reply instant.
             </div>
           </div>
         </div>

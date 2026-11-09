@@ -98,10 +98,7 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 		}
 	}
 
-	// Resolve the download clients once for apply. The user picks one or
-	// more (qBit instance, target category) pairs per run — no hidden
-	// global state. Several clients are supported because one Arr's
-	// queue mixes downloads from every client attached to it.
+	// The download clients to act on, with a target category each.
 	var qclients *reconcileClients
 	if isApply {
 		targets := reconcileTargetsFromRequest(req)
@@ -124,17 +121,13 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 	seriesHistory := map[int][]arr.HistoryRecord{}
 	movieHistory := map[int][]arr.HistoryRecord{}
 	manualImport := map[string][]arr.ManualImportItem{} // downloadId -> per-file import evaluation
-	// Pass 1 classifies every stuck row; pass 2 (below) applies. The
-	// split exists because a Sonarr season pack is N queue rows sharing
-	// one torrent, and the verdict is per EPISODE while the category
-	// change is per TORRENT — the apply needs every row of a pack in hand
-	// before it can decide whether moving that torrent is safe.
+	// Pass 1 classifies every row, pass 2 applies: verdicts are per
+	// episode but a move is per torrent, so all rows of a pack must be
+	// known before moving it.
 	var rows []scanReconcileItem
 	var verdicts []engine.StuckVerdict
-	// existingScoreUnknown[i]: rows[i]'s target has a file but its score
-	// couldn't be read, so the classifier compared against 0. A stuck
-	// release scoring below 0 would then look redundant against a file
-	// that may well score lower still.
+	// existingScoreUnknown[i]: the on-disk file's score couldn't be read
+	// and counted as 0.
 	var existingScoreUnknown []bool
 
 	for _, q := range queue {
@@ -145,9 +138,7 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 		if q.TrackedDownloadState != "importPending" && q.TrackedDownloadState != "importBlocked" {
 			continue
 		}
-		// Optional narrowing to one movie / series. The webhook adapter
-		// fires per import event and by default only wants the losers of
-		// THAT race; the Library scan page never narrows.
+		// The webhook narrows the sweep to the imported movie/series.
 		if req.ReconcileOnlyMovieID > 0 && q.MovieID != req.ReconcileOnlyMovieID {
 			continue
 		}
@@ -173,15 +164,8 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 		switch appType {
 		case "radarr":
 			row.MovieID = q.MovieID
-			// Narrowed runs (the webhook adapter) fetch just the one
-			// movie. Reading the whole library here would break
-			// Architectural rule 2 in webhook_adapters.go — a 24-episode
-			// season pack would turn into 24 full-library reads, the
-			// exact scaling trap that rule exists to prevent.
-			//
-			// Un-narrowed runs (Library scan page, reconcile schedules)
-			// keep the single bulk read: that is the deliberate batch
-			// model, and one list beats N per-movie fetches there.
+			// Narrowed runs fetch only that movie (adapter rule 2); full
+			// runs read the library once.
 			var (
 				it    arr.Item
 				found bool
@@ -193,13 +177,10 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 					radarrOne[q.MovieID] = fetched
 					it, found = fetched, true
 				} else if !errors.Is(ferr, arr.ErrItemNotFound) {
-					// Radarr unreachable / erroring: fail the sweep so it
-					// is reported, rather than recording a quiet run.
 					return nil, newAPIError(502, "arr get movie: "+ferr.Error())
 				}
-				// A movie that vanished between the queue read and now
-				// just loses its label; the row is classified as needing
-				// attention (no file to compare against).
+				// A movie deleted meanwhile has no file to compare
+				// against, so its row needs attention.
 			} else {
 				if radarrItems == nil {
 					items, lerr := client.ListItems(ctx, "radarr")
@@ -329,106 +310,42 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 		existingScoreUnknown = append(existingScoreUnknown, scoreUnknown)
 	}
 
-	// packHasNonRedundant marks every downloadId with at least one row
-	// that is NOT redundant. A season pack can be redundant for one
-	// episode (a better file is already on disk) and still be the only
-	// copy of another; moving the torrent to the cleanup category on the
-	// first redundant row would let the user's cleanup delete the episode
-	// that still needs importing. The conservative "act on all redundant"
-	// path therefore only moves a pack when every one of its rows is
-	// redundant. An explicit per-download selection is the user's call
-	// and is honoured as-is.
-	packHasNonRedundant := map[string]bool{}
-	// The queue is read as a single page of arr.QueuePageSize rows. A
-	// full page may be truncated, and a truncated page can hold only
-	// part of a pack — the part whose rows are all redundant — so the
-	// rule above can't be checked. Don't move anything automatically
-	// then; an explicit selection still works.
+	// Downloads the automatic paths (no selection: "Run + move
+	// redundant", webhook, schedules) must not move. A torrent is moved
+	// as a whole, so one row is enough to block it:
+	//   - a row that isn't redundant: a pack can still be the only copy
+	//     of an episode;
+	//   - a row judged on an unknown score (no import evaluation, or the
+	//     on-disk file's score unread), which can make a better release
+	//     look redundant.
+	// A full queue page may be cut off mid-pack, so it blocks everything.
+	// An explicit selection is the user's call and always applies.
 	queueMayBeTruncated := len(queue) >= arr.QueuePageSize
-	// packScoreUnknown marks downloads where either side of the score
-	// comparison wasn't read for some row: Sonarr/Radarr's import
-	// evaluation (the score the file would actually import at — the row
-	// fell back to the grab score, which can understate it), or the
-	// score of the file already on disk (taken as 0). Either can make a
-	// better release look redundant — fine to show, not safe to act on
-	// without the user's say-so.
-	packScoreUnknown := map[string]bool{}
+	noAutoMove := map[string]bool{}
 	for i := range rows {
-		if verdicts[i] != engine.StuckRedundant {
-			packHasNonRedundant[rows[i].DownloadID] = true
-		}
-		if !rows[i].ImportScoreKnown || existingScoreUnknown[i] {
-			packScoreUnknown[rows[i].DownloadID] = true
+		if verdicts[i] != engine.StuckRedundant || !rows[i].ImportScoreKnown || existingScoreUnknown[i] {
+			noAutoMove[rows[i].DownloadID] = true
 		}
 	}
 
-	// One category change per downloadId — a season pack is N queue rows
-	// sharing one hash. Value is the outcome of the change so the
-	// follow-up rows report the same client + category (or the same
-	// failure) rather than a bare status with no context.
-	type categoryOutcome struct {
-		status   string
-		name     string
-		category string
-		err      string
-		already  bool
-	}
+	// One category change per download; later rows of the same pack copy
+	// its outcome.
 	categoryDone := map[string]categoryOutcome{}
 
 	for i := range rows {
 		row := &rows[i]
-		// Apply: an explicit per-row selection acts on that row whatever
-		// its verdict (the user's call — they can move a needs-attention
-		// one too). "Apply all" from the modal (no selection) and the
-		// webhook / schedule paths stay conservative: redundant only, and
-		// never a pack that still holds a non-redundant episode.
-		shouldAct := verdicts[i] == engine.StuckRedundant && !packHasNonRedundant[row.DownloadID] && !queueMayBeTruncated && !packScoreUnknown[row.DownloadID]
+		shouldAct := !queueMayBeTruncated && !noAutoMove[row.DownloadID]
 		if len(applySel) > 0 {
 			shouldAct = applySel[row.DownloadID]
 		}
 		if !isApply || !shouldAct {
 			continue
 		}
-		if done, already := categoryDone[row.DownloadID]; already {
-			row.Status = done.status
-			row.QbitInstanceName = done.name
-			row.QbitCategory = done.category
-			row.Error = done.err
-			row.AlreadyInCategory = done.already
-			continue
+		out, done := categoryDone[row.DownloadID]
+		if !done {
+			out = applyStuckCategory(ctx, qclients, row.DownloadID, &resp.Totals)
+			categoryDone[row.DownloadID] = out
 		}
-		var out categoryOutcome
-		target, currentCat, found, probeErr := qclients.clientFor(ctx, row.DownloadID)
-		switch {
-		case !found && probeErr != nil:
-			// A client didn't answer (so "nobody has it" isn't known), or
-			// several clients hold the torrent (so which copy to move
-			// isn't known) — say which, rather than guessing.
-			out = categoryOutcome{status: "failed", err: probeErr.Error()}
-			resp.Totals.ReconcileFailed++
-		case !found:
-			// Nobody owns this hash. Most often the user already removed
-			// the torrent by hand, or the download lives in a client they
-			// didn't list for this run — either way, say so instead of
-			// failing against an arbitrary client.
-			out = categoryOutcome{status: "failed", err: "not found in any selected download client (" + strings.Join(qclients.names(), ", ") + ")"}
-			resp.Totals.ReconcileFailed++
-		case currentCat == target.category:
-			// Already moved by an earlier run whose cleanup hasn't removed
-			// it yet. Re-setting it would be a no-op that still counts as
-			// "moved" — and on the webhook path that means a fresh
-			// notification on every import of this series.
-			out = categoryOutcome{status: "recategorised", name: target.name, category: target.category, already: true}
-		default:
-			if err := target.client.SetTorrentCategory(ctx, row.DownloadID, target.category); err != nil {
-				out = categoryOutcome{status: "failed", name: target.name, err: err.Error()}
-				resp.Totals.ReconcileFailed++
-			} else {
-				out = categoryOutcome{status: "recategorised", name: target.name, category: target.category}
-				resp.Totals.ReconcileRecategorised++
-			}
-		}
-		categoryDone[row.DownloadID] = out
 		row.Status = out.status
 		row.QbitInstanceName = out.name
 		row.QbitCategory = out.category
@@ -438,6 +355,39 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 
 	resp.Reconcile = rows
 	return resp, nil
+}
+
+// categoryOutcome is the result of one download's category change.
+type categoryOutcome struct {
+	status   string // "recategorised" or "failed"
+	name     string // download client
+	category string
+	err      string
+	already  bool // was already in the target category; nothing changed
+}
+
+// applyStuckCategory moves one download to its client's target category
+// and counts the result in totals.
+func applyStuckCategory(ctx context.Context, clients *reconcileClients, hash string, totals *scanTotals) categoryOutcome {
+	target, currentCat, found, err := clients.clientFor(ctx, hash)
+	switch {
+	case err != nil:
+		totals.ReconcileFailed++
+		return categoryOutcome{status: "failed", err: err.Error()}
+	case !found:
+		// Usually removed by hand, or in a client this run doesn't list.
+		totals.ReconcileFailed++
+		return categoryOutcome{status: "failed", err: "not found in any selected download client (" + strings.Join(clients.names(), ", ") + ")"}
+	case currentCat == target.category:
+		// Moved by an earlier run, not cleaned up yet: not a new move.
+		return categoryOutcome{status: "recategorised", name: target.name, category: target.category, already: true}
+	}
+	if err := target.client.SetTorrentCategory(ctx, hash, target.category); err != nil {
+		totals.ReconcileFailed++
+		return categoryOutcome{status: "failed", name: target.name, err: err.Error()}
+	}
+	totals.ReconcileRecategorised++
+	return categoryOutcome{status: "recategorised", name: target.name, category: target.category}
 }
 
 // reconcileGrabDates returns (stuckGrabDate, importedGrabDate) as RFC3339

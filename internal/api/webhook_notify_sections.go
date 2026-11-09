@@ -376,11 +376,8 @@ func appendTaggedInSection(fields []agents.PayloadField, primary, mirroredSecond
 // appendTagSection renders the release-group / filter-only tag
 // outcome. Shown on Download events; on delete events the Tag-RG
 // strip is folded into the File-Delete section (see
-// joinLinesWithinField joins lines with newlines, dropping whole lines
-// from the end (with an "…and N more" marker) so the result fits a
-// Discord field value. Long release titles times ten moves can pass the
-// 1024-character cap, and Discord rejects the whole embed when one field
-// does.
+// joinLinesWithinField joins lines, dropping trailing ones behind an
+// "…and N more" marker to stay under Discord's 1024-char field limit.
 func joinLinesWithinField(lines []string) string {
 	const maxField = 1000 // same headroom as truncateField
 	const markerRoom = 24 // room kept for "\n…and N more"
@@ -923,12 +920,8 @@ func appendQbitCategoryFixSection(fields []agents.PayloadField, d *QbitCategoryF
 	return fields
 }
 
-// appendStuckReconcileSection renders the stuck-downloads sweep result.
-// Emits nothing when the sweep neither moved nor failed to move
-// anything — a rule firing on every import would otherwise add a
-// "0 moved" row to every notification, which is exactly the noise the
-// Changed contract exists to prevent. A failure does render: a move
-// that keeps failing must not stay invisible.
+// appendStuckReconcileSection renders the sweep result. Nothing when
+// nothing moved or failed, so routine imports stay quiet.
 func appendStuckReconcileSection(fields []agents.PayloadField, d *StuckReconcileDetail) []agents.PayloadField {
 	if d == nil {
 		return fields
@@ -947,8 +940,7 @@ func appendStuckReconcileSection(fields []agents.PayloadField, d *StuckReconcile
 		Value:  fmt.Sprintf("%d of %d stuck", d.Moved, d.Stuck),
 		Inline: true,
 	})
-	// One line per move: "Release — client → category". Capped upstream
-	// in collectStuckReconcileMoves.
+	// One line per move: "Release — client → category".
 	if len(d.Moves) > 0 {
 		lines := make([]string, 0, len(d.Moves))
 		for _, m := range d.Moves {

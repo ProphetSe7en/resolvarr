@@ -3320,9 +3320,7 @@ function app() {
       if (id !== this.reconcileLastInstanceId) {
         this.reconcilePostCategory = '';
         this.reconcilePreCategory = '';
-        // Extra download clients are per-run choices about THIS Arr's
-        // queue. Switching Arr makes them meaningless, so clear rather
-        // than carry them over.
+        // Extra clients belong to the previous Arr's run; clear them.
         this.reconcileExtraTargets = [];
         // Prefer the qBit instance locked to this Arr; else fall through
         // to the single-instance auto-pick below.
@@ -3366,8 +3364,7 @@ function app() {
         if (mode === 'apply') {
           body.reconcileQbitInstanceId = this.reconcileQbitInstanceId;
           body.reconcilePostCategory = this.reconcilePostCategory.trim();
-          // Every configured download client, so a queue mixing clients
-          // gets fully swept instead of only the primary one's share.
+          // All configured clients: one queue mixes downloads from each.
           body.reconcileTargets = this.reconcileTargetsPayload();
           // empty reconcileApplyItems → backend acts on ALL redundant
         }
@@ -3400,18 +3397,13 @@ function app() {
       }
     },
 
-    // ---- Extra download clients on the Run reconcile modal ----
-    // The modal's main picker is client #1; these rows are #2..N. One
-    // Sonarr/Radarr often feeds from several qBittorrent clients and its
-    // queue mixes downloads from all of them, so a run configured with a
-    // single client silently leaves the others' stuck downloads behind.
+    // ---- Run reconcile modal: extra download clients (rows 2..N) ----
 
     reconcileAddExtraTarget() {
       if (!Array.isArray(this.reconcileExtraTargets)) this.reconcileExtraTargets = [];
       const used = new Set([this.reconcileQbitInstanceId, ...this.reconcileExtraTargets.map(t => t.qbitInstanceId)].filter(Boolean));
       const free = (this.qbitInstances || []).find(q => !used.has(q.id));
-      // Same one-row-per-client rule as the webhook step — no free client
-      // means a new row would have nothing to point at.
+      // One row per client; no free client, no new row.
       if (!free) return;
       this.reconcileExtraTargets.push({ qbitInstanceId: free.id, postCategory: '' });
     },
@@ -3421,15 +3413,13 @@ function app() {
       this.reconcileExtraTargets.splice(idx, 1);
     },
 
-    // How many more clients can be added: never more rows than there are
-    // qBit instances (duplicates are a backend error, not a valid run).
+    // At most one row per qBit instance (and 12).
     reconcileCanAddExtraTarget() {
       const rows = 1 + (this.reconcileExtraTargets || []).length;
       return rows < (this.qbitInstances || []).length && rows < 12;
     },
 
-    // The reconcileTargets payload: the modal's main pair plus every
-    // filled-in extra row. Returned in the wire shape the backend reads.
+    // reconcileTargets payload: the main pair plus filled-in extra rows.
     reconcileTargetsPayload() {
       const out = [];
       if (this.reconcileQbitInstanceId && this.reconcilePostCategory.trim()) {
@@ -3443,8 +3433,7 @@ function app() {
       return out;
     },
 
-    // Validation shared by the modal's Run-apply and the result panel's
-    // Apply selected. Returns '' when the targets are usable.
+    // Shared by Run-apply and Apply selected; '' when valid.
     reconcileTargetsError() {
       if (!this.reconcileQbitInstanceId) return 'Pick the qBittorrent instance';
       if (!this.reconcilePostCategory.trim()) return 'Enter the target category';
@@ -3461,19 +3450,15 @@ function app() {
       return '';
     },
 
-    // Display name for a qBit instance id — used by the result rows to
-    // say which client a download was actually moved on.
+    // Display name for a qBit instance id.
     qbitInstanceName(id) {
       const q = (this.qbitInstances || []).find(x => x.id === id);
       return q ? q.name : '';
     },
 
-    // Which downloads start ticked after a run: those whose rows are ALL
-    // redundant. A season pack is one row per episode sharing a torrent,
-    // and a pack that is redundant for one episode can still be the only
-    // copy of another — pre-ticking it would make "Move selected" hand
-    // that episode to the cleanup. Same rule the backend's own
-    // move-all-redundant path follows; the user can still tick it.
+    // Pre-tick downloads whose rows are all redundant: a pack that is
+    // still the only copy of an episode stays unticked (same rule as the
+    // backend's automatic path). The user can still tick it.
     reconcileDefaultSelection(rows) {
       const allRedundant = {};
       for (const it of (rows || [])) {
@@ -10764,9 +10749,7 @@ function app() {
       // 'combined' + combinedModes=['tag']. Save-time persists the
       // new shape; the chain runner / scheduler-runner already accept
       // both shapes via has() → r.mode === m || combinedModes.includes(m).
-      // Reconcile (stuck downloads) is the exception: it is a standalone
-      // schedule mode, not a chain step — the combined runner has no
-      // reconcile phase and the backend rejects it in combinedModes.
+      // reconcile stays a standalone mode (not a combined phase).
       if (copy.mode && copy.mode !== 'combined' && copy.mode !== 'reconcile') {
         const legacyMode = copy.mode;
         copy.mode = 'combined';
@@ -12461,12 +12444,7 @@ function app() {
           preImportCategorySnapshot: '',
           postImportCategorySnapshot: '',
         },
-        // Stuck downloads — the automatic version of the Library scan
-        // action. targets is a LIST so one rule can reconcile several
-        // download clients; seeded with one blank row so the step
-        // renders a form rather than an empty state. deferSeconds
-        // matches the backend default (give the Arr time to settle the
-        // losing queue rows before sweeping).
+        // Stuck downloads: one target row per qBit client; starts with a blank row.
         stuckReconcile: {
           targets: [{ qbitInstanceId: '', postCategory: '' }],
           deferSeconds: 60,
@@ -12745,12 +12723,7 @@ function app() {
       return '';
     },
 
-    // ---- Stuck downloads wizard step helpers ----
-    // The step edits editingRule.stuckReconcile.targets — one row per
-    // download client, each with its own target category. A list rather
-    // than a single picker because one Sonarr/Radarr commonly feeds from
-    // several qBittorrent clients and its queue mixes them, so a
-    // one-client rule would silently skip the others' stuck downloads.
+    // ---- Stuck downloads wizard step (editingRule.stuckReconcile.targets) ----
 
     stuckReconcileTargets() {
       const sr = this.editingRule && this.editingRule.stuckReconcile;
@@ -12764,10 +12737,7 @@ function app() {
       if (!sr) return;
       if (!Array.isArray(sr.targets)) sr.targets = [];
       if (sr.targets.length >= 12) return; // mirrors backend maxStuckReconcileTargets
-      // One row per client: with every client already spoken for there is
-      // nothing a new row could be set to, so it would just be a dead row
-      // the user has to delete. The template disables the button at the
-      // same point; this is the guard for anything that calls in directly.
+      // One row per client: nothing to add once every client is used.
       const next = this.stuckReconcileNextUnusedQbit();
       if (!next) return;
       sr.targets.push({ qbitInstanceId: next, postCategory: '' });
@@ -12777,28 +12747,21 @@ function app() {
       const sr = this.editingRule && this.editingRule.stuckReconcile;
       if (!sr || !Array.isArray(sr.targets)) return;
       sr.targets.splice(idx, 1);
-      // Never leave the step with zero rows — an empty list reads as
-      // "nothing to configure" when the truth is "you must configure
-      // one". Keep a blank row so the form stays self-explanatory.
+      // Keep one blank row so the form never looks optional.
       if (sr.targets.length === 0) {
         sr.targets.push({ qbitInstanceId: '', postCategory: '' });
       }
     },
 
-    // First qBit instance not already claimed by another row — so
-    // "Add download client" on a two-client setup lands on the one the
-    // user obviously meant instead of a duplicate the backend rejects.
+    // First qBit instance no row uses yet.
     stuckReconcileNextUnusedQbit() {
       const used = new Set(this.stuckReconcileTargets().map(t => t.qbitInstanceId).filter(Boolean));
       const free = (this.qbitInstances || []).find(q => !used.has(q.id));
       return free ? free.id : '';
     },
 
-    // Seeds the first row from the rule's Arr when the user lands on the
-    // step with nothing filled in: the Arr's own default qBit instance
-    // (or the only one configured) plus the post-import category read
-    // off the Arr's download-client config. Best-effort — a failure just
-    // leaves the fields for the user to fill.
+    // Pre-selects the first row's client (the Arr's default or the only
+    // one) and loads the category hint.
     async stuckReconcileSeedStep() {
       const r = this.editingRule;
       const sr = r && r.stuckReconcile;
@@ -12811,12 +12774,8 @@ function app() {
         first.qbitInstanceId = this.defaultQbitForArr(r.instanceId)
           || ((this.qbitInstances || []).length === 1 ? this.qbitInstances[0].id : '');
       }
-      // Category hint only, never a value. The Arr reports the post-
-      // import category of ITS first qBittorrent download client, and
-      // there is no reliable way to tell which resolvarr client that is
-      // (the Arr may have several, of which resolvarr knows only some).
-      // So it is shown as a placeholder the user can adopt, and the
-      // field stays empty until they type a category themselves.
+      // The Arr's post-import category is only a placeholder hint: it
+      // belongs to one of the Arr's clients and we can't tell which.
       this.stuckReconcileCategoryHint = '';
       if (!r.instanceId) return;
       try {
@@ -12828,9 +12787,7 @@ function app() {
       } catch (e) { /* best-effort hint */ }
     },
 
-    // Inline-warning string for the Stuck downloads step. Empty means
-    // the form is valid; non-empty is rendered inline AND gates Next,
-    // mirroring qbitCategoryFixWarning's contract.
+    // Inline warning for the step; non-empty also blocks Next.
     stuckReconcileWarning() {
       const sr = this.editingRule && this.editingRule.stuckReconcile;
       if (!sr) return '';
@@ -13123,9 +13080,7 @@ function app() {
         const w = this.qbitCategoryFixWarning();
         if (w) return w;
       }
-      // Stuck downloads — backend rejects on zero targets, an unknown
-      // or duplicated qBit instance, or a missing category. Same
-      // canonical reason the inline warning shows.
+      // Stuck downloads: same checks as the backend.
       if (step === 'stuckreconcile' && this.ruleAffectsStuckReconcile()) {
         const w = this.stuckReconcileWarning();
         if (w) return w;
@@ -13447,8 +13402,7 @@ function app() {
       if (this.ruleAffectsPlexSync() && r.plexSync) body.plexSync = JSON.parse(JSON.stringify(r.plexSync));
       // TBA refresh — Sonarr-only file-rename phase, config in Review.
       if (this.ruleAffectsTbaRefresh() && r.tbaRefresh) body.tbaRefresh = JSON.parse(JSON.stringify(r.tbaRefresh));
-      // Reconcile has no wizard step yet; echo the saved snapshot so an
-      // edit (rename, cron) keeps its download clients + categories.
+      // No wizard step for reconcile yet: send the saved snapshot back.
       if (r.mode === 'reconcile' && r.reconcile) body.reconcile = JSON.parse(JSON.stringify(r.reconcile));
       this.ruleEditor.busy = true;
       try {
@@ -13581,12 +13535,9 @@ function app() {
       }
       if (o.fnStuckReconcile && r.stuckReconcile) {
         const sr = JSON.parse(JSON.stringify(r.stuckReconcile));
-        // Drop the blank row the editor keeps around for "add another"
-        // so the backend's at-least-one check talks about real targets.
+        // Drop blank rows.
         sr.targets = (sr.targets || []).filter(t => (t.qbitInstanceId || '').trim() || (t.postCategory || '').trim());
-        // A cleared number input binds as '' — sent as-is the backend
-        // can't decode it into an int and the whole save fails. Empty
-        // means "use the default", which the backend spells 0.
+        // A cleared number input is ''; send 0 (= default) instead.
         sr.deferSeconds = Number.isFinite(Number(sr.deferSeconds)) && sr.deferSeconds !== '' ? Math.trunc(Number(sr.deferSeconds)) : 0;
         body.stuckReconcile = sr;
       }
@@ -13661,11 +13612,7 @@ function app() {
     // hunting for a checkbox that doesn't exist.
     webhookEventsForFunctions(fnSet, isSonarr, opts = {}) {
       const events = new Set();
-      // Every function whose server-side EventsForFunction includes
-      // WebhookEventDownload. Keep in sync with core.EventsForFunction
-      // — a function missing here makes its rule report "no events
-      // needed", so the user never enables the trigger and the rule
-      // silently never fires.
+      // Keep in sync with core.EventsForFunction (Download events).
       const importLike = ['tagReleaseGroups', 'discover', 'tagAudio', 'tagVideo',
                           'tagDvDetail', 'recover', 'syncToSecondary', 'qbitCategoryFix',
                           'stuckReconcile', 'plexLabelSync'];
@@ -13685,9 +13632,7 @@ function app() {
       if (opts.bucketStripOnDelete) {
         events.add(isSonarr ? 'On Episode File Delete' : 'On Movie File Delete');
       }
-      // Plex label sync runs on Download AND on the file-delete events
-      // (server returns Movie/EpisodeFileDelete + the ForUpgrade variant)
-      // so labels drop when the file backing them goes away.
+      // Plex label sync also runs on file-delete events.
       if (fnSet.has('plexLabelSync')) {
         events.add(isSonarr ? 'On Episode File Delete' : 'On Movie File Delete');
       }
@@ -13815,9 +13760,7 @@ function app() {
         if (rule.grabRename)      body.grabRename = rule.grabRename;
         if (rule.qbitSe)          body.qbitSe = rule.qbitSe;
         if (rule.qbitCategoryFix) body.qbitCategoryFix = rule.qbitCategoryFix;
-        // Required whenever the function is on — the backend rejects the
-        // PUT without it, and unlike the snapshots above it is replaced
-        // (not preserved) when missing from the body.
+        // Required while the function is on.
         if (rule.stuckReconcile)  body.stuckReconcile = rule.stuckReconcile;
         if (rule.plexLabelSync)   body.plexLabelSync = rule.plexLabelSync;
         const r = await this.apiFetch('/api/webhook-rules/' + rule.id, {

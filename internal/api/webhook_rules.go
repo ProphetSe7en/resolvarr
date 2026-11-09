@@ -51,19 +51,9 @@ const (
 	webhookRuleCustomRegexMaxLen   = 500       // RE2 compiles these in microseconds; cap deters DoS-by-config-edit
 	webhookRuleTokenEntryMaxLen    = 80        // per-entry length on token allow-lists
 	webhookRuleRequestBodyMaxBytes = 64 * 1024 // POST/PUT body cap — matches schedules.go posture; honest payloads are <5 KB
-	// maxStuckReconcileTargets bounds the download-client fan-out on a
-	// stuck-downloads rule. Every target costs one qBit torrent-list
-	// call per fire; a dozen is far past any realistic homelab and
-	// keeps a hand-edited config from turning one import event into a
-	// hundred outbound requests.
-	maxStuckReconcileTargets = 12
-	// maxStuckReconcileDeferSeconds mirrors the category-fix clamp —
-	// 10 minutes is already generous for "let the Arr settle first".
+	// Stuck downloads limits: clients per rule, and the delay range.
+	maxStuckReconcileTargets      = 12
 	maxStuckReconcileDeferSeconds = 600
-	// minStuckReconcileDeferSeconds matches the wizard's number input.
-	// Anything shorter runs before Sonarr/Radarr has settled the losing
-	// queue rows into importPending / importBlocked, which is the whole
-	// reason the delay exists. 0 still means "use the default".
 	minStuckReconcileDeferSeconds = 5
 )
 
@@ -243,46 +233,15 @@ func (req *webhookRuleRequest) validate(cfg core.Config) *apiError {
 		req.QbitCategoryFix.PreImportCategorySnapshot = preCat
 		req.QbitCategoryFix.PostImportCategorySnapshot = postCat
 	}
-	// Stuck downloads — required struct + at least one (qBit instance,
-	// category) target. Unlike qBit Category Fix there is no Arr
-	// download-client pairing to resolve: the sweep finds the client
-	// that actually holds each stuck hash by asking each configured
-	// client, so the user only has to say where redundant downloads
-	// should land.
 	if seen[core.WebhookFnStuckReconcile] {
 		if req.StuckReconcile == nil {
 			return newAPIError(400, "stuckReconcile config required when the stuckReconcile function is enabled")
 		}
-		if len(req.StuckReconcile.Targets) == 0 {
-			return newAPIError(400, "stuckReconcile requires at least one download client + target category")
-		}
-		if len(req.StuckReconcile.Targets) > maxStuckReconcileTargets {
-			return newAPIError(400, fmt.Sprintf("stuckReconcile supports at most %d download clients", maxStuckReconcileTargets))
-		}
-		seenQbit := map[string]bool{}
 		for i := range req.StuckReconcile.Targets {
-			t := &req.StuckReconcile.Targets[i]
-			t.QbitInstanceID = strings.TrimSpace(t.QbitInstanceID)
-			t.PostCategory = strings.TrimSpace(t.PostCategory)
-			if t.QbitInstanceID == "" {
-				return newAPIError(400, "stuckReconcile.targets[].qbitInstanceId is required")
-			}
-			if !qbitInstanceExists(cfg, t.QbitInstanceID) {
-				return newAPIError(400, "stuckReconcile.targets[].qbitInstanceId not found")
-			}
-			// Duplicate clients would give one client two categories
-			// with no defined winner — reject rather than silently
-			// letting the last row decide.
-			if seenQbit[t.QbitInstanceID] {
-				return newAPIError(400, "stuckReconcile lists the same download client twice — one target category per client")
-			}
-			seenQbit[t.QbitInstanceID] = true
-			if t.PostCategory == "" {
-				return newAPIError(400, "stuckReconcile.targets[].postCategory is required (where redundant downloads get moved)")
-			}
-			if !reQbitCategoryName.MatchString(t.PostCategory) {
-				return newAPIError(400, "stuckReconcile.targets[].postCategory contains forbidden characters (control chars or backslash)")
-			}
+			trimReconcileTarget(&req.StuckReconcile.Targets[i])
+		}
+		if e := validateReconcileTargets("stuckReconcile", req.StuckReconcile.Targets, cfg, true); e != nil {
+			return e
 		}
 		if req.StuckReconcile.DeferSeconds < 0 {
 			return newAPIError(400, "stuckReconcile.deferSeconds cannot be negative")
@@ -570,10 +529,8 @@ func (req *webhookRuleRequest) applyTo(rule *core.WebhookRule, isUpdate bool) {
 	if !isUpdate || req.QbitCategoryFix != nil {
 		rule.QbitCategoryFix = req.QbitCategoryFix
 	}
-	// StuckReconcile is assigned unconditionally: validate() already
-	// nils it out when the function isn't ticked, so the preserve-on-nil
-	// rule the snapshots above use would strip the function's config on
-	// a save that turns it off but keep a stale targets list on disk.
+	// Always assigned: validate() clears it when the function is off, so
+	// turning the function off doesn't leave stale targets on disk.
 	rule.StuckReconcile = req.StuckReconcile
 	if !isUpdate || req.PlexLabelSync != nil {
 		rule.PlexLabelSync = req.PlexLabelSync

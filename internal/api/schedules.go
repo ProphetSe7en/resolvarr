@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -86,9 +87,7 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 		return newAPIError(400, "options.combinedModes is only meaningful when mode = combined")
 	}
 	for _, m := range req.Options.CombinedModes {
-		// Reconcile is a valid schedule mode but not a combined phase —
-		// runCombinedSchedule has no reconcile step, so accepting it here
-		// would save a chain that silently skips it.
+		// reconcile is a standalone mode; the combined runner has no such phase.
 		if !core.ValidJobMode(m) || m == core.JobModeCombined || m == core.JobModeReconcile {
 			return newAPIError(400, "options.combinedModes entries must be one of discover/recover/tag/audiotags/videotags/dvdetail/missingepisodes")
 		}
@@ -217,10 +216,6 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 			return e
 		}
 	}
-	// Reconcile snapshot — the stuck-downloads phase. Preview needs no
-	// download client at all (it only reports), so targets are required
-	// only when the schedule is set to apply. Same multi-client shape
-	// the webhook rule uses.
 	if req.Reconcile != nil {
 		applyMode := strings.EqualFold(strings.TrimSpace(req.Options.RunMode), "apply")
 		if e := validateReconcileConfig(req.Reconcile, cfg, applyMode); e != nil {
@@ -233,70 +228,60 @@ func (req *scheduleRequest) validate(cfg core.Config) *apiError {
 	return nil
 }
 
-// validateReconcileConfig checks a reconcile snapshot: every target
-// names a real qBittorrent instance exactly once and carries a category
-// qBit will accept. requireTargets gates the "at least one" rule so a
-// preview-only schedule doesn't have to nominate a client it never
-// touches.
-//
-// Shared by the schedule CRUD path; the webhook rule validator enforces
-// the same contract inline because it always requires targets (a
-// webhook rule has no preview mode).
+// validateReconcileConfig checks a schedule's reconcile snapshot,
+// including the legacy single-client pair (merged in as the run does).
+// Targets are only required when the schedule applies.
 func validateReconcileConfig(rc *core.ReconcileConfig, cfg core.Config, requireTargets bool) *apiError {
-	// Normalise in place so what gets stored is what was validated.
 	rc.QbitInstanceID = strings.TrimSpace(rc.QbitInstanceID)
 	rc.PostCategory = strings.TrimSpace(rc.PostCategory)
-	for i := range rc.Targets {
-		rc.Targets[i].QbitInstanceID = strings.TrimSpace(rc.Targets[i].QbitInstanceID)
-		rc.Targets[i].PostCategory = strings.TrimSpace(rc.Targets[i].PostCategory)
-	}
-	// Validate the list the run will actually use: Targets plus the
-	// legacy single-client pair when it names a client Targets doesn't
-	// cover (the same fold reconcileTargetsFromRequest does at run
-	// time). Validating only Targets would let a legacy pair pointing
-	// at a deleted client, or with no category, through to fail later.
 	targets := append([]core.StuckReconcileTarget(nil), rc.Targets...)
-	if rc.QbitInstanceID != "" {
-		dup := false
-		for _, t := range targets {
-			if t.QbitInstanceID == rc.QbitInstanceID {
-				dup = true
-				break
-			}
-		}
-		if !dup {
-			targets = append(targets, core.StuckReconcileTarget{
-				QbitInstanceID: rc.QbitInstanceID,
-				PostCategory:   rc.PostCategory,
-			})
-		}
+	if rc.QbitInstanceID != "" && !slices.ContainsFunc(rc.Targets, func(t core.StuckReconcileTarget) bool {
+		return strings.TrimSpace(t.QbitInstanceID) == rc.QbitInstanceID
+	}) {
+		targets = append(targets, core.StuckReconcileTarget{QbitInstanceID: rc.QbitInstanceID, PostCategory: rc.PostCategory})
 	}
+	if e := validateReconcileTargets("reconcile", targets, cfg, requireTargets); e != nil {
+		return e
+	}
+	for i := range rc.Targets {
+		trimReconcileTarget(&rc.Targets[i])
+	}
+	return nil
+}
+
+// validateReconcileTargets is shared by schedules and webhook rules:
+// each target names an existing qBit client, once, with a valid
+// category (required when requireTargets). field prefixes the errors.
+func validateReconcileTargets(field string, targets []core.StuckReconcileTarget, cfg core.Config, requireTargets bool) *apiError {
 	if requireTargets && len(targets) == 0 {
-		return newAPIError(400, "reconcile in apply mode needs at least one download client + target category")
+		return newAPIError(400, field+" needs at least one download client + target category")
 	}
 	if len(targets) > maxStuckReconcileTargets {
-		return newAPIError(400, fmt.Sprintf("reconcile supports at most %d download clients", maxStuckReconcileTargets))
+		return newAPIError(400, fmt.Sprintf("%s supports at most %d download clients", field, maxStuckReconcileTargets))
 	}
 	seen := map[string]bool{}
 	for _, t := range targets {
-		if t.QbitInstanceID == "" {
-			return newAPIError(400, "reconcile.targets[].qbitInstanceId is required")
-		}
-		if !qbitInstanceExists(cfg, t.QbitInstanceID) {
-			return newAPIError(400, "reconcile.targets[].qbitInstanceId not found")
-		}
-		if seen[t.QbitInstanceID] {
-			return newAPIError(400, "reconcile lists the same download client twice — one target category per client")
+		trimReconcileTarget(&t)
+		switch {
+		case t.QbitInstanceID == "":
+			return newAPIError(400, field+".targets[].qbitInstanceId is required")
+		case !qbitInstanceExists(cfg, t.QbitInstanceID):
+			return newAPIError(400, field+".targets[].qbitInstanceId not found")
+		case seen[t.QbitInstanceID]:
+			return newAPIError(400, field+" lists the same download client twice — one target category per client")
+		case requireTargets && t.PostCategory == "":
+			return newAPIError(400, field+".targets[].postCategory is required (where redundant downloads get moved)")
+		case t.PostCategory != "" && !reQbitCategoryName.MatchString(t.PostCategory):
+			return newAPIError(400, field+".targets[].postCategory contains forbidden characters (control chars or backslash)")
 		}
 		seen[t.QbitInstanceID] = true
-		if requireTargets && t.PostCategory == "" {
-			return newAPIError(400, "reconcile.targets[].postCategory is required (where redundant downloads get moved)")
-		}
-		if t.PostCategory != "" && !reQbitCategoryName.MatchString(t.PostCategory) {
-			return newAPIError(400, "reconcile.targets[].postCategory contains forbidden characters (control chars or backslash)")
-		}
 	}
 	return nil
+}
+
+func trimReconcileTarget(t *core.StuckReconcileTarget) {
+	t.QbitInstanceID = strings.TrimSpace(t.QbitInstanceID)
+	t.PostCategory = strings.TrimSpace(t.PostCategory)
 }
 
 // handleListSchedules — GET /api/schedules.
@@ -477,10 +462,8 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.App.Config.Get()
-	// A PUT that omits the reconcile snapshot keeps the saved one (see
-	// the nil-preserving assignment below), so validate against that —
-	// otherwise pausing an apply-mode reconcile schedule from its card,
-	// which doesn't echo the snapshot, is rejected as "needs a target".
+	// A PUT without a reconcile snapshot keeps the saved one (below), so
+	// validate that — the schedule card's pause/resume omits it.
 	if req.Reconcile == nil {
 		for i := range cfg.Schedules {
 			if cfg.Schedules[i].ID == id && cfg.Schedules[i].Reconcile != nil {

@@ -1361,8 +1361,6 @@ func (s *ConfigStore) Get() Config {
 			if j.ReleaseGroupIDs != nil {
 				out.Schedules[i].ReleaseGroupIDs = append([]string(nil), j.ReleaseGroupIDs...)
 			}
-			// Reconcile carries the per-download-client Targets slice —
-			// same aliasing class as everything above.
 			if j.Reconcile != nil {
 				rc := *j.Reconcile
 				rc.Targets = append([]StuckReconcileTarget(nil), j.Reconcile.Targets...)

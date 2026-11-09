@@ -287,8 +287,8 @@ function appState() {
         id: 'stuckReconcile',
         optionFlag: 'fnStuckReconcile',
         label: 'Clear stuck downloads after import',
-        summary: 'The automatic version of the Stuck downloads page. When two releases of the same thing are grabbed seconds apart, the better one imports and the loser sits in the queue forever on its pre-import category. This runs right after every import, checks whether each stuck download is genuinely redundant (the file already on disk scores as good or better), and moves the redundant ones to a category your own qBittorrent cleanup handles. Downloads that are NOT redundant are left completely alone. Nothing is ever deleted. Works across several download clients at once — each one gets its own target category, and every stuck download is matched to the client that actually holds it.',
-        summaryWebhook: 'On every import: look for downloads of the same movie/series that finished but never imported, and move the redundant ones to a cleanup category — on every download client you list. Never deletes. Runs in the background a minute after the import so it never slows Sonarr/Radarr down.',
+        summary: 'The automatic version of the Stuck downloads page: after each import, downloads of the same movie/series that finished but never imported are moved to a cleanup category when the file on disk is as good or better. Others are left alone. Never deletes. Works across several download clients.',
+        summaryWebhook: 'On import: move redundant stuck downloads of that movie/series to a cleanup category, on each download client you list. Never deletes.',
         triggers: ['On File Import', 'On File Upgrade'],
         appliesTo: 'both',
         webhookOnly: true,
@@ -439,14 +439,9 @@ function appState() {
     reconcileApplySelected: {},    // { [downloadId]: true } — which redundant rows to recategorise
     reconcileQbitInstanceId: '',   // which qBit client holds the downloads (set in the modal)
     reconcilePostCategory: '',     // category to move redundant downloads to (set in the modal)
-    // Extra download clients beyond the primary pair above. One Arr can
-    // feed from several qBittorrent clients and its queue mixes them, so
-    // a run pinned to one client silently skips the others' stuck
-    // downloads. Each entry is { qbitInstanceId, postCategory } — the
-    // category is per-client because names differ per client.
+    // Extra { qbitInstanceId, postCategory } rows beyond the pair above.
     reconcileExtraTargets: [],
-    // Placeholder hint for the webhook Stuck downloads step: the Arr's
-    // own post-import category. Never written into a target.
+    // Arr's post-import category, shown as a placeholder only.
     stuckReconcileCategoryHint: '',
     reconcilePreCategory: '',      // info: the category stuck downloads currently sit in
     reconcileLastInstanceId: '',   // tracks which instance the qBit + categories were resolved for

@@ -81,14 +81,7 @@ var canonicalFunctionOrder = []core.WebhookFunction{
 	// putting it at the tail keeps the chain easy to reason about
 	// ("everything else happens first; then we reconcile qBit").
 	core.WebhookFnQbitCategoryFix,
-	// Stuck downloads runs at the very tail, after qBit Category Fix.
-	// Both are deferred, but this one sweeps the Arr QUEUE — the state
-	// the rest of the chain's import has just changed — so it wants to
-	// be the last thing scheduled. Order between the two deferred
-	// functions doesn't affect correctness (each schedules its own
-	// timer); tail placement just keeps the chain readable as
-	// "everything else happens first; then we tidy up the download
-	// client".
+	// Stuck downloads last: it reads the queue the import just changed.
 	core.WebhookFnStuckReconcile,
 }
 
@@ -332,10 +325,8 @@ func (s *Server) executeWebhookRule(
 			})
 			continue
 		}
-		// Stuck downloads is deferred for the same reason and one more
-		// of its own: the losing download only settles into its stuck
-		// queue state once the Arr has finished processing the import
-		// this event announced, so an inline sweep would find nothing.
+		// Deferred too: the losing download must first settle into its
+		// stuck state.
 		if fn == core.WebhookFnStuckReconcile {
 			queued := s.scheduleDeferredStuckReconcile(rule, inst, env, body)
 			summary := "already scheduled for this item by an earlier event in the same batch — one sweep covers them all"
@@ -543,11 +534,7 @@ func (s *Server) dispatchWebhookFunction(
 		// requireTagDetails gate.
 		return s.dispatchQbitCategoryFix(ctx, rule, cfg, env, body)
 	case core.WebhookFnStuckReconcile:
-		// Stuck downloads reads the Arr queue + history (read-only) and
-		// writes qBit categories. No Arr tags — no requireTagDetails
-		// gate. Normally unreachable: executeWebhookRule defers this
-		// function before reaching the dispatcher. Kept wired so the
-		// deferred path and any future inline caller share one arm.
+		// Normally deferred by executeWebhookRule; no tag details needed.
 		return s.dispatchStuckReconcile(ctx, rule, cfg, env, body)
 	case core.WebhookFnPlexLabelSync:
 		// Plex label sync reads the Arr item's current tag set

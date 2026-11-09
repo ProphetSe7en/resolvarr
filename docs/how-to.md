@@ -187,27 +187,25 @@ The **Recent activity** tab shows the Connect events as they arrive, with what e
 
 ### Clearing stuck downloads automatically
 
-**What it does:** after every import, checks whether any download of the same movie or series finished but never imported, and moves the redundant ones to a category your own qBittorrent cleanup handles.
-
-**Why:** Sonarr/Radarr sometimes grab two releases of the same thing seconds apart. The better one imports and the other one sits in the queue forever on its pre-import category, because there is nothing left for it to import into. The **Library scan -> Stuck downloads** page has always found these; this runs the same check for you instead of waiting for you to press the button.
+**What it does:** after each import, checks the same movie or series for downloads that finished but never imported, and moves the redundant ones to a category your own qBittorrent cleanup handles. It is the **Library scan -> Stuck downloads** check, run for you.
 
 **How to set it up:**
 
-1. Add (or edit) a webhook rule on the instance and tick **Clear stuck downloads after import**.
-2. On the **Stuck downloads** step, list every qBittorrent client this Sonarr/Radarr downloads through, and the category redundant downloads should move to on each one. Type it exactly as it appears in qBittorrent -- a category that doesn't exist there is refused when the rule runs. It is saved with the rule, so you only enter it once. The empty field suggests the post-import category from the Sonarr/Radarr download-client config, but nothing is filled in for you: that category belongs to one of its download clients, and resolvarr can't tell which.
-3. In Sonarr/Radarr -> Settings -> Connect, make sure **On File Import** and **On File Upgrade** are enabled on the connection.
+1. On a webhook rule for the instance, tick **Clear stuck downloads after import**.
+2. On the **Stuck downloads** step, add a row per qBittorrent client this Sonarr/Radarr uses, with the category redundant downloads should go to. Type it exactly as in qBittorrent. The placeholder suggests Sonarr/Radarr's post-import category, but nothing is filled in for you.
+3. In Sonarr/Radarr -> Settings -> Connect, enable **On File Import** and **On File Upgrade**.
 
-A download is only moved when the episode or movie already has a file scoring as good or better. Anything else -- nothing imported, or the stuck one is actually the better release -- is left alone for you to look at on the Stuck downloads page. A season pack is only moved when that is true for **every** episode in it: if the pack is still the only copy of even one episode, the whole torrent is left alone, because your cleanup would otherwise delete that episode along with the rest. A download already sitting in the target category (moved earlier, not yet cleaned up) is not counted or notified again. **Nothing is ever deleted;** the only change made is the torrent's category, and your own qBittorrent cleanup rule on that category does the rest.
+**What gets moved:** a download is moved only when the episode or movie already has a file scoring as good or better. It is left alone when:
 
-With notifications set up, you hear about it when something was moved, or when a move or the whole sweep failed (for example the category doesn't exist in qBittorrent, the torrent is in a client the rule doesn't list, or Sonarr/Radarr didn't answer). A sweep that found nothing to do stays quiet. For that, tick **Notify on fire** on the rule, and have a notification agent under **Settings -> Notifications** that is enabled, has **File import from Sonarr/Radarr** ticked under its events, and includes **Clear stuck downloads after import** under **Which actions show in the embed** (or leaves that list empty for all actions). The sweep reports on the import event that triggered it, so an agent without file-import events never sees it.
+- it is a season pack that is still the only copy of an episode;
+- a score couldn't be read;
+- the same torrent is in two clients.
 
-If a later import of the same movie or series arrives while a sweep is waiting, the sweep waits for that one too, so it doesn't look at the queue before that import's losing download has settled. A sweep still waiting when the rule is paused, deleted or edited follows the rule as it is when the sweep runs. A download that is still downloading when the sweep runs is not looked at again until the next import of that movie or series; the Stuck downloads page or a `reconcile` schedule covers anything left over.
+Everything left alone shows on the Stuck downloads page. **Nothing is ever deleted;** only the category changes.
 
-Each fire checks only the movie or series that was just imported. A whole season arriving at once is collapsed into a single check rather than one per episode. To sweep the entire queue, use **Run reconcile** on the Stuck downloads page, or a `reconcile` schedule.
+**When it runs:** in the background about a minute after the import (adjustable). Imports of the same item arriving meanwhile share one check, which waits for the last of them. A download still downloading at that point is picked up by the next import, a manual run, or a `reconcile` schedule.
 
-The sweep runs in the background about a minute after the import (adjustable on the same step). That is deliberate: Connect notifications hold up the import until they get a reply, and Sonarr/Radarr needs a moment to settle the losing download into its stuck state before there is anything to find.
-
-**Several download clients at once:** each row gets its own category, because category names differ per client. Every stuck download is matched to the client that actually holds it by torrent hash, so renaming a client changes nothing and a download in client B is never sent to client A.
+**Notifications:** you are told when something moved or failed; quiet otherwise. This needs **Notify on fire** on the rule, and an enabled agent under **Settings -> Notifications** with **File import from Sonarr/Radarr** ticked and this action included under **Which actions show in the embed** (an empty list means all actions).
 
 ### One Sonarr/Radarr feeding several qBittorrent clients
 

@@ -1,50 +1,16 @@
 package api
 
-// webhook_stuck_reconcile.go — stuck-downloads adapter for the
-// M-Webhook dispatcher. Event-driven twin of the Library scan's
-// "Stuck downloads" action (scan_reconcile.go), which until now was
-// manual-only: the user had to open the page and press Run.
+// webhook_stuck_reconcile.go — webhook version of the Library scan's
+// "Stuck downloads" action (scan_reconcile.go).
 //
-// Why an IMPORT event is the right trigger: a download gets stuck
-// precisely because a BETTER release of the same thing imported first.
-// Sonarr/Radarr grab two releases seconds apart, the higher-scoring one
-// wins the import race, and the loser sits in the queue forever in
-// importPending / importBlocked on the pre-import category — the
-// Your Friends & Neighbors S02E08 case in scan_reconcile.go's header.
-// The Download event IS the winning import, so firing the sweep right
-// after it is the narrowest possible moment to catch the loser.
-//
-// Scope: always the movie / series the event names — the losers of
-// THIS race. Architectural rule 2 (webhook_adapters.go) forbids an
-// adapter fanning out past the item its event identifies, and a
-// whole-queue sweep on every import is exactly the scaling trap that
-// rule calls out. Sweeping the entire queue stays the Library scan
-// action's job, or a `reconcile` schedule's.
-//
-// Coalescing: a 24-episode season pack emits 24 Download events, each
-// naming the same series. Scheduling 24 identical sweeps would re-read
-// the queue, history and manual-import evaluation 24 times for one
-// answer, so a sweep already pending for the same (rule, item) is not
-// scheduled again.
-//
-// Fan-out: the rule carries a LIST of (qBit instance, target category)
-// targets, so one import event reconciles every download client the Arr
-// feeds from. Each stuck hash is resolved to the client that actually
-// holds it (see scan_reconcile_targets.go) — names aren't matched,
-// hashes are.
-//
-// Deferred, always: the sweep reads the Arr queue + per-target history +
-// manualimport evaluations, which is far too much work to do inline on
-// a Connect webhook response that Sonarr/Radarr block on (that blocking
-// is what serialised per-file imports on a season pack for the qBit
-// category-fix adapter). It also needs the Arr to finish settling the
-// losing rows into their stuck state first. So the dispatcher schedules
-// it and returns immediately.
-//
-// Architectural rule, same as the Library scan path: the adapter NEVER
-// decides redundancy itself. engine.ClassifyStuckDownload, reached via
-// Server.runReconcile, is the single decision point. This file only
-// decides WHEN to run it and WHAT to narrow it to.
+// A download gets stuck when a better release of the same item imports
+// first; the Download event is that import, so it triggers a sweep of
+// the same movie/series (never the whole queue — adapter rule 2 in
+// webhook_adapters.go). The sweep is deferred: Sonarr/Radarr wait on the
+// webhook reply, and the losing row needs time to settle into
+// importPending/importBlocked. Events for the same (rule, item) share one
+// sweep. Redundancy is decided only by engine.ClassifyStuckDownload via
+// runReconcile.
 
 import (
 	"context"
@@ -57,33 +23,27 @@ import (
 	"resolvarr/internal/core"
 )
 
-// stuckReconcileDeferDelay resolves how long after the import event the
-// deferred sweep runs. 0 / unset → 60s default; clamped to 600s.
-//
-// The default is longer than the category-fix's 30s on purpose: that
-// one only re-checks a single torrent's category, while this one needs
-// the Arr to have finished processing the winning import AND settled
-// the losing queue rows into importPending / importBlocked. Sweeping
-// too early finds nothing and the rule looks broken.
+const (
+	// maxConcurrentStuckSweeps caps sweeps running at once across all
+	// items, so an import burst doesn't fan out into parallel queue reads.
+	maxConcurrentStuckSweeps = 2
+	// stuckReconcileMaxMovesInNotification caps the moves listed in one
+	// notification; the summary still carries the full count.
+	stuckReconcileMaxMovesInNotification = 10
+)
+
+// stuckReconcileDeferDelay returns the delay before the sweep runs:
+// DeferSeconds, or 60s when unset, capped at 600s.
 func stuckReconcileDeferDelay(rule *core.WebhookRule) time.Duration {
 	secs := 60
 	if rule != nil && rule.StuckReconcile != nil && rule.StuckReconcile.DeferSeconds > 0 {
 		secs = rule.StuckReconcile.DeferSeconds
 	}
-	if secs > maxStuckReconcileDeferSeconds {
-		secs = maxStuckReconcileDeferSeconds
-	}
-	return time.Duration(secs) * time.Second
+	return time.Duration(min(secs, maxStuckReconcileDeferSeconds)) * time.Second
 }
 
-// stuckReconcileScope resolves which movie / series an import event is
-// about. Returns ok=false when the payload carries no usable item, which
-// is a clean skip rather than a failure (a manual import with no movie
-// block, say).
-//
-// Shared by the scheduler (to build the coalescing key) and the
-// dispatcher (to narrow the sweep) so the two can never disagree about
-// what "this item" means.
+// stuckReconcileScope returns the movie or series an import event is
+// about. ok=false means the payload names no item (a clean skip).
 func stuckReconcileScope(appType string, body []byte) (movieID, seriesID int, label string, ok bool) {
 	var payload downloadEventPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -94,36 +54,31 @@ func stuckReconcileScope(appType string, body []byte) (movieID, seriesID int, la
 		if payload.Movie == nil || payload.Movie.ID <= 0 {
 			return 0, 0, "", false
 		}
-		label = strings.TrimSpace(payload.Movie.Title)
-		if label == "" {
-			label = "this movie"
-		}
-		return payload.Movie.ID, 0, label, true
+		return payload.Movie.ID, 0, orDefault(payload.Movie.Title, "this movie"), true
 	case "sonarr":
 		if payload.Series == nil || payload.Series.ID <= 0 {
 			return 0, 0, "", false
 		}
-		label = strings.TrimSpace(payload.Series.Title)
-		if label == "" {
-			label = "this series"
-		}
-		return 0, payload.Series.ID, label, true
+		return 0, payload.Series.ID, orDefault(payload.Series.Title, "this series"), true
 	}
 	return 0, 0, "", false
 }
 
-// stuckSweepKey identifies one pending sweep: a rule acting on one item.
-// Two events for the same series under the same rule share a key and
-// therefore share a single sweep.
+func orDefault(s, def string) string {
+	if s = strings.TrimSpace(s); s != "" {
+		return s
+	}
+	return def
+}
+
+// stuckSweepKey identifies one pending sweep: one rule acting on one item.
 func stuckSweepKey(ruleID, appType string, movieID, seriesID int) string {
 	return fmt.Sprintf("%s:%s:%d:%d", ruleID, appType, movieID, seriesID)
 }
 
-// claimStuckSweep reserves the key for a pending sweep due at
-// deadline. Returns false when one is already pending, meaning the
-// caller should not schedule another — but the pending sweep's deadline
-// is pushed out to this event's, so every coalesced import still gets
-// its full settling window (see stuckSweepDue).
+// claimStuckSweep reserves key for a sweep due at deadline. If one is
+// already pending it returns false and pushes that sweep's deadline out,
+// so every coalesced import still gets its full settling time.
 func (s *Server) claimStuckSweep(key string, deadline time.Time) bool {
 	s.stuckSweepMu.Lock()
 	defer s.stuckSweepMu.Unlock()
@@ -140,10 +95,18 @@ func (s *Server) claimStuckSweep(key string, deadline time.Time) bool {
 	return true
 }
 
-// maxConcurrentStuckSweeps is how many deferred sweeps may run at once.
-// Each reads the Arr queue plus one item's history; two in flight keeps
-// an import storm from turning into a burst of parallel full-queue reads.
-const maxConcurrentStuckSweeps = 2
+// stuckSweepDue is called when a sweep's timer fires. If the deadline was
+// pushed out it returns the remaining wait; otherwise it frees the key
+// (later imports may queue a new sweep) and reports the sweep due.
+func (s *Server) stuckSweepDue(key string, now time.Time) (wait time.Duration, due bool) {
+	s.stuckSweepMu.Lock()
+	defer s.stuckSweepMu.Unlock()
+	if deadline, pending := s.stuckSweepPending[key]; pending && now.Before(deadline) {
+		return deadline.Sub(now), false
+	}
+	delete(s.stuckSweepPending, key)
+	return 0, true
+}
 
 // acquireStuckSweepSlot blocks until a sweep may run; call the returned
 // func to free the slot.
@@ -158,51 +121,18 @@ func (s *Server) acquireStuckSweepSlot() func() {
 	return func() { <-slots }
 }
 
-// stuckSweepDue is called when a pending sweep's timer fires. When a
-// later import pushed the deadline out, it returns how much longer to
-// wait and keeps the key claimed. Otherwise it frees the key — from here
-// on the sweep is running, so a later import for the same item queues a
-// fresh one — and reports the sweep due.
-func (s *Server) stuckSweepDue(key string, now time.Time) (wait time.Duration, due bool) {
-	s.stuckSweepMu.Lock()
-	defer s.stuckSweepMu.Unlock()
-	deadline, pending := s.stuckSweepPending[key]
-	if pending && now.Before(deadline) {
-		return deadline.Sub(now), false
-	}
-	delete(s.stuckSweepPending, key)
-	return 0, true
-}
-
-// scheduleDeferredStuckReconcile runs the stuck-downloads sweep in the
-// background `delay` after the import event instead of inline in the
-// Connect dispatch, and records its own single-function history entry +
-// notification when it completes.
-//
-// Inputs are snapshotted (the request body + structs must survive past
-// the HTTP response). The rule itself is re-read at fire time, so a rule
-// paused, edited or deleted while its sweep was pending doesn't act on
-// stale targets. Pending timers are lost on container restart —
-// acceptable: the next import event fires another sweep, and the
-// Library scan page is still there for a manual run.
-//
-// Returns false when a sweep for the same (rule, item) is already
-// pending, so the dispatcher can say so in the History row instead of
-// implying a second one was queued. That pending sweep then waits until
-// `delay` after THIS import too, so the import's losing download has
-// settled into its stuck state before the queue is read.
+// scheduleDeferredStuckReconcile runs the sweep in the background after
+// the rule's delay and records its own History entry and notification.
+// The rule is re-read when the sweep runs, so a rule paused, edited or
+// deleted meanwhile is respected. Pending sweeps are lost on restart; the
+// next import schedules another. Returns false when a sweep for the same
+// (rule, item) was already pending.
 func (s *Server) scheduleDeferredStuckReconcile(rule *core.WebhookRule, inst *core.Instance, env *connectEventEnvelope, body []byte) bool {
 	if rule == nil || inst == nil || env == nil {
 		return false
 	}
-	// Coalesce per (rule, item): one sweep answers for every event in a
-	// season-pack burst, since they all name the same series.
-	movieID, seriesID, _, ok := stuckReconcileScope(rule.AppType, body)
-	if !ok {
-		// No usable item on the payload. Let the dispatcher run and
-		// report the skip with its own wording rather than guessing here.
-		movieID, seriesID = 0, 0
-	}
+	// A payload with no item still gets a sweep; it reports the skip.
+	movieID, seriesID, _, _ := stuckReconcileScope(rule.AppType, body)
 	key := stuckSweepKey(rule.ID, rule.AppType, movieID, seriesID)
 	delay := stuckReconcileDeferDelay(rule)
 	if !s.claimStuckSweep(key, time.Now().Add(delay)) {
@@ -229,14 +159,9 @@ func (s *Server) scheduleDeferredStuckReconcile(rule *core.WebhookRule, inst *co
 		cfg := s.App.Config.Get()
 		current := findWebhookRuleByID(cfg, ruleID)
 		if !stuckReconcileStillWanted(current) {
-			// Paused, deleted, or the function was turned off while the
-			// sweep was pending — the user no longer wants it to act.
 			return
 		}
 		ruleCopy := *current
-		// The sweep reads the queue once, then per-target history +
-		// manual-import evaluations for the one item it is scoped to,
-		// then one category change per redundant download.
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		res := s.dispatchStuckReconcile(ctx, &ruleCopy, cfg, &envCopy, bodyCopy)
@@ -248,8 +173,8 @@ func (s *Server) scheduleDeferredStuckReconcile(rule *core.WebhookRule, inst *co
 	return true
 }
 
-// stuckReconcileStillWanted reports whether a rule, as it is NOW in
-// config, should still run its pending stuck-downloads sweep.
+// stuckReconcileStillWanted reports whether the rule, as it is now in
+// config, still exists, is enabled and has the function ticked.
 func stuckReconcileStillWanted(rule *core.WebhookRule) bool {
 	if rule == nil || !rule.Enabled {
 		return false
@@ -262,72 +187,44 @@ func stuckReconcileStillWanted(rule *core.WebhookRule) bool {
 	return false
 }
 
-// dispatchStuckReconcile runs the stuck-downloads sweep for one rule on
-// one import event. Returns OK=true for every clean path including
-// "nothing was stuck"; OK=false only on real failures (missing config,
-// Arr unreachable, qBit client init).
-//
-// Changed is true only when at least one download actually moved — the
-// notification layer consumes Changed, and a rule firing on every single
-// import must not emit a "swept, found nothing" line each time.
-func (s *Server) dispatchStuckReconcile(
-	ctx context.Context,
-	rule *core.WebhookRule,
-	cfg core.Config,
-	env *connectEventEnvelope,
-	body []byte,
-) functionResult {
+// dispatchStuckReconcile runs one sweep for the item the event names.
+// OK=false only when the sweep itself fails; failed moves are per-row.
+// Changed (which drives notifications) is set when something moved or
+// failed, so a sweep that found nothing stays quiet.
+func (s *Server) dispatchStuckReconcile(ctx context.Context, rule *core.WebhookRule, cfg core.Config, env *connectEventEnvelope, body []byte) functionResult {
 	const fn = core.WebhookFnStuckReconcile
 
 	if env.EventType != string(core.WebhookEventDownload) {
 		return functionResult{Function: fn, OK: true, Summary: "skipped (not a Download event)"}
 	}
 	if rule.StuckReconcile == nil || len(rule.StuckReconcile.Targets) == 0 {
-		return functionResult{
-			Function: fn, OK: false,
-			Summary: "rule has the stuck-downloads function but no download clients configured",
-		}
+		return functionResult{Function: fn, OK: false, Summary: "rule has the stuck-downloads function but no download clients configured"}
 	}
-
 	inst := findInstanceByID(cfg, rule.InstanceID)
 	if inst == nil {
-		return functionResult{
-			Function: fn, OK: false,
-			Summary: "instance vanished between event receive and dispatch",
-		}
+		return functionResult{Function: fn, OK: false, Summary: "instance vanished between event receive and dispatch"}
+	}
+	movieID, seriesID, scopeLabel, ok := stuckReconcileScope(rule.AppType, body)
+	if !ok {
+		return functionResult{Function: fn, OK: true, Summary: "skipped (no movie/series on the event to scope the sweep to)"}
 	}
 
 	req := scanRunRequest{
-		InstanceID: rule.InstanceID,
-		Action:     "reconcile",
-		Mode:       "apply",
+		InstanceID:            rule.InstanceID,
+		Action:                "reconcile",
+		Mode:                  "apply",
+		ReconcileOnlyMovieID:  movieID,
+		ReconcileOnlySeriesID: seriesID,
 	}
 	for _, t := range rule.StuckReconcile.Targets {
-		req.ReconcileTargets = append(req.ReconcileTargets, scanReconcileTarget{
-			QbitInstanceID: t.QbitInstanceID,
-			PostCategory:   t.PostCategory,
-		})
+		req.ReconcileTargets = append(req.ReconcileTargets, scanReconcileTarget{QbitInstanceID: t.QbitInstanceID, PostCategory: t.PostCategory})
 	}
-
-	// Always narrowed to the item the event names — Architectural rule 2.
-	movieID, seriesID, scopeLabel, ok := stuckReconcileScope(rule.AppType, body)
-	if !ok {
-		return functionResult{
-			Function: fn, OK: true,
-			Summary: "skipped (no movie/series on the event to scope the sweep to)",
-		}
-	}
-	req.ReconcileOnlyMovieID = movieID
-	req.ReconcileOnlySeriesID = seriesID
 
 	resp, apiErr := s.runReconcile(ctx, cfg, inst, rule.AppType, req)
 	s.auditScan("webhook:"+rule.ID, "reconcile", inst, req, resp, errMsgOf(apiErr))
 	if apiErr != nil {
-		// The sweep itself failed (Arr unreachable, a download client
-		// that can't be set up). Changed so the failure reaches the
-		// notification agents — this runs in the background, after the
-		// webhook reply, so a notification is the only place it shows
-		// up outside the rule's History.
+		// Runs after the webhook reply, so notify: History is the only
+		// other place this would show.
 		return functionResult{
 			Function: fn, OK: false, Changed: true,
 			Summary: "stuck-downloads sweep", Err: apiErr,
@@ -337,57 +234,42 @@ func (s *Server) dispatchStuckReconcile(
 
 	detail := summariseStuckReconcile(resp)
 	detail.Scope = scopeLabel
-
 	if detail.Stuck == 0 {
-		return functionResult{
-			Function: fn, OK: true,
-			Summary: fmt.Sprintf("nothing stuck (%s)", scopeLabel),
-			Detail:  detail,
-		}
+		return functionResult{Function: fn, OK: true, Summary: fmt.Sprintf("nothing stuck (%s)", scopeLabel), Detail: detail}
 	}
 
 	parts := []string{fmt.Sprintf("%d stuck", detail.Stuck)}
-	if detail.Moved > 0 {
-		parts = append(parts, fmt.Sprintf("%d moved", detail.Moved))
-	}
-	if detail.AlreadyMoved > 0 {
-		parts = append(parts, fmt.Sprintf("%d already moved", detail.AlreadyMoved))
-	}
-	if detail.NeedsAttention > 0 {
-		parts = append(parts, fmt.Sprintf("%d need attention", detail.NeedsAttention))
-	}
-	if detail.Failed > 0 {
-		parts = append(parts, fmt.Sprintf("%d failed: %s", detail.Failed, detail.FailReason))
+	for _, p := range []struct {
+		n    int
+		text string
+	}{
+		{detail.Moved, "moved"},
+		{detail.AlreadyMoved, "already moved"},
+		{detail.NeedsAttention, "need attention"},
+		{detail.Failed, "failed: " + detail.FailReason},
+	} {
+		if p.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", p.n, p.text))
+		}
 	}
 	return functionResult{
 		Function: fn,
-		// A failed row is a per-item problem, not a failed run — the
-		// sweep itself worked and the row carries the reason. Same
-		// convention the scheduler's reconcile phase uses.
-		OK: true,
-		// Changed drives the notification. A failure counts: a move
-		// that keeps failing (category missing in qBit, torrent in a
-		// client the rule doesn't list) would otherwise fail silently
-		// on every import forever.
-		Changed: detail.Moved > 0 || detail.Failed > 0,
-		Summary: fmt.Sprintf("%s (%s)", strings.Join(parts, "; "), scopeLabel),
-		Detail:  detail,
+		OK:       true,
+		Changed:  detail.Moved > 0 || detail.Failed > 0,
+		Summary:  fmt.Sprintf("%s (%s)", strings.Join(parts, "; "), scopeLabel),
+		Detail:   detail,
 	}
 }
 
-// summariseStuckReconcile counts the sweep's outcome per DOWNLOAD rather
-// than per queue row. The reconcile totals count rows, and a Sonarr
-// season pack is one row per episode sharing a single torrent, so mixing
-// the two would read as "1 of 24 stuck moved" for one torrent that was
-// moved. Moves lists the downloads that actually changed category,
-// capped at stuckReconcileMaxMovesInNotification.
+// summariseStuckReconcile counts outcomes per download, not per queue
+// row: a season pack is one row per episode but a single torrent. A
+// download takes its strongest row outcome (failed > moved > already
+// moved > needs attention > redundant).
 func summariseStuckReconcile(resp *scanResponse) StuckReconcileDetail {
 	var d StuckReconcileDetail
 	if resp == nil {
 		return d
 	}
-	// Per-download outcome, strongest first: a pack with one
-	// needs-attention row is a needs-attention download.
 	const (
 		outRedundant = iota
 		outNeedsAttention
@@ -396,6 +278,7 @@ func summariseStuckReconcile(resp *scanResponse) StuckReconcileDetail {
 		outFailed
 	)
 	outcome := map[string]int{}
+	moves := map[string]StuckReconcileMove{}
 	var order []string
 	for _, row := range resp.Reconcile {
 		key := row.DownloadID
@@ -413,35 +296,25 @@ func summariseStuckReconcile(resp *scanResponse) StuckReconcileDetail {
 			o = outAlreadyMoved
 		case row.Status == "recategorised":
 			o = outMoved
+			if _, ok := moves[key]; !ok && row.QbitCategory != "" {
+				moves[key] = StuckReconcileMove{Title: row.Title, QbitInstance: row.QbitInstanceName, Category: row.QbitCategory}
+			}
 		case row.Status != "redundant":
 			o = outNeedsAttention
 		}
-		prev, seen := outcome[key]
-		if !seen {
+		if prev, seen := outcome[key]; !seen {
 			order = append(order, key)
-		}
-		if !seen || o > prev {
+			outcome[key] = o
+		} else if o > prev {
 			outcome[key] = o
 		}
 	}
 	d.Stuck = len(order)
-	movedTitle := map[string]StuckReconcileMove{}
-	for _, row := range resp.Reconcile {
-		if row.Status == "recategorised" && !row.AlreadyInCategory && row.QbitCategory != "" {
-			if _, ok := movedTitle[row.DownloadID]; !ok {
-				movedTitle[row.DownloadID] = StuckReconcileMove{
-					Title:        row.Title,
-					QbitInstance: row.QbitInstanceName,
-					Category:     row.QbitCategory,
-				}
-			}
-		}
-	}
 	for _, key := range order {
 		switch outcome[key] {
 		case outMoved:
 			d.Moved++
-			if m, ok := movedTitle[key]; ok && len(d.Moves) < stuckReconcileMaxMovesInNotification {
+			if m, ok := moves[key]; ok && len(d.Moves) < stuckReconcileMaxMovesInNotification {
 				d.Moves = append(d.Moves, m)
 			}
 		case outAlreadyMoved:
@@ -454,10 +327,3 @@ func summariseStuckReconcile(resp *scanResponse) StuckReconcileDetail {
 	}
 	return d
 }
-
-// stuckReconcileMaxMovesInNotification bounds how many individual moves
-// a notification lists before falling back to the count in the summary.
-// A season pack whose every episode lost its race can move dozens at
-// once; an embed listing all of them is unreadable and may blow
-// Discord's field limit.
-const stuckReconcileMaxMovesInNotification = 10

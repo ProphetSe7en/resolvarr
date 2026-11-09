@@ -248,35 +248,21 @@ type QbitCategoryFixDetail struct {
 	SkipReason string
 }
 
-// StuckReconcileDetail is the typed payload for
-// WebhookFnStuckReconcile results — the counts the sweep produced plus
-// the individual moves, so the embed can say what actually happened
-// rather than just "ran".
+// StuckReconcileDetail is the result payload of WebhookFnStuckReconcile.
 type StuckReconcileDetail struct {
-	// Scope is the movie / series title the sweep was narrowed to.
-	Scope string
-	// Stuck / Moved / AlreadyMoved / NeedsAttention / Failed count
-	// DOWNLOADS (torrents), not queue rows — a season pack is one row
-	// per episode sharing a single torrent. A download whose rows split
-	// across verdicts counts once, under its most significant outcome.
+	Scope string // movie / series title
+	// Counts are per download (torrent), not per queue row.
 	Stuck          int
 	Moved          int
-	AlreadyMoved   int // already in the target category from an earlier run — nothing changed
+	AlreadyMoved   int // already in the target category; nothing changed
 	NeedsAttention int
 	Failed         int
-	// FailReason is the first failed download's error, so a repeating
-	// failure says what to fix rather than just how many.
-	FailReason string
-	// SweepError is set when the sweep as a whole failed (Arr or
-	// download client unreachable) and no download was evaluated.
-	SweepError string
-	// Moves lists the downloads that actually changed category, capped
-	// at stuckReconcileMaxMovesInNotification entries.
-	Moves []StuckReconcileMove
+	FailReason     string               // first failed download's error
+	SweepError     string               // set when the whole sweep failed
+	Moves          []StuckReconcileMove // capped at stuckReconcileMaxMovesInNotification
 }
 
-// StuckReconcileMove is one download the sweep moved out of the way:
-// which release, on which download client, into which category.
+// StuckReconcileMove is one moved download.
 type StuckReconcileMove struct {
 	Title        string
 	QbitInstance string
@@ -417,8 +403,7 @@ func composeTitle(event core.WebhookConnectEvent, results []functionResult, item
 		}
 		label := titleLabelForFunctionAndEvent(r.Function, event)
 		if r.Function == core.WebhookFnStuckReconcile {
-			// "cleared" only when something actually moved — a run
-			// that only failed must not read as a success.
+			// A run where nothing moved but something failed is a failure.
 			if d, ok := r.Detail.(StuckReconcileDetail); ok && d.Moved == 0 && (d.Failed > 0 || d.SweepError != "") {
 				label = "Stuck downloads: move failed"
 			}
