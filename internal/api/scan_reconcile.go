@@ -131,6 +131,11 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 	// before it can decide whether moving that torrent is safe.
 	var rows []scanReconcileItem
 	var verdicts []engine.StuckVerdict
+	// existingScoreUnknown[i]: rows[i]'s target has a file but its score
+	// couldn't be read, so the classifier compared against 0. A stuck
+	// release scoring below 0 would then look redundant against a file
+	// that may well score lower still.
+	var existingScoreUnknown []bool
 
 	for _, q := range queue {
 		// Stuck = the download finished but Arr hasn't imported it.
@@ -164,6 +169,7 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 
 		var targets []engine.StuckTarget
 
+		scoreUnknown := false
 		switch appType {
 		case "radarr":
 			row.MovieID = q.MovieID
@@ -217,6 +223,8 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 					// the Sonarr path reads it inline).
 					if mfs, mferr := client.MovieFilesForMovie(ctx, q.MovieID); mferr == nil && len(mfs) > 0 {
 						row.ImportedScore = mfs[0].CustomFormatScore
+					} else {
+						scoreUnknown = true
 					}
 				}
 				targets = append(targets, engine.StuckTarget{HasFile: row.HasFile, ImportedScore: row.ImportedScore})
@@ -250,7 +258,9 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 			}
 			if fileID := seriesEpFileID[q.SeriesID][q.EpisodeID]; fileID > 0 {
 				row.HasFile = true
-				row.ImportedScore = seriesEpFileScore[q.SeriesID][fileID]
+				score, known := seriesEpFileScore[q.SeriesID][fileID]
+				row.ImportedScore = score
+				scoreUnknown = !known
 			}
 			targets = append(targets, engine.StuckTarget{HasFile: row.HasFile, ImportedScore: row.ImportedScore})
 			if _, done := seriesHistory[q.SeriesID]; !done {
@@ -316,6 +326,7 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 
 		rows = append(rows, row)
 		verdicts = append(verdicts, verdict)
+		existingScoreUnknown = append(existingScoreUnknown, scoreUnknown)
 	}
 
 	// packHasNonRedundant marks every downloadId with at least one row
@@ -334,18 +345,19 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 	// rule above can't be checked. Don't move anything automatically
 	// then; an explicit selection still works.
 	queueMayBeTruncated := len(queue) >= arr.QueuePageSize
-	// packScoreUnknown marks downloads where Sonarr/Radarr's import
-	// evaluation (the score the file would actually import at) wasn't
-	// available for some row, so that row was judged on the grab score.
-	// The grab score can be lower than the import score, which would
-	// make a better release look redundant — fine to show, not safe to
-	// act on without the user's say-so.
+	// packScoreUnknown marks downloads where either side of the score
+	// comparison wasn't read for some row: Sonarr/Radarr's import
+	// evaluation (the score the file would actually import at — the row
+	// fell back to the grab score, which can understate it), or the
+	// score of the file already on disk (taken as 0). Either can make a
+	// better release look redundant — fine to show, not safe to act on
+	// without the user's say-so.
 	packScoreUnknown := map[string]bool{}
 	for i := range rows {
 		if verdicts[i] != engine.StuckRedundant {
 			packHasNonRedundant[rows[i].DownloadID] = true
 		}
-		if !rows[i].ImportScoreKnown {
+		if !rows[i].ImportScoreKnown || existingScoreUnknown[i] {
 			packScoreUnknown[rows[i].DownloadID] = true
 		}
 	}

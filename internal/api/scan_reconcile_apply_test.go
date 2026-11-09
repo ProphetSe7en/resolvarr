@@ -34,7 +34,20 @@ const (
 // evaluation is unavailable.
 func fakeSonarrForReconcile(t *testing.T, withImportEval bool) *httptest.Server {
 	t.Helper()
+	return fakeSonarrForReconcileOpts(t, withImportEval, true)
+}
+
+// fakeSonarrForReconcileOpts adds withFileScores=false: /episodefile
+// fails, so the score of the file already on disk is unknown.
+func fakeSonarrForReconcileOpts(t *testing.T, withImportEval, withFileScores bool) *httptest.Server {
+	t.Helper()
 	eps := map[string][]int{hashPack: {101, 102}, hashSingle: {103}, hashAlready: {104}}
+	// Without file scores the stuck releases score below 0, so they'd
+	// only look redundant because the unread on-disk score counts as 0.
+	stuckScore := 50
+	if !withFileScores {
+		stuckScore = -10
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -42,7 +55,7 @@ func fakeSonarrForReconcile(t *testing.T, withImportEval bool) *httptest.Server 
 			row := func(hash string, ep int) map[string]any {
 				return map[string]any{
 					"downloadId": hash, "title": "Show.S01." + hash[:1], "status": "completed",
-					"trackedDownloadState": "importBlocked", "customFormatScore": 50,
+					"trackedDownloadState": "importBlocked", "customFormatScore": stuckScore,
 					"seriesId": 7, "episodeId": ep,
 				}
 			}
@@ -60,6 +73,10 @@ func fakeSonarrForReconcile(t *testing.T, withImportEval bool) *httptest.Server 
 				{"id": 104, "episodeFileId": 1004},
 			})
 		case "/api/v3/episodefile":
+			if !withFileScores {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
 			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{"id": 1001, "seriesId": 7, "customFormatScore": 100},
 				{"id": 1003, "seriesId": 7, "customFormatScore": 100},
@@ -74,7 +91,7 @@ func fakeSonarrForReconcile(t *testing.T, withImportEval bool) *httptest.Server 
 			var items []map[string]any
 			for _, id := range ids {
 				items = append(items, map[string]any{
-					"customFormatScore": 50,
+					"customFormatScore": stuckScore,
 					"episodes":          []map[string]any{{"id": id}},
 				})
 			}
@@ -133,7 +150,11 @@ func runReconcileApplyForTest(t *testing.T, applyItems []string) (*scanResponse,
 
 func runReconcileApplyWith(t *testing.T, applyItems []string, withImportEval bool) (*scanResponse, *fakeQbitWithCategories) {
 	t.Helper()
-	sonarr := fakeSonarrForReconcile(t, withImportEval)
+	return runReconcileApplyOpts(t, applyItems, fakeSonarrForReconcile(t, withImportEval))
+}
+
+func runReconcileApplyOpts(t *testing.T, applyItems []string, sonarr *httptest.Server) (*scanResponse, *fakeQbitWithCategories) {
+	t.Helper()
 	q := newFakeQbitWithCategories(t, map[string]string{
 		hashPack:    "tv",
 		hashSingle:  "tv",
@@ -406,5 +427,24 @@ func TestDeferredStuckSweep_SkipsWhenRulePausedMeanwhile(t *testing.T) {
 	}
 	if got := len(s.App.Config.Get().WebhookRules[0].History); got != 0 {
 		t.Errorf("paused rule recorded %d history entries, want 0", got)
+	}
+}
+
+func TestRunReconcileApply_UnknownExistingFileScoreIsNotMovedAutomatically(t *testing.T) {
+	// /episodefile failing leaves the on-disk file's score at 0. A stuck
+	// release scoring below that would look redundant against a file
+	// whose real score was never read.
+	resp, q := runReconcileApplyOpts(t, nil, fakeSonarrForReconcileOpts(t, true, false))
+	redundant := 0
+	for _, row := range resp.Reconcile {
+		if row.Status == string(engine.StuckRedundant) {
+			redundant++
+		}
+	}
+	if redundant == 0 {
+		t.Fatal("test setup: expected rows judged redundant against the unread (0) score")
+	}
+	if len(q.sets) != 0 {
+		t.Fatalf("setCategory calls = %v, want none while the existing file's score is unknown", q.sets)
 	}
 }
