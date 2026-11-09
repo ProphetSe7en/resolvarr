@@ -445,6 +445,9 @@ function appState() {
     // downloads. Each entry is { qbitInstanceId, postCategory } — the
     // category is per-client because names differ per client.
     reconcileExtraTargets: [],
+    // Placeholder hint for the webhook Stuck downloads step: the Arr's
+    // own post-import category. Never written into a target.
+    stuckReconcileCategoryHint: '',
     reconcilePreCategory: '',      // info: the category stuck downloads currently sit in
     reconcileLastInstanceId: '',   // tracks which instance the qBit + categories were resolved for
     // Release Type Overview (Sonarr-only, read-only scan). Shows each

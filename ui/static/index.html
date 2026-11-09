@@ -10374,7 +10374,7 @@
                          :aria-label="'Category to move redundant downloads to on ' + (qbitInstanceName(t.qbitInstanceId) || ('download client ' + (idx + 1)))"
                          :class="!(t.postCategory || '').trim() && 'input-invalid'"
                          x-model="t.postCategory"
-                         placeholder="e.g. cleanup"
+                         :placeholder="stuckReconcileCategoryHint ? ('e.g. ' + stuckReconcileCategoryHint + ' (' + (ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr') + '\'s post-import)') : 'e.g. cleanup'"
                          style="max-width:220px;flex:0 0 auto">
                   <button type="button" class="btn btn-sm"
                           @click="stuckReconcileRemoveTarget(idx)"
@@ -10391,7 +10391,7 @@
               <span style="font-size:11px;color:var(--text-secondary);margin-left:8px">One row per qBittorrent client this <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> downloads through.</span>
             </div>
             <div style="font-size:11px;color:var(--text-secondary);margin-top:6px;line-height:1.5;max-width:560px">
-              The category is where redundant downloads land so your own qBittorrent cleanup can remove them &mdash; resolvarr never deletes a torrent itself. Type it exactly as it appears in qBittorrent: a category that doesn't exist there is refused when the rule runs. It is saved with the rule, so you only enter it once. With a single qBittorrent client configured, the category starts from the download-client config in <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>.
+              The category is where redundant downloads land so your own qBittorrent cleanup can remove them &mdash; resolvarr never deletes a torrent itself. Type it exactly as it appears in qBittorrent: a category that doesn't exist there is refused when the rule runs. It is saved with the rule, so you only enter it once. The empty field suggests the post-import category from <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>'s download-client config, but nothing is filled in for you: that category belongs to one of its download clients, and resolvarr can't tell which.
             </div>
           </div>
 

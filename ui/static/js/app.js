@@ -12811,27 +12811,21 @@ function app() {
         first.qbitInstanceId = this.defaultQbitForArr(r.instanceId)
           || ((this.qbitInstances || []).length === 1 ? this.qbitInstances[0].id : '');
       }
-      if (first.postCategory || !r.instanceId) return;
-      // The Arr reports the post-import category of ITS qBittorrent
-      // download client, with no way to tell which resolvarr qBit
-      // instance that is. Only pre-fill when there is just one qBit
-      // instance, so the category can't be paired with the wrong client.
-      if ((this.qbitInstances || []).length !== 1) return;
-      const forClient = first.qbitInstanceId;
+      // Category hint only, never a value. The Arr reports the post-
+      // import category of ITS first qBittorrent download client, and
+      // there is no reliable way to tell which resolvarr client that is
+      // (the Arr may have several, of which resolvarr knows only some).
+      // So it is shown as a placeholder the user can adopt, and the
+      // field stays empty until they type a category themselves.
+      this.stuckReconcileCategoryHint = '';
+      if (!r.instanceId) return;
       try {
         const res = await this.apiFetch('/api/instances/' + encodeURIComponent(r.instanceId) + '/qbit-categories');
         if (!res.ok) return;
         const d = await res.json();
-        // Drop a stale answer: the user changed the client, typed a
-        // category, or left the step while the lookup was in flight.
-        if (this.editingRule !== r || r.stuckReconcile !== sr || sr.targets[0] !== first) return;
-        if (first.qbitInstanceId !== forClient || first.postCategory) return;
-        // Post-import is where the Arr moves a download it DID import,
-        // so it is usually already the category the user's cleanup
-        // watches. Extra rows are left blank — their client has its
-        // own category names.
-        if (d.postImport) first.postCategory = d.postImport;
-      } catch (e) { /* best-effort pre-fill */ }
+        if (this.editingRule !== r) return; // left the editor meanwhile
+        this.stuckReconcileCategoryHint = (d.postImport || '').trim();
+      } catch (e) { /* best-effort hint */ }
     },
 
     // Inline-warning string for the Stuck downloads step. Empty means

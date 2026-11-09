@@ -22,7 +22,7 @@
 
 - **Scheduled Stuck downloads runs are no longer rejected on save.** The scheduler already knew how to run the phase, but the schedule validator treated `reconcile` as an unknown mode, so a reconcile schedule could never be stored. It saves now, and takes the same per-download-client target list. (The schedule wizard does not offer it as a choice yet — it is reachable via the schedules API.)
 - **A reconcile schedule's single-client settings are checked on save.** A schedule saved with only the older one-client fields is now rejected when that client no longer exists or the category is empty, instead of failing at run time. `reconcile` cannot be added as a step of a combined schedule, because combined schedules don't run it. Pausing or resuming a reconcile schedule from its card, or editing it in the schedule editor, keeps its download clients and categories and no longer turns it into a combined schedule.
-- **The Stuck downloads category is only pre-filled when it can't be paired with the wrong client.** Sonarr/Radarr reports the category of its own qBittorrent download client, not which resolvarr client that is, so it is now only pre-filled when one qBittorrent client is configured. A slow lookup no longer refills a category after you changed the client.
+- **The Stuck downloads category is suggested, not filled in.** Sonarr/Radarr reports the post-import category of its own qBittorrent download client, and resolvarr can't tell which of your clients that is, so filling it in could pair one client's category with another. It now shows as the empty field's placeholder, and the field stays empty until you type the category.
 
 ## v0.6.77-dev — Security maintenance (2026-11-08)
 
