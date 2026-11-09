@@ -10764,7 +10764,10 @@ function app() {
       // 'combined' + combinedModes=['tag']. Save-time persists the
       // new shape; the chain runner / scheduler-runner already accept
       // both shapes via has() → r.mode === m || combinedModes.includes(m).
-      if (copy.mode && copy.mode !== 'combined') {
+      // Reconcile (stuck downloads) is the exception: it is a standalone
+      // schedule mode, not a chain step — the combined runner has no
+      // reconcile phase and the backend rejects it in combinedModes.
+      if (copy.mode && copy.mode !== 'combined' && copy.mode !== 'reconcile') {
         const legacyMode = copy.mode;
         copy.mode = 'combined';
         copy.options.combinedModes = copy.options.combinedModes || [];
@@ -12809,15 +12812,25 @@ function app() {
           || ((this.qbitInstances || []).length === 1 ? this.qbitInstances[0].id : '');
       }
       if (first.postCategory || !r.instanceId) return;
+      // The Arr reports the post-import category of ITS qBittorrent
+      // download client, with no way to tell which resolvarr qBit
+      // instance that is. Only pre-fill when there is just one qBit
+      // instance, so the category can't be paired with the wrong client.
+      if ((this.qbitInstances || []).length !== 1) return;
+      const forClient = first.qbitInstanceId;
       try {
         const res = await this.apiFetch('/api/instances/' + encodeURIComponent(r.instanceId) + '/qbit-categories');
         if (!res.ok) return;
         const d = await res.json();
-        // Post-import is the right default for the first row: it is where
-        // the Arr moves a download it DID import, so it is usually already
-        // the category the user's cleanup watches. Extra rows are left
-        // blank — their client has its own category names.
-        if (d.postImport && !first.postCategory) first.postCategory = d.postImport;
+        // Drop a stale answer: the user changed the client, typed a
+        // category, or left the step while the lookup was in flight.
+        if (this.editingRule !== r || r.stuckReconcile !== sr || sr.targets[0] !== first) return;
+        if (first.qbitInstanceId !== forClient || first.postCategory) return;
+        // Post-import is where the Arr moves a download it DID import,
+        // so it is usually already the category the user's cleanup
+        // watches. Extra rows are left blank — their client has its
+        // own category names.
+        if (d.postImport) first.postCategory = d.postImport;
       } catch (e) { /* best-effort pre-fill */ }
     },
 
@@ -13440,6 +13453,9 @@ function app() {
       if (this.ruleAffectsPlexSync() && r.plexSync) body.plexSync = JSON.parse(JSON.stringify(r.plexSync));
       // TBA refresh — Sonarr-only file-rename phase, config in Review.
       if (this.ruleAffectsTbaRefresh() && r.tbaRefresh) body.tbaRefresh = JSON.parse(JSON.stringify(r.tbaRefresh));
+      // Reconcile has no wizard step yet; echo the saved snapshot so an
+      // edit (rename, cron) keeps its download clients + categories.
+      if (r.mode === 'reconcile' && r.reconcile) body.reconcile = JSON.parse(JSON.stringify(r.reconcile));
       this.ruleEditor.busy = true;
       try {
         const url = r.id ? `/api/schedules/${r.id}` : '/api/schedules';
@@ -15598,6 +15614,7 @@ function app() {
           videoTags: sj.videoTags,
           dvDetail: sj.dvDetail,
           releaseGroupIds: sj.releaseGroupIds,
+          reconcile: sj.reconcile,
         };
         const r = await this.apiFetch(`/api/schedules/${sj.id}`, {
           method: 'PUT',

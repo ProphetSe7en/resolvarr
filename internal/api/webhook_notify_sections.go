@@ -376,6 +376,41 @@ func appendTaggedInSection(fields []agents.PayloadField, primary, mirroredSecond
 // appendTagSection renders the release-group / filter-only tag
 // outcome. Shown on Download events; on delete events the Tag-RG
 // strip is folded into the File-Delete section (see
+// joinLinesWithinField joins lines with newlines, dropping whole lines
+// from the end (with an "…and N more" marker) so the result fits a
+// Discord field value. Long release titles times ten moves can pass the
+// 1024-character cap, and Discord rejects the whole embed when one field
+// does.
+func joinLinesWithinField(lines []string) string {
+	const maxField = 1000 // same headroom as truncateField
+	const markerRoom = 24 // room kept for "\n…and N more"
+	var b strings.Builder
+	for i, l := range lines {
+		sep := ""
+		if b.Len() > 0 {
+			sep = "\n"
+		}
+		limit := maxField
+		if i < len(lines)-1 {
+			limit = maxField - markerRoom
+		}
+		if b.Len()+len(sep)+len(l) > limit {
+			if b.Len() == 0 {
+				// One title alone is too long: cut it, keep the count.
+				b.WriteString(truncateRune(l, maxField-markerRoom))
+				i++
+			}
+			if rest := len(lines) - i; rest > 0 {
+				fmt.Fprintf(&b, "\n…and %d more", rest)
+			}
+			return b.String()
+		}
+		b.WriteString(sep)
+		b.WriteString(l)
+	}
+	return b.String()
+}
+
 // appendFileDeleteSection).
 //
 //	Quality tag  FLUX
@@ -895,7 +930,16 @@ func appendQbitCategoryFixSection(fields []agents.PayloadField, d *QbitCategoryF
 // Changed contract exists to prevent. A failure does render: a move
 // that keeps failing must not stay invisible.
 func appendStuckReconcileSection(fields []agents.PayloadField, d *StuckReconcileDetail) []agents.PayloadField {
-	if d == nil || (d.Moved == 0 && d.Failed == 0) {
+	if d == nil {
+		return fields
+	}
+	if e := strings.TrimSpace(d.SweepError); e != "" {
+		return append(fields, agents.PayloadField{
+			Name:  "Stuck downloads sweep failed",
+			Value: truncateField(e),
+		})
+	}
+	if d.Moved == 0 && d.Failed == 0 {
 		return fields
 	}
 	fields = append(fields, agents.PayloadField{
@@ -920,7 +964,7 @@ func appendStuckReconcileSection(fields []agents.PayloadField, d *StuckReconcile
 		}
 		fields = append(fields, agents.PayloadField{
 			Name:  "Moved",
-			Value: strings.Join(lines, "\n"),
+			Value: joinLinesWithinField(lines),
 		})
 	}
 	if d.NeedsAttention > 0 {
@@ -937,7 +981,7 @@ func appendStuckReconcileSection(fields []agents.PayloadField, d *StuckReconcile
 		}
 		fields = append(fields, agents.PayloadField{
 			Name:  "Failed",
-			Value: value,
+			Value: truncateField(value),
 		})
 	}
 	return fields

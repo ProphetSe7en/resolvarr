@@ -477,6 +477,20 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.App.Config.Get()
+	// A PUT that omits the reconcile snapshot keeps the saved one (see
+	// the nil-preserving assignment below), so validate against that —
+	// otherwise pausing an apply-mode reconcile schedule from its card,
+	// which doesn't echo the snapshot, is rejected as "needs a target".
+	if req.Reconcile == nil {
+		for i := range cfg.Schedules {
+			if cfg.Schedules[i].ID == id && cfg.Schedules[i].Reconcile != nil {
+				saved := *cfg.Schedules[i].Reconcile
+				saved.Targets = append([]core.StuckReconcileTarget(nil), saved.Targets...)
+				req.Reconcile = &saved
+				break
+			}
+		}
+	}
 	if apiErr := req.validate(cfg); apiErr != nil {
 		writeAPIError(w, apiErr)
 		return

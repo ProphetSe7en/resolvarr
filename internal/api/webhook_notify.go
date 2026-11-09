@@ -267,6 +267,9 @@ type StuckReconcileDetail struct {
 	// FailReason is the first failed download's error, so a repeating
 	// failure says what to fix rather than just how many.
 	FailReason string
+	// SweepError is set when the sweep as a whole failed (Arr or
+	// download client unreachable) and no download was evaluated.
+	SweepError string
 	// Moves lists the downloads that actually changed category, capped
 	// at stuckReconcileMaxMovesInNotification entries.
 	Moves []StuckReconcileMove
@@ -413,6 +416,13 @@ func composeTitle(event core.WebhookConnectEvent, results []functionResult, item
 			continue
 		}
 		label := titleLabelForFunctionAndEvent(r.Function, event)
+		if r.Function == core.WebhookFnStuckReconcile {
+			// "cleared" only when something actually moved — a run
+			// that only failed must not read as a success.
+			if d, ok := r.Detail.(StuckReconcileDetail); ok && d.Moved == 0 && (d.Failed > 0 || d.SweepError != "") {
+				label = "Stuck downloads: move failed"
+			}
+		}
 		if label == "" || seen[label] {
 			continue
 		}

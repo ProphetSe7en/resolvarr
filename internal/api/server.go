@@ -53,14 +53,21 @@ type Server struct {
 	qbitProbeMu sync.Mutex
 	qbitProbes  map[string]chan struct{}
 
-	// stuckSweepPending is the set of stuck-downloads sweeps already
-	// scheduled but not yet started, keyed by rule + item. A season pack
-	// emits one Download event per episode, all naming the same series,
-	// so without this one grab would queue N identical sweeps of the
-	// same queue. Entries are freed as the sweep begins, so a later
-	// import for that item can queue a fresh one.
+	// stuckSweepPending holds the stuck-downloads sweeps already
+	// scheduled but not yet started, keyed by rule + item, with the time
+	// each is due. A season pack emits one Download event per episode,
+	// all naming the same series, so without this one grab would queue N
+	// identical sweeps of the same queue; each later event pushes the
+	// due time out instead. Entries are freed as the sweep begins, so a
+	// later import for that item can queue a fresh one.
 	stuckSweepMu      sync.Mutex
-	stuckSweepPending map[string]bool
+	stuckSweepPending map[string]time.Time
+	// stuckSweepSlots bounds how many sweeps run at once across ALL
+	// items. Coalescing only merges sweeps for the same item, so a
+	// batch of imports for different movies would otherwise fire that
+	// many concurrent queue + history reads at the Arr a minute later.
+	// Created lazily under stuckSweepMu.
+	stuckSweepSlots chan struct{}
 
 	// WebhookLog is the per-instance Connect-event ring buffer. Set
 	// by main.go via AttachWebhookLog after server construction. Nil

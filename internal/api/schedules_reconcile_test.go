@@ -1,6 +1,8 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -86,5 +88,40 @@ func TestScheduleRequest_ReconcileIsNotACombinedPhase(t *testing.T) {
 	}
 	if err := req.validate(reconcileScheduleCfg()); err == nil {
 		t.Error("combined schedule with a reconcile phase accepted — the combined runner would skip it")
+	}
+}
+
+func TestHandleUpdateSchedule_PauseKeepsSavedReconcileSnapshot(t *testing.T) {
+	// The schedule card's pause/resume PUT doesn't echo the reconcile
+	// snapshot. It must validate against the saved one, not be rejected
+	// as "apply mode needs a target".
+	store := core.NewConfigStore(t.TempDir())
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := store.Update(func(c *core.Config) {
+		cfg := reconcileScheduleCfg()
+		c.Instances = cfg.Instances
+		c.QbitInstances = cfg.QbitInstances
+		c.Schedules = []core.ScheduledJob{{
+			ID: "j1", Name: "stuck", Mode: core.JobModeReconcile, InstanceID: "i1", Enabled: true,
+			Options:   core.JobOptions{RunMode: "apply"},
+			Reconcile: &core.ReconcileConfig{Targets: []core.StuckReconcileTarget{{QbitInstanceID: "q1", PostCategory: "cleanup"}}},
+		}}
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s := &Server{App: &core.App{Config: store}}
+	body := `{"name":"stuck","mode":"reconcile","instanceId":"i1","enabled":false,"options":{"runMode":"apply"}}`
+	req := httptest.NewRequest(http.MethodPut, "/api/schedules/j1", strings.NewReader(body))
+	req.SetPathValue("id", "j1")
+	rec := httptest.NewRecorder()
+	s.handleUpdateSchedule(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pause PUT = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	got := store.Get().Schedules[0]
+	if got.Enabled || got.Reconcile == nil || len(got.Reconcile.Targets) != 1 {
+		t.Errorf("after pause: enabled=%v reconcile=%+v, want paused with the snapshot kept", got.Enabled, got.Reconcile)
 	}
 }

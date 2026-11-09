@@ -119,27 +119,59 @@ func stuckSweepKey(ruleID, appType string, movieID, seriesID int) string {
 	return fmt.Sprintf("%s:%s:%d:%d", ruleID, appType, movieID, seriesID)
 }
 
-// claimStuckSweep reserves the key for a pending sweep. Returns false
-// when one is already pending, meaning the caller should not schedule
-// another. releaseStuckSweep frees it as the sweep begins, so a later
-// import for the same item schedules a fresh one.
-func (s *Server) claimStuckSweep(key string) bool {
+// claimStuckSweep reserves the key for a pending sweep due at
+// deadline. Returns false when one is already pending, meaning the
+// caller should not schedule another — but the pending sweep's deadline
+// is pushed out to this event's, so every coalesced import still gets
+// its full settling window (see stuckSweepDue).
+func (s *Server) claimStuckSweep(key string, deadline time.Time) bool {
 	s.stuckSweepMu.Lock()
 	defer s.stuckSweepMu.Unlock()
 	if s.stuckSweepPending == nil {
-		s.stuckSweepPending = map[string]bool{}
+		s.stuckSweepPending = map[string]time.Time{}
 	}
-	if s.stuckSweepPending[key] {
+	if cur, pending := s.stuckSweepPending[key]; pending {
+		if deadline.After(cur) {
+			s.stuckSweepPending[key] = deadline
+		}
 		return false
 	}
-	s.stuckSweepPending[key] = true
+	s.stuckSweepPending[key] = deadline
 	return true
 }
 
-func (s *Server) releaseStuckSweep(key string) {
+// maxConcurrentStuckSweeps is how many deferred sweeps may run at once.
+// Each reads the Arr queue plus one item's history; two in flight keeps
+// an import storm from turning into a burst of parallel full-queue reads.
+const maxConcurrentStuckSweeps = 2
+
+// acquireStuckSweepSlot blocks until a sweep may run; call the returned
+// func to free the slot.
+func (s *Server) acquireStuckSweepSlot() func() {
+	s.stuckSweepMu.Lock()
+	if s.stuckSweepSlots == nil {
+		s.stuckSweepSlots = make(chan struct{}, maxConcurrentStuckSweeps)
+	}
+	slots := s.stuckSweepSlots
+	s.stuckSweepMu.Unlock()
+	slots <- struct{}{}
+	return func() { <-slots }
+}
+
+// stuckSweepDue is called when a pending sweep's timer fires. When a
+// later import pushed the deadline out, it returns how much longer to
+// wait and keeps the key claimed. Otherwise it frees the key — from here
+// on the sweep is running, so a later import for the same item queues a
+// fresh one — and reports the sweep due.
+func (s *Server) stuckSweepDue(key string, now time.Time) (wait time.Duration, due bool) {
 	s.stuckSweepMu.Lock()
 	defer s.stuckSweepMu.Unlock()
+	deadline, pending := s.stuckSweepPending[key]
+	if pending && now.Before(deadline) {
+		return deadline.Sub(now), false
+	}
 	delete(s.stuckSweepPending, key)
+	return 0, true
 }
 
 // scheduleDeferredStuckReconcile runs the stuck-downloads sweep in the
@@ -148,16 +180,17 @@ func (s *Server) releaseStuckSweep(key string) {
 // notification when it completes.
 //
 // Inputs are snapshotted (the request body + structs must survive past
-// the HTTP response; config is re-read fresh at fire-time). Pending
-// timers are lost on container restart — acceptable: the next import
-// event fires another sweep, and the Library scan page is still there
-// for a manual run.
+// the HTTP response). The rule itself is re-read at fire time, so a rule
+// paused, edited or deleted while its sweep was pending doesn't act on
+// stale targets. Pending timers are lost on container restart —
+// acceptable: the next import event fires another sweep, and the
+// Library scan page is still there for a manual run.
 //
-// Mirrors scheduleDeferredCategoryFix exactly; if you change the
-// snapshot / panic-guard / history-append shape in one, change both.
-// Returns false when an identical sweep is already pending, so the
-// dispatcher can say so in the History row instead of implying a second
-// one was queued.
+// Returns false when a sweep for the same (rule, item) is already
+// pending, so the dispatcher can say so in the History row instead of
+// implying a second one was queued. That pending sweep then waits until
+// `delay` after THIS import too, so the import's losing download has
+// settled into its stuck state before the queue is read.
 func (s *Server) scheduleDeferredStuckReconcile(rule *core.WebhookRule, inst *core.Instance, env *connectEventEnvelope, body []byte) bool {
 	if rule == nil || inst == nil || env == nil {
 		return false
@@ -171,36 +204,62 @@ func (s *Server) scheduleDeferredStuckReconcile(rule *core.WebhookRule, inst *co
 		movieID, seriesID = 0, 0
 	}
 	key := stuckSweepKey(rule.ID, rule.AppType, movieID, seriesID)
-	if !s.claimStuckSweep(key) {
+	delay := stuckReconcileDeferDelay(rule)
+	if !s.claimStuckSweep(key, time.Now().Add(delay)) {
 		return false
 	}
-	delay := stuckReconcileDeferDelay(rule)
-	ruleCopy := *rule
+	ruleID := rule.ID
 	instCopy := *inst
 	envCopy := *env
 	bodyCopy := append([]byte(nil), body...)
 	started := time.Now().UTC()
-	time.AfterFunc(delay, func() {
-		// Freed first: from here on the sweep is running, so a later
-		// import for the same item must be able to queue a fresh one.
-		s.releaseStuckSweep(key)
+	var fire func()
+	fire = func() {
+		if wait, due := s.stuckSweepDue(key, time.Now()); !due {
+			time.AfterFunc(wait, fire)
+			return
+		}
 		defer func() {
 			if rec := recover(); rec != nil {
-				fmt.Fprintf(os.Stderr, "resolvarr: deferred stuck-downloads sweep panicked for rule %s: %v\n", ruleCopy.ID, rec)
+				fmt.Fprintf(os.Stderr, "resolvarr: deferred stuck-downloads sweep panicked for rule %s: %v\n", ruleID, rec)
 			}
 		}()
+		release := s.acquireStuckSweepSlot()
+		defer release()
+		cfg := s.App.Config.Get()
+		current := findWebhookRuleByID(cfg, ruleID)
+		if !stuckReconcileStillWanted(current) {
+			// Paused, deleted, or the function was turned off while the
+			// sweep was pending — the user no longer wants it to act.
+			return
+		}
+		ruleCopy := *current
 		// The sweep reads the queue once, then per-target history +
 		// manual-import evaluations for the one item it is scoped to,
 		// then one category change per redundant download.
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		cfg := s.App.Config.Get()
 		res := s.dispatchStuckReconcile(ctx, &ruleCopy, cfg, &envCopy, bodyCopy)
 		run := buildWebhookRuleRun(&envCopy, bodyCopy, started, []functionResult{res})
 		s.fireWebhookNotifications(&ruleCopy, &instCopy, &envCopy, bodyCopy, []functionResult{res}, run)
 		s.appendWebhookRuleRunsBatch([]pendingRuleRun{{ruleID: ruleCopy.ID, run: run}})
-	})
+	}
+	time.AfterFunc(delay, fire)
 	return true
+}
+
+// stuckReconcileStillWanted reports whether a rule, as it is NOW in
+// config, should still run its pending stuck-downloads sweep.
+func stuckReconcileStillWanted(rule *core.WebhookRule) bool {
+	if rule == nil || !rule.Enabled {
+		return false
+	}
+	for _, fn := range rule.Functions {
+		if fn == core.WebhookFnStuckReconcile {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatchStuckReconcile runs the stuck-downloads sweep for one rule on
@@ -264,7 +323,16 @@ func (s *Server) dispatchStuckReconcile(
 	resp, apiErr := s.runReconcile(ctx, cfg, inst, rule.AppType, req)
 	s.auditScan("webhook:"+rule.ID, "reconcile", inst, req, resp, errMsgOf(apiErr))
 	if apiErr != nil {
-		return functionResult{Function: fn, OK: false, Summary: "stuck-downloads sweep", Err: apiErr}
+		// The sweep itself failed (Arr unreachable, a download client
+		// that can't be set up). Changed so the failure reaches the
+		// notification agents — this runs in the background, after the
+		// webhook reply, so a notification is the only place it shows
+		// up outside the rule's History.
+		return functionResult{
+			Function: fn, OK: false, Changed: true,
+			Summary: "stuck-downloads sweep", Err: apiErr,
+			Detail: StuckReconcileDetail{Scope: scopeLabel, SweepError: apiErr.Message},
+		}
 	}
 
 	detail := summariseStuckReconcile(resp)

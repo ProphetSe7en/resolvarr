@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"resolvarr/internal/core"
 )
@@ -117,11 +118,12 @@ func TestStuckReconcileScope_MalformedBody(t *testing.T) {
 
 func TestClaimStuckSweep_CoalescesSeasonPack(t *testing.T) {
 	s := &Server{}
+	due := time.Now().Add(time.Minute)
 	// 24 episodes of one series under one rule collapse to ONE sweep.
 	key := stuckSweepKey("rule-1", "sonarr", 0, 7)
 	claimed := 0
 	for i := 0; i < 24; i++ {
-		if s.claimStuckSweep(key) {
+		if s.claimStuckSweep(key, due) {
 			claimed++
 		}
 	}
@@ -130,19 +132,66 @@ func TestClaimStuckSweep_CoalescesSeasonPack(t *testing.T) {
 	}
 
 	// A different series under the same rule is its own sweep.
-	if !s.claimStuckSweep(stuckSweepKey("rule-1", "sonarr", 0, 8)) {
+	if !s.claimStuckSweep(stuckSweepKey("rule-1", "sonarr", 0, 8), due) {
 		t.Error("a different series was wrongly coalesced")
 	}
 	// So is the same series under a different rule — two rules each
 	// have their own targets and their own history entry.
-	if !s.claimStuckSweep(stuckSweepKey("rule-2", "sonarr", 0, 7)) {
+	if !s.claimStuckSweep(stuckSweepKey("rule-2", "sonarr", 0, 7), due) {
 		t.Error("a different rule was wrongly coalesced")
 	}
 
 	// Once the sweep starts, a later import for that series queues again.
-	s.releaseStuckSweep(key)
-	if !s.claimStuckSweep(key) {
-		t.Error("key stayed claimed after release — later imports would never sweep again")
+	if _, ok := s.stuckSweepDue(key, due.Add(time.Second)); !ok {
+		t.Fatal("sweep not due after its deadline")
+	}
+	if !s.claimStuckSweep(key, due) {
+		t.Error("key stayed claimed after the sweep started — later imports would never sweep again")
+	}
+}
+
+func TestClaimStuckSweep_LaterImportPushesTheSweepOut(t *testing.T) {
+	// An import coalesced into a pending sweep still gets its own
+	// settling window: the sweep must not read the queue before this
+	// import's losing download has had time to settle.
+	s := &Server{}
+	key := stuckSweepKey("rule-1", "sonarr", 0, 7)
+	t0 := time.Now()
+	if !s.claimStuckSweep(key, t0.Add(60*time.Second)) {
+		t.Fatal("first claim refused")
+	}
+	if s.claimStuckSweep(key, t0.Add(90*time.Second)) {
+		t.Fatal("second import scheduled its own sweep instead of coalescing")
+	}
+	// The original timer fires at +60s: not due yet, wait ~30s more.
+	wait, ok := s.stuckSweepDue(key, t0.Add(60*time.Second))
+	if ok || wait != 30*time.Second {
+		t.Fatalf("at +60s: due=%v wait=%v, want not due, wait 30s", ok, wait)
+	}
+	// An earlier deadline never pulls the sweep forward.
+	s.claimStuckSweep(key, t0.Add(10*time.Second))
+	if _, ok := s.stuckSweepDue(key, t0.Add(89*time.Second)); ok {
+		t.Fatal("an earlier deadline pulled the sweep forward")
+	}
+	if _, ok := s.stuckSweepDue(key, t0.Add(90*time.Second)); !ok {
+		t.Fatal("sweep not due at the latest deadline")
+	}
+}
+
+func TestStuckReconcileStillWanted(t *testing.T) {
+	on := &core.WebhookRule{Enabled: true, Functions: []core.WebhookFunction{core.WebhookFnStuckReconcile}}
+	if !stuckReconcileStillWanted(on) {
+		t.Error("enabled rule with the function was skipped")
+	}
+	cases := map[string]*core.WebhookRule{
+		"deleted":      nil,
+		"paused":       {Enabled: false, Functions: []core.WebhookFunction{core.WebhookFnStuckReconcile}},
+		"function off": {Enabled: true, Functions: []core.WebhookFunction{core.WebhookFnQbitCategoryFix}},
+	}
+	for name, r := range cases {
+		if stuckReconcileStillWanted(r) {
+			t.Errorf("%s: pending sweep would still run", name)
+		}
 	}
 }
 
@@ -158,7 +207,7 @@ func TestClaimStuckSweep_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results <- s.claimStuckSweep(key)
+			results <- s.claimStuckSweep(key, time.Now().Add(time.Minute))
 		}()
 	}
 	wg.Wait()

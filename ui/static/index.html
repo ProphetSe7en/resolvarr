@@ -10360,6 +10360,7 @@
               <template x-for="(t, idx) in stuckReconcileTargets()" :key="idx">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                   <select class="input"
+                          :aria-label="'Download client ' + (idx + 1)"
                           :class="!t.qbitInstanceId && 'input-invalid'"
                           @change="t.qbitInstanceId = $event.target.value; t.postCategory = ''"
                           style="max-width:260px;flex:0 0 auto">
@@ -10370,6 +10371,7 @@
                   </select>
                   <span style="font-size:12px;color:var(--text-secondary)">&rarr; move redundant to</span>
                   <input type="text" class="input"
+                         :aria-label="'Category to move redundant downloads to on ' + (qbitInstanceName(t.qbitInstanceId) || ('download client ' + (idx + 1)))"
                          :class="!(t.postCategory || '').trim() && 'input-invalid'"
                          x-model="t.postCategory"
                          placeholder="e.g. cleanup"
@@ -10389,7 +10391,7 @@
               <span style="font-size:11px;color:var(--text-secondary);margin-left:8px">One row per qBittorrent client this <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span> downloads through.</span>
             </div>
             <div style="font-size:11px;color:var(--text-secondary);margin-top:6px;line-height:1.5;max-width:560px">
-              The category is where redundant downloads land so your own qBittorrent cleanup can remove them &mdash; resolvarr never deletes a torrent itself. Type it exactly as it appears in qBittorrent: a category that doesn't exist there is refused when the rule runs. It is saved with the rule, so you only enter it once. The first row starts from the download-client config in <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>.
+              The category is where redundant downloads land so your own qBittorrent cleanup can remove them &mdash; resolvarr never deletes a torrent itself. Type it exactly as it appears in qBittorrent: a category that doesn't exist there is refused when the rule runs. It is saved with the rule, so you only enter it once. With a single qBittorrent client configured, the category starts from the download-client config in <span x-text="ruleEditorInstanceType() === 'sonarr' ? 'Sonarr' : 'Radarr'"></span>.
             </div>
           </div>
 
@@ -10408,9 +10410,9 @@
 
           <!-- Background-defer delay -->
           <div class="form-group" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border-subtle)">
-            <label class="label" style="font-size:13px;color:var(--text-primary);font-weight:500;margin-bottom:4px">Run in the background, this many seconds after import</label>
+            <label class="label" for="stuck-reconcile-defer" style="font-size:13px;color:var(--text-primary);font-weight:500;margin-bottom:4px">Run in the background, this many seconds after import</label>
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-              <input class="input" type="number" min="5" max="600" step="1"
+              <input id="stuck-reconcile-defer" class="input" type="number" min="5" max="600" step="1"
                      x-model.number="editingRule.stuckReconcile.deferSeconds"
                      placeholder="60" style="width:120px;font-size:13px">
               <span style="font-size:11px;color:var(--text-secondary)">Default: 60 &middot; Range: 5&ndash;600 seconds</span>

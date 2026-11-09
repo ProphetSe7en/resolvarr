@@ -66,9 +66,13 @@ func reconcileTargetsFromRequest(req scanRunRequest) []scanReconcileTarget {
 	seen := map[string]bool{}
 	for _, t := range req.ReconcileTargets {
 		id := strings.TrimSpace(t.QbitInstanceID)
-		if id == "" || seen[id] {
+		if id == "" {
 			continue
 		}
+		// A client listed twice in ReconcileTargets is kept as-is so
+		// newReconcileClients rejects it: two categories for one client
+		// have no defined winner. Only the legacy pair below is folded
+		// silently, because the UI sends it alongside the full list.
 		seen[id] = true
 		out = append(out, scanReconcileTarget{
 			QbitInstanceID: id,
@@ -94,7 +98,12 @@ func newReconcileClients(cfg core.Config, targets []scanReconcileTarget) (*recon
 		return nil, newAPIError(400, "pick at least one qBittorrent client + target category to apply")
 	}
 	rc := &reconcileClients{resolved: map[string]resolvedHash{}}
+	seen := map[string]bool{}
 	for _, t := range targets {
+		if seen[t.QbitInstanceID] {
+			return nil, newAPIError(400, fmt.Sprintf("qBittorrent instance %q is listed twice — one target category per client", t.QbitInstanceID))
+		}
+		seen[t.QbitInstanceID] = true
 		if t.PostCategory == "" {
 			return nil, newAPIError(400, "a target category is required for every qBittorrent client")
 		}
@@ -144,20 +153,41 @@ func (rc *reconcileClients) clientFor(ctx context.Context, hash string) (entry r
 		}
 		return rc.entries[r.idx], r.category, true, nil
 	}
+	// Every client is asked, not just until the first hit: the same
+	// torrent can sit in two clients (cross-seeding), and then there is
+	// no telling which copy the Arr's queue row is about. Moving the
+	// first one found could recategorise a copy the user still needs.
+	owner := -1
+	ownerCategory := ""
+	var holders []string
 	for i := range rc.entries {
 		t, ok, err := rc.entries[i].client.GetTorrent(ctx, hash)
 		if err != nil {
 			// Client down / auth expired. Treat as "not here" for this
 			// pass but remember that the answer is incomplete.
 			if probeErr == nil {
-				probeErr = fmt.Errorf("%s: %w", rc.entries[i].name, err)
+				probeErr = fmt.Errorf("could not check download client %s: %w", rc.entries[i].name, err)
 			}
 			continue
 		}
 		if ok {
-			rc.resolved[key] = resolvedHash{idx: i, category: t.Category}
-			return rc.entries[i], t.Category, true, nil
+			if owner < 0 {
+				owner, ownerCategory = i, t.Category
+			}
+			holders = append(holders, rc.entries[i].name)
 		}
+	}
+	if len(holders) > 1 {
+		return reconcileClient{}, "", false, fmt.Errorf("the same torrent is in several download clients (%s); move it by hand", strings.Join(holders, ", "))
+	}
+	if owner >= 0 && probeErr == nil {
+		rc.resolved[key] = resolvedHash{idx: owner, category: ownerCategory}
+		return rc.entries[owner], ownerCategory, true, nil
+	}
+	if owner >= 0 {
+		// Found, but another client couldn't be asked — it might hold
+		// a second copy. Not safe to pick one.
+		return reconcileClient{}, "", false, probeErr
 	}
 	// Only memoise a negative answer when every client actually
 	// answered. Caching "nobody has it" off the back of a transient

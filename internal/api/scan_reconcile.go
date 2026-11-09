@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -185,9 +186,14 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 				} else if fetched, ferr := client.GetItem(ctx, "radarr", q.MovieID); ferr == nil {
 					radarrOne[q.MovieID] = fetched
 					it, found = fetched, true
+				} else if !errors.Is(ferr, arr.ErrItemNotFound) {
+					// Radarr unreachable / erroring: fail the sweep so it
+					// is reported, rather than recording a quiet run.
+					return nil, newAPIError(502, "arr get movie: "+ferr.Error())
 				}
 				// A movie that vanished between the queue read and now
-				// just loses its label; the row still gets classified.
+				// just loses its label; the row is classified as needing
+				// attention (no file to compare against).
 			} else {
 				if radarrItems == nil {
 					items, lerr := client.ListItems(ctx, "radarr")
@@ -322,9 +328,25 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 	// redundant. An explicit per-download selection is the user's call
 	// and is honoured as-is.
 	packHasNonRedundant := map[string]bool{}
+	// The queue is read as a single page of arr.QueuePageSize rows. A
+	// full page may be truncated, and a truncated page can hold only
+	// part of a pack — the part whose rows are all redundant — so the
+	// rule above can't be checked. Don't move anything automatically
+	// then; an explicit selection still works.
+	queueMayBeTruncated := len(queue) >= arr.QueuePageSize
+	// packScoreUnknown marks downloads where Sonarr/Radarr's import
+	// evaluation (the score the file would actually import at) wasn't
+	// available for some row, so that row was judged on the grab score.
+	// The grab score can be lower than the import score, which would
+	// make a better release look redundant — fine to show, not safe to
+	// act on without the user's say-so.
+	packScoreUnknown := map[string]bool{}
 	for i := range rows {
 		if verdicts[i] != engine.StuckRedundant {
 			packHasNonRedundant[rows[i].DownloadID] = true
+		}
+		if !rows[i].ImportScoreKnown {
+			packScoreUnknown[rows[i].DownloadID] = true
 		}
 	}
 
@@ -348,7 +370,7 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 		// one too). "Apply all" from the modal (no selection) and the
 		// webhook / schedule paths stay conservative: redundant only, and
 		// never a pack that still holds a non-redundant episode.
-		shouldAct := verdicts[i] == engine.StuckRedundant && !packHasNonRedundant[row.DownloadID]
+		shouldAct := verdicts[i] == engine.StuckRedundant && !packHasNonRedundant[row.DownloadID] && !queueMayBeTruncated && !packScoreUnknown[row.DownloadID]
 		if len(applySel) > 0 {
 			shouldAct = applySel[row.DownloadID]
 		}
@@ -367,9 +389,10 @@ func (s *Server) runReconcile(ctx context.Context, cfg core.Config, inst *core.I
 		target, currentCat, found, probeErr := qclients.clientFor(ctx, row.DownloadID)
 		switch {
 		case !found && probeErr != nil:
-			// A client didn't answer, so "nobody has it" isn't known —
-			// say that rather than claiming the torrent is gone.
-			out = categoryOutcome{status: "failed", err: "could not check the download clients: " + probeErr.Error()}
+			// A client didn't answer (so "nobody has it" isn't known), or
+			// several clients hold the torrent (so which copy to move
+			// isn't known) — say which, rather than guessing.
+			out = categoryOutcome{status: "failed", err: probeErr.Error()}
 			resp.Totals.ReconcileFailed++
 		case !found:
 			// Nobody owns this hash. Most often the user already removed
